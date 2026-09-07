@@ -148,7 +148,7 @@ pub(crate) async fn add_dir_entry(
     }
     add_dir_entry_inner(fs, dir_inode, name, inode, file_type).await?;
     if let Some(time) = fs.mutation_time() {
-        dir_inode.set_mtime(time);
+        dir_inode.set_mutation_mtime(time)?;
         dir_inode.write(fs).await?;
     }
     Ok(())
@@ -349,7 +349,7 @@ pub(crate) async fn remove_dir_entry(
     }
     remove_dir_entry_inner(fs, dir_inode, name).await?;
     if let Some(time) = fs.mutation_time() {
-        dir_inode.set_mtime(time);
+        dir_inode.set_mutation_mtime(time)?;
         dir_inode.write(fs).await?;
     }
     Ok(())

@@ -2035,6 +2035,74 @@ fn inode_checksums_follow_declared_extra_size_and_preserve_undeclared_bytes() {
 }
 
 #[test]
+fn automatic_timestamps_respect_each_inode_field_and_roll_back_reservations() {
+    let Some(path) = fixture() else { return };
+    let now = 1_780_000_000;
+    let later = 0x8000_0000;
+    let mut mounted = mount_fixture(&path);
+    ext4::create_file_probe(&mut mounted, b"timestamp-field-file", 0o600).unwrap();
+    ext4::transaction_probe(&mut mounted, b"timestamp-field-file", 0, b"original bytes").unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    drop(mounted);
+    let pristine = DEVICE.with_borrow(|device| device.bytes.clone());
+    for extra in [0u16, 4, 8, 12, 16, 20, 24, 32] {
+        let image = path.with_extension(format!("coordinator-automatic-time-{extra}.img"));
+        write_sparse_fixture(&image, &pristine).unwrap();
+        for name in ["<2>", "/timestamp-field-file"] {
+            debugfs(&image, &format!("set_inode_field {name} extra_isize {extra}"));
+        }
+        let mut mounted = mount_bytes(std::fs::read(&image).unwrap());
+        // Arm the recovery marker before testing rollback so its legitimate
+        // first-write transition cannot hide unintended mutation writes.
+        ext4::chmod(&mut mounted, b"system/README.TXT", 0o600).unwrap();
+        for operation in 0..4 {
+            let before = DEVICE.with_borrow_mut(|device| {
+                device.events.clear();
+                device.bytes.clone()
+            });
+            let free = ext4::free_bytes(&mounted).unwrap();
+            let apply = |mounted: &mut ext4::Mounted| match operation {
+                0 => ext4::chmod(mounted, b".", 0o700),
+                1 => ext4::create_file_probe(mounted, b"timestamp-new-child", 0o600),
+                2 => ext4::transaction_probe(mounted, b"timestamp-field-file", 8191, b"epoch boundary").map(|_| ()),
+                _ => ext4::truncate_probe(mounted, b"timestamp-field-file", 1),
+            };
+            let previous = MUTATION_TIME.with(|time| time.replace(later));
+            let result = apply(&mut mounted);
+            MUTATION_TIME.with(|time| time.set(previous));
+            // ctime fits at8 extra bytes; mtime needs12. atime/crtime are
+            // untouched by these operations, so their absence is irrelevant.
+            if extra < if operation == 0 { 8 } else { 12 } {
+                assert_eq!(result, Err(Status::Range), "extra={extra}, operation={operation}");
+                assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
+                DEVICE.with_borrow(|device| {
+                    assert!(device.events.is_empty());
+                    assert_eq!(device.bytes, before);
+                });
+                let previous = MUTATION_TIME.with(|time| time.replace(now));
+                let retry = apply(&mut mounted);
+                MUTATION_TIME.with(|time| time.set(previous));
+                retry.unwrap();
+            } else {
+                result.unwrap();
+                let raw = ext4plus::Ext4::load(Box::new(DEVICE.with_borrow(|device| device.bytes.clone()))).unwrap();
+                let name = if operation < 2 { "/" } else { "/timestamp-field-file" };
+                let inode = raw.path_to_inode(ext4plus::path::Path::try_from(name).unwrap(),
+                    ext4plus::FollowSymlinks::All).unwrap();
+                assert_eq!(inode.ctime(), std::time::Duration::from_secs(later));
+                if operation != 0 {
+                    assert_eq!(inode.mtime(), std::time::Duration::from_secs(later));
+                }
+            }
+        }
+        ext4::sync(&mut mounted).unwrap();
+        ext4::unmount(&mounted).unwrap();
+        fsck(&path, &format!("coordinator-automatic-time-{extra}"));
+    }
+}
+
+#[test]
 fn inode_block_count_uses_48_bits_without_overwriting_xattr_address() {
     use ext4plus::Ext4Read;
     let Some(path) = fixture() else { return };

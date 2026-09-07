@@ -198,7 +198,7 @@ impl Ext4 {
         self.zero_orphan_tail(&inode, size).await?;
         inode.set_size_in_bytes(size);
         if !present { inode.set_dtime_val(self.0.superblock.last_orphan()); }
-        if let Some(time) = self.mutation_time() { inode.set_mtime(time); }
+        if let Some(time) = self.mutation_time() { inode.set_mutation_mtime(time)?; }
         inode.write(self).await?;
         if !present {
             self.0.superblock.set_last_orphan(index.get());

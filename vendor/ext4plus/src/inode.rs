@@ -338,9 +338,12 @@ impl Inode {
         inode.set_extra_size(
             (0x9C + 4 - 128).min(ext4.0.superblock.min_extra_isize()),
         );
-        inode.set_atime(inode_creation_data.time);
+        inode.set_times(inode_creation_data.time, inode_creation_data.time)?;
+        inode.validate_timestamp(inode_creation_data.time, 0x88)?;
+        if inode.entry_size().get() >= 0x94 {
+            inode.validate_timestamp(inode_creation_data.time, 0x98)?;
+        }
         inode.set_ctime(inode_creation_data.time);
-        inode.set_mtime(inode_creation_data.time);
         inode.set_dtime(Duration::from_secs(0));
         inode.set_crtime(inode_creation_data.time);
         inode.set_links_count(0);
@@ -408,6 +411,7 @@ impl Inode {
     #[maybe_async::maybe_async]
     pub async fn write(&mut self, ext4: &Ext4) -> Result<(), Ext4Error> {
         if let Some(time) = ext4.mutation_time() {
+            self.validate_timestamp(time, 0x88)?;
             self.set_ctime(time);
         }
         self.write_preserving_times(ext4).await
@@ -673,14 +677,25 @@ impl Inode {
     /// epoch bits or nanoseconds on an inode with short extra fields.
     pub fn set_times(&mut self, atime: Duration, mtime: Duration) -> Result<(), Ext4Error> {
         for (time, extra_end) in [(atime, 0x90), (mtime, 0x8c)] {
-            if time.as_secs() > 0x3_7fff_ffff
-                || (self.entry_size().get() < extra_end
-                    && (time.as_secs() > i32::MAX as u64 || time.subsec_nanos() != 0)) {
-                return Err(Ext4Error::InvalidTimestamp);
-            }
+            self.validate_timestamp(time, extra_end)?;
         }
         self.set_atime(atime);
         self.set_mtime(mtime);
+        Ok(())
+    }
+
+    fn validate_timestamp(&self, time: Duration, extra_end: u16) -> Result<(), Ext4Error> {
+        if time.as_secs() > 0x3_7fff_ffff
+            || (self.entry_size().get() < extra_end
+                && (time.as_secs() > i32::MAX as u64 || time.subsec_nanos() != 0)) {
+            return Err(Ext4Error::InvalidTimestamp);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_mutation_mtime(&mut self, time: Duration) -> Result<(), Ext4Error> {
+        self.validate_timestamp(time, 0x8c)?;
+        self.set_mtime(time);
         Ok(())
     }
 
