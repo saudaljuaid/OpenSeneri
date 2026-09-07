@@ -13,13 +13,17 @@
 #define PHIPIA_AUX_TLS_IMAGE UINT64_C(0x53500002)
 #define PHIPIA_AUX_TLS_SIZE UINT64_C(0x53500003)
 #define PHIPIA_AUX_TLS_ALIGN UINT64_C(0x53500004)
+#ifndef PHIPIA_HOSTED
 #define PHIPIA_ATEXIT_MAX 16U
+#endif
 
 _Thread_local int errno;
 static struct phipia_startup startup;
+#ifndef PHIPIA_HOSTED
 static void (*exit_functions[PHIPIA_ATEXIT_MAX])(void);
 static size_t exit_function_count;
 static volatile uint32_t exit_lock;
+#endif
 
 void phipia_runtime_initialize(int argc, char **argv, char **environment)
 {
@@ -464,6 +468,7 @@ void phipia_runtime_unlock(volatile uint32_t *lock)
         (uint64_t)(uintptr_t)&request);
 }
 
+#ifndef PHIPIA_HOSTED
 int atexit(void (*function)(void))
 {
     if (function == NULL) {
@@ -499,6 +504,7 @@ _Noreturn void abort(void)
         (uint64_t)(uintptr_t)message, sizeof(message) - 1U);
     exit(134);
 }
+#endif
 
 char *getenv(const char *name)
 {

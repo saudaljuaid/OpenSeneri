@@ -5,7 +5,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifndef _SSIZE_T_DEFINED
 typedef long ssize_t;
+#define _SSIZE_T_DEFINED
+#endif
 typedef int64_t off_t;
 
 #define STDIN_FILENO 0

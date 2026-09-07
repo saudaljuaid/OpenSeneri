@@ -1230,6 +1230,7 @@ $(BUILD_DIR)/sdk-filesystem-host-test: tools/sdk-filesystem-host-test.c sdk/src/
 	mkdir -p $(dir $@)
 	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections -fvisibility=hidden \
 		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion \
+		-DPHIPIA_HOSTED \
 		-Isdk/include -Iinclude tools/sdk-filesystem-host-test.c sdk/src/posix.c sdk/src/runtime.c \
 		-Wl,--gc-sections -o $@
 
@@ -1278,11 +1279,18 @@ ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesys
 	$(BUILD_DIR)/notes-ext4-host-test
 	PHIPIA_EXT4_RUST_FIXTURE='$(CURDIR)/$(BUILD_DIR)/ext4-rust-fixture.img' \
 		$(PYTHON) -u tools/ext4_host_test.py
-	PHIPIA_EXT4_RUST_FIXTURE='$(CURDIR)/$(BUILD_DIR)/ext4-rust-fixture.img' \
+	if test -f '$(BUILD_DIR)/ext4-rust-fixture.img'; then \
+		PHIPIA_EXT4_RUST_FIXTURE='$(CURDIR)/$(BUILD_DIR)/ext4-rust-fixture.img' \
 		CARGO_TARGET_DIR='$(CURDIR)/$(BUILD_DIR)/ext4-transaction-target' \
 		$(CARGO) test \
 		--manifest-path tools/ext4-transaction-tests/Cargo.toml \
-		--locked --offline -- --nocapture
+		--locked --offline -- --nocapture; \
+	else \
+		CARGO_TARGET_DIR='$(CURDIR)/$(BUILD_DIR)/ext4-transaction-target' \
+		$(CARGO) test \
+		--manifest-path tools/ext4-transaction-tests/Cargo.toml \
+		--locked --offline -- --nocapture; \
+	fi
 
 package-repository-tests: tools/phipia-repository.py \
 		tools/phipia_repository_host_test.py tools/phipia-package.py

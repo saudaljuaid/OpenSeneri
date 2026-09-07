@@ -2,17 +2,38 @@
 #define _GNU_SOURCE
 #include <phipia/tls.h>
 
-#include <arpa/inet.h>
 #include <errno.h>
-#include <poll.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <windows.h>
+#include <ws2tcpip.h>
+typedef SOCKET host_socket_t;
+typedef int host_io_count_t;
+#define HOST_INVALID_SOCKET INVALID_SOCKET
+#define HOST_CLOSE closesocket
+#else
+#include <arpa/inet.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
+typedef int host_socket_t;
+typedef ssize_t host_io_count_t;
+#define HOST_INVALID_SOCKET (-1)
+#define HOST_CLOSE close
+#endif
+
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
 
 #include <phipia/network.h>
 #include <phipia/runtime.h>
@@ -37,9 +58,32 @@ long phipia_stream_shutdown(phipia_handle_t stream, uint32_t flags,
 long phipia_network_cancel(phipia_handle_t handle);
 
 static uint16_t peer_port;
+static bool host_sockets_ready;
 
 static uint64_t host_now_ns(void)
 {
+#if defined(_WIN32)
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER counter;
+
+    if (!QueryPerformanceFrequency(&frequency) ||
+        !QueryPerformanceCounter(&counter) || frequency.QuadPart <= 0 ||
+        frequency.QuadPart > INT64_C(1000000000)) {
+        return UINT64_MAX;
+    }
+    {
+        const uint64_t frequency_value = (uint64_t)frequency.QuadPart;
+        const uint64_t counter_value = (uint64_t)counter.QuadPart;
+        const uint64_t seconds = counter_value / frequency_value;
+        const uint64_t remainder = counter_value % frequency_value;
+
+        if (seconds > UINT64_MAX / UINT64_C(1000000000)) {
+            return UINT64_MAX;
+        }
+        return seconds * UINT64_C(1000000000) +
+            remainder * UINT64_C(1000000000) / frequency_value;
+    }
+#else
     struct timeval value;
 
     if (gettimeofday(&value, NULL) != 0) {
@@ -47,17 +91,15 @@ static uint64_t host_now_ns(void)
     }
     return (uint64_t)value.tv_sec * UINT64_C(1000000000) +
         (uint64_t)value.tv_usec * UINT64_C(1000);
+#endif
 }
 
-static int wait_fd(int descriptor, short events, uint64_t deadline_ns)
+static int wait_fd(host_socket_t descriptor, bool write, uint64_t deadline_ns)
 {
-    struct pollfd item = {descriptor, events, 0};
-
     for (;;) {
         const uint64_t now = host_now_ns();
         uint64_t remaining;
         int milliseconds;
-        int result;
 
         if (now == UINT64_MAX || deadline_ns <= now) {
             return -1;
@@ -66,16 +108,42 @@ static int wait_fd(int descriptor, short events, uint64_t deadline_ns)
         milliseconds = remaining / UINT64_C(1000000) > INT32_MAX ?
             INT32_MAX : (int)((remaining + UINT64_C(999999)) /
                 UINT64_C(1000000));
-        result = poll(&item, 1U, milliseconds);
-        if (result > 0) {
-            return (item.revents & events) != 0 ? 0 : -1;
-        }
-        if (result == 0) {
+#if defined(_WIN32)
+        {
+            fd_set set;
+            struct timeval timeout = {
+                milliseconds / 1000, (milliseconds % 1000) * 1000};
+            int result;
+
+            FD_ZERO(&set);
+            FD_SET(descriptor, &set);
+            result = select(0, write ? NULL : &set, write ? &set : NULL,
+                NULL, &timeout);
+            if (result > 0) {
+                return 0;
+            }
+            if (result == 0) {
+                return -1;
+            }
             return -1;
         }
-        if (errno != EINTR) {
-            return -1;
+#else
+        {
+            struct pollfd item = {
+                descriptor, (short)(write ? POLLOUT : POLLIN), 0};
+            const int result = poll(&item, 1U, milliseconds);
+
+            if (result > 0) {
+                return (item.revents & item.events) != 0 ? 0 : -1;
+            }
+            if (result == 0) {
+                return -1;
+            }
+            if (errno != EINTR) {
+                return -1;
+            }
         }
+#endif
     }
 }
 
@@ -115,13 +183,23 @@ long phipia_dns_resolve(const char *hostname, uint64_t deadline_ns)
 
 long phipia_stream_open(void)
 {
-    return socket(AF_INET, SOCK_STREAM, 0);
+#if defined(_WIN32)
+    if (!host_sockets_ready) {
+        WSADATA sockets;
+
+        if (WSAStartup(MAKEWORD(2, 2), &sockets) != 0) {
+            return -1;
+        }
+        host_sockets_ready = true;
+    }
+#endif
+    return (long)(intptr_t)socket(AF_INET, SOCK_STREAM, 0);
 }
 
 long phipia_stream_connect(phipia_handle_t stream,
     const struct phipia_ipv4_endpoint *endpoint, uint64_t deadline_ns)
 {
-    const int descriptor = (int)stream;
+    const host_socket_t descriptor = (host_socket_t)(uintptr_t)stream;
     struct sockaddr_in address = {0};
 
     if (endpoint == NULL || endpoint->port != peer_port ||
@@ -132,57 +210,79 @@ long phipia_stream_connect(phipia_handle_t stream,
     address.sin_port = htons(peer_port);
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     return connect(descriptor, (const struct sockaddr *)&address,
-        sizeof(address));
+        sizeof(address)) == 0 ? 0 : -1;
 }
 
 long phipia_stream_read(phipia_handle_t stream, void *buffer, size_t length,
     uint64_t deadline_ns)
 {
-    const int descriptor = (int)stream;
-    ssize_t count;
+    const host_socket_t descriptor = (host_socket_t)(uintptr_t)stream;
+    host_io_count_t count;
 
     if (length == 0U) {
         return 0;
     }
-    if (wait_fd(descriptor, POLLIN, deadline_ns) != 0) {
+    if (wait_fd(descriptor, false, deadline_ns) != 0) {
         return -1;
     }
-    count = recv(descriptor, buffer, length, 0);
+    count = recv(descriptor, (char *)buffer,
+        length > INT_MAX ? INT_MAX : (int)length, 0);
     return count > 0 ? (long)count : -1;
 }
 
 long phipia_stream_write(phipia_handle_t stream, const void *buffer,
     size_t length, uint64_t deadline_ns)
 {
-    const int descriptor = (int)stream;
-    ssize_t count;
+    const host_socket_t descriptor = (host_socket_t)(uintptr_t)stream;
+    host_io_count_t count;
 
     if (length == 0U) {
         return 0;
     }
-    if (wait_fd(descriptor, POLLOUT, deadline_ns) != 0) {
+    if (wait_fd(descriptor, true, deadline_ns) != 0) {
         return -1;
     }
-    count = send(descriptor, buffer, length, MSG_NOSIGNAL);
+    count = send(descriptor, (const char *)buffer,
+        length > INT_MAX ? INT_MAX : (int)length, MSG_NOSIGNAL);
     return count > 0 ? (long)count : -1;
 }
 
 long phipia_stream_shutdown(phipia_handle_t stream, uint32_t flags,
     uint64_t deadline_ns)
 {
+    const host_socket_t descriptor = (host_socket_t)(uintptr_t)stream;
+
     (void)flags;
     (void)deadline_ns;
-    return shutdown((int)stream, SHUT_RDWR);
+#if defined(_WIN32)
+    return shutdown(descriptor, SD_BOTH);
+#else
+    return shutdown(descriptor, SHUT_RDWR);
+#endif
 }
 
 long phipia_network_cancel(phipia_handle_t handle)
 {
-    return shutdown((int)handle, SHUT_RDWR);
+    const host_socket_t descriptor = (host_socket_t)(uintptr_t)handle;
+
+#if defined(_WIN32)
+    return shutdown(descriptor, SD_BOTH);
+#else
+    return shutdown(descriptor, SHUT_RDWR);
+#endif
 }
 
 long phipia_handle_close(phipia_handle_t handle)
 {
-    return close((int)handle);
+    const long result = HOST_CLOSE((host_socket_t)(uintptr_t)handle);
+
+#if defined(_WIN32)
+    if (host_sockets_ready) {
+        (void)WSACleanup();
+        host_sockets_ready = false;
+    }
+#endif
+    return result;
 }
 
 static int hex_value(char value)
