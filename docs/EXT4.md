@@ -541,9 +541,16 @@ verification alongside the inherited-ACL fixtures.
 POSIX open with O_CREAT now carries its variadic mode through an optional
 native request flag to VFS creation; legacy requests retain mode 0644.
 Permissions and special bits enter the new inode's journal transaction before
-default-ACL masking. The native open/create retry sequence and complete SDK
-stat metadata remain unfinished; mode propagation alone does not close those
-application-access gates.
+default-ACL masking. The native open/create retry sequence remains unfinished;
+mode propagation alone does not close that application-access gate.
+The additive PATH_METADATA syscall supplies SDK stat/lstat with inode identity,
+mode, uid/gid, link count and signed access/modify/change seconds plus nanoseconds.
+lstat keeps the final symlink's own metadata, including dangling links. The older
+PATH_STAT layout is unchanged. Pre-1970 dates are preserved; undeclared extended
+timestamp bytes are ignored, and declared invalid nanoseconds refuse admission
+before recovery writes. Backends without Unix metadata retain their old mode
+projection and omit the native Unix-fields validity flag. Linux verification of
+this metadata extension is pending.
 The admitted explicit xattr mutation namespace is
 `user.*`, with names up to 255 bytes. Set/replace/remove journal the inode and
 any allocated, rewritten or released external attribute block. The writer

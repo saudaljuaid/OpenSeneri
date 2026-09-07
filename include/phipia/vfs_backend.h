@@ -28,6 +28,7 @@ struct vfs_backend_ops {
         enum phipfs_seek_origin origin, uint64_t *position);
     enum phipfs_status (*stat_path)(enum phipfs_volume volume,
         const char *path, struct phipfs_stat *stat);
+    enum phipfs_status (*lstat_path)(enum phipfs_volume volume, const char *path, struct phipfs_stat *stat);
     enum phipfs_status (*list)(enum phipfs_volume volume, const char *path,
         struct phipfs_list_entry *entries, size_t capacity,
         size_t *entry_count);

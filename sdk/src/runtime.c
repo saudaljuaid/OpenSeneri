@@ -205,6 +205,16 @@ long phipia_path_stat(
         (uint64_t)(uintptr_t)&input, (uint64_t)(uintptr_t)result);
 }
 
+long phipia_path_metadata(uint16_t volume, const char *path, uint32_t flags,
+    struct phipia_path_metadata *result)
+{
+    if (path == NULL || result == NULL) return -PHIPIA_EFAULT;
+    if ((flags & ~PHIPIA_METADATA_NOFOLLOW) != 0U) return -PHIPIA_EINVAL;
+    const struct phipia_path input = make_path(volume, path);
+    return phipia_syscall3(PHIPIA_SYS_PATH_METADATA, (uint64_t)(uintptr_t)&input,
+        (uint64_t)(uintptr_t)result, flags);
+}
+
 long phipia_directory_open(uint16_t volume, const char *path)
 {
     struct phipia_path input;

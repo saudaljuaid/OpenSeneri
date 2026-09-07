@@ -51,6 +51,8 @@ long phipia_file_seek(phipia_handle_t handle, int64_t offset,
     uint32_t origin);
 long phipia_path_stat(uint16_t volume, const char *path,
     struct phipia_path_stat *result);
+long phipia_path_metadata(uint16_t volume, const char *path, uint32_t flags,
+    struct phipia_path_metadata *result);
 long phipia_directory_open(uint16_t volume, const char *path);
 long phipia_directory_read(phipia_handle_t handle,
     struct phipia_directory_entry *entry);

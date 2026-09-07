@@ -112,6 +112,7 @@ static const struct vfs_backend_ops ext4_backend_ops = {
     .write = ext4_backend_write,
     .seek = ext4_backend_seek,
     .stat_path = ext4_backend_stat_path,
+    .lstat_path = ext4_backend_lstat_path,
     .list = ext4_backend_list,
     .directory_open = ext4_backend_directory_open,
     .directory_open_with_stat = ext4_backend_directory_open_with_stat,
@@ -897,6 +898,20 @@ enum phipfs_status phipfs_stat_path(
     *stat = vnodes[vnode_index].stat;
     vnode_release(vnode_index, vnodes[vnode_index].generation);
     return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_lstat_path(enum phipfs_volume volume,
+    const char *path, struct phipfs_stat *stat)
+{
+    char canonical[PHIPFS_MAX_PATH];
+    if (stat == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    zero_bytes(stat, sizeof(*stat));
+    const enum phipfs_status status = resolve_metadata_path(volume, path, canonical);
+    if (status != PHIPFS_STATUS_OK) return status;
+    const struct vfs_backend_ops *backend = mounts[volume].backend;
+    // Backends without symlinks keep their ordinary path traversal checks.
+    return backend->lstat_path != NULL ? backend->lstat_path(volume, canonical, stat) :
+        phipfs_stat_path(volume, canonical, stat);
 }
 
 enum phipfs_status phipfs_list(

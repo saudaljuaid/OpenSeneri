@@ -85,6 +85,30 @@ struct phipia_path_stat {
     uint32_t reserved;
 } __attribute__((packed));
 
+#define PHIPIA_METADATA_NOFOLLOW UINT32_C(1)
+#define PHIPIA_METADATA_UNIX_FIELDS UINT32_C(1)
+
+/* Additive metadata ABI: PATH_STAT and its 24-byte output remain unchanged. */
+struct phipia_path_metadata {
+    uint32_t size;
+    uint32_t version;
+    uint64_t byte_length;
+    uint64_t object_id;
+    int64_t atime_seconds;
+    int64_t mtime_seconds;
+    int64_t ctime_seconds;
+    uint32_t uid;
+    uint32_t gid;
+    uint32_t mode;
+    uint32_t links;
+    uint32_t atime_nanos;
+    uint32_t mtime_nanos;
+    uint32_t ctime_nanos;
+    uint32_t flags;
+} __attribute__((packed));
+
+_Static_assert(sizeof(struct phipia_path_metadata) == 80U, "path metadata ABI");
+
 enum phipia_path_attributes {
     PHIPIA_PATH_DIRECTORY = UINT32_C(1) << 0,
     PHIPIA_PATH_READ_ONLY = UINT32_C(1) << 1

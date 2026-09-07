@@ -119,20 +119,33 @@ int close(int number)
     return phipia_result(result);
 }
 
-int stat(const char *path, struct stat *result)
+static int path_metadata(const char *path, struct stat *result, uint32_t flags)
 {
     struct phipia_runtime_path parsed;
-    struct phipia_path_stat native = {sizeof(native), PHIPIA_ABI_VERSION, 0U, 0U, 0U};
+    struct phipia_path_metadata native = {0};
     long status;
-    if (result == NULL || phipia_runtime_path(path, &parsed) != 0) return -1;
-    status = phipia_path_stat(parsed.volume, parsed.text, &native);
+    if (result == NULL) { errno = EFAULT; return -1; }
+    if (phipia_runtime_path(path, &parsed) != 0) return -1;
+    status = phipia_path_metadata(parsed.volume, parsed.text, flags, &native);
     if (status < 0) { errno = (int)-status; return -1; }
+    if (native.size != sizeof(native) || native.version != PHIPIA_ABI_VERSION ||
+        native.atime_nanos >= 1000000000U || native.mtime_nanos >= 1000000000U ||
+        native.ctime_nanos >= 1000000000U) { errno = EIO; return -1; }
+    (void)memset(result, 0, sizeof(*result));
     result->st_size = native.byte_length;
-    result->st_mode = (native.attributes & PHIPIA_PATH_DIRECTORY) != 0U ?
-        S_IFDIR | S_IRUSR : S_IFREG | S_IRUSR;
-    if ((native.attributes & PHIPIA_PATH_READ_ONLY) == 0U) result->st_mode |= S_IWUSR;
+    result->st_mode = native.mode;
+    result->st_uid = native.uid;
+    result->st_gid = native.gid;
+    result->st_nlink = native.links;
+    result->st_ino = native.object_id;
+    result->st_atim = (struct timespec){native.atime_seconds, (long)native.atime_nanos};
+    result->st_mtim = (struct timespec){native.mtime_seconds, (long)native.mtime_nanos};
+    result->st_ctim = (struct timespec){native.ctime_seconds, (long)native.ctime_nanos};
     return 0;
 }
+
+int stat(const char *path, struct stat *result) { return path_metadata(path, result, 0U); }
+int lstat(const char *path, struct stat *result) { return path_metadata(path, result, PHIPIA_METADATA_NOFOLLOW); }
 
 int access(const char *path, int mode)
 {

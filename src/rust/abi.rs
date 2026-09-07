@@ -146,11 +146,12 @@ const _: () = {
     assert!(core::mem::size_of::<ext4::Identity>() == 48);
     assert!(core::mem::offset_of!(ext4::Identity, recovered_transactions) == 32);
     assert!(core::mem::offset_of!(ext4::Identity, recovery_performed) == 44);
-    assert!(core::mem::size_of::<ext4::Metadata>() == 40);
+    assert!(core::mem::size_of::<ext4::Metadata>() == 80);
     assert!(core::mem::align_of::<ext4::Metadata>() == 8);
     assert!(core::mem::offset_of!(ext4::Metadata, file_type) == 28);
-    assert!(core::mem::size_of::<ext4::DirectoryEntry>() == 304);
-    assert!(core::mem::offset_of!(ext4::DirectoryEntry, name) == 42);
+    assert!(core::mem::offset_of!(ext4::Metadata, atime_seconds) == 40);
+    assert!(core::mem::size_of::<ext4::DirectoryEntry>() == 344);
+    assert!(core::mem::offset_of!(ext4::DirectoryEntry, name) == 82);
 
     assert!(fat32::Status::Count as i32 == 37);
     assert!(core::mem::size_of::<fat32::Geometry>() == 96);

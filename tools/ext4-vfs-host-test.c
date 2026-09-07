@@ -33,6 +33,7 @@ static bool reenter_on_close;
 static bool open_reports_failure;
 static bool expect_published_size_before_close;
 static unsigned capacity_queries;
+static bool lstat_symbolic;
 static unsigned unmount_refusals;
 static unsigned live_mounts = 1U;
 static uint32_t logical_block_bytes = 4096U;
@@ -295,6 +296,15 @@ int32_t phipia_ext4_stat(uintptr_t mounted, const uint8_t *path,
     metadata->inode = 42U;
     metadata->size = disk_size;
     metadata->file_type = file_type;
+    metadata->mode = 0100640U;
+    metadata->uid = 70000U;
+    metadata->gid = 90000U;
+    metadata->links = 3U;
+    metadata->atime_seconds = -1;
+    metadata->atime_nanos = 123U;
+    metadata->mtime_seconds = INT64_C(2147483648);
+    metadata->mtime_nanos = 999999999U;
+    metadata->ctime_seconds = INT32_MIN;
     return PHIPIA_EXT4_STATUS_OK;
 }
 
@@ -360,7 +370,14 @@ int32_t phipia_ext4_sync(uintptr_t mounted, const uint64_t *open_inodes, size_t 
 int32_t phipia_ext4_lstat(uintptr_t mounted, const uint8_t *path,
     size_t path_bytes, struct phipia_ext4_metadata *metadata)
 {
-    return phipia_ext4_stat(mounted, path, path_bytes, metadata);
+    const int32_t status = phipia_ext4_stat(mounted, path, path_bytes, metadata);
+    if (status == PHIPIA_EXT4_STATUS_OK && lstat_symbolic) {
+        metadata->file_type = PHIPIA_EXT4_FILE_SYMLINK;
+        metadata->mode = 0120777U;
+        metadata->inode = 84U;
+        metadata->size = 10U;
+    }
+    return status;
 }
 
 int32_t phipia_ext4_create_directory_mode(uintptr_t mounted, const uint8_t *path,
@@ -727,6 +744,20 @@ int main(void)
     assert(live_snapshots == 0U && freed_snapshots == snapshots_before_close + 1U);
     assert(handle_state(callback_handle, &state) == PHIPFS_STATUS_STALE_HANDLE);
     assert(!volume_has_open_handles(PHIPFS_VOLUME_DATA));
+    struct phipfs_stat path_metadata;
+    assert(ext4_backend_stat_path(PHIPFS_VOLUME_DATA, "file", &path_metadata) == PHIPFS_STATUS_OK);
+    assert(path_metadata.mode == 0100640U && path_metadata.uid == 70000U && path_metadata.gid == 90000U);
+    assert(path_metadata.links == 3U && path_metadata.atime_seconds == -1 && path_metadata.atime_nanos == 123U);
+    assert(path_metadata.mtime_seconds == INT64_C(2147483648) && path_metadata.mtime_nanos == 999999999U);
+    assert(path_metadata.ctime_seconds == INT32_MIN && path_metadata.ctime_nanos == 0U);
+    lstat_symbolic = true;
+    assert(ext4_backend_lstat_path(PHIPFS_VOLUME_DATA, "file", &path_metadata) == PHIPFS_STATUS_OK);
+    assert(path_metadata.object_id == 84U && path_metadata.mode == 0120777U && path_metadata.size == 10U);
+    stat_refusals = 1U;
+    assert(ext4_backend_lstat_path(PHIPFS_VOLUME_DATA, "file", &path_metadata) == PHIPFS_STATUS_IO);
+    assert(path_metadata.object_id == 0U && path_metadata.mode == 0U && path_metadata.atime_seconds == 0);
+    lstat_symbolic = false;
+    assert(opens == closes);
     for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
         permanent_status = attempt == 0U ? PHIPIA_EXT4_STATUS_IO : PHIPIA_EXT4_STATUS_OK;
         assert(ext4_backend_mkdir_mode(PHIPFS_VOLUME_DATA, "file", 01720U) ==

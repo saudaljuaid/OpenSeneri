@@ -43,7 +43,16 @@ struct phipia_ext4_metadata {
     uint16_t links;
     uint8_t file_type;
     uint8_t reserved[7];
+    int64_t atime_seconds;
+    int64_t mtime_seconds;
+    int64_t ctime_seconds;
+    uint32_t atime_nanos;
+    uint32_t mtime_nanos;
+    uint32_t ctime_nanos;
 };
+
+_Static_assert(sizeof(struct phipia_ext4_metadata) == 80U, "ext4 metadata Rust ABI");
+_Static_assert(offsetof(struct phipia_ext4_metadata, atime_seconds) == 40U, "ext4 timestamp Rust ABI");
 
 struct phipia_ext4_directory_entry {
     struct phipia_ext4_metadata metadata;
@@ -161,6 +170,7 @@ enum phipfs_status ext4_backend_append(phipfs_handle handle,
     const uint8_t *source, size_t source_bytes, size_t *written_bytes);
 enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
     enum phipfs_seek_origin origin, uint64_t *position);
+enum phipfs_status ext4_backend_lstat_path(enum phipfs_volume volume, const char *path, struct phipfs_stat *stat);
 enum phipfs_status ext4_backend_stat_path(enum phipfs_volume volume,
     const char *path, struct phipfs_stat *stat);
 enum phipfs_status ext4_backend_open_with_stat(enum phipfs_volume volume,

@@ -15,6 +15,8 @@ static unsigned calls;
 static unsigned open_calls;
 static unsigned close_calls;
 static int invalid_request;
+static uint32_t expected_metadata_flags;
+static struct phipia_path_metadata returned_metadata;
 
 long phipia_syscall1(uint64_t number, uint64_t address)
 {
@@ -45,6 +47,16 @@ long phipia_syscall2(uint64_t number, uint64_t address, uint64_t value)
         request->length != 6U || memcmp((const void *)(uintptr_t)request->address, "nested", 6U) != 0) {
         invalid_request = 1;
     }
+    return syscall_result;
+}
+
+long phipia_syscall3(uint64_t number, uint64_t address, uint64_t output, uint64_t flags)
+{
+    const struct phipia_path *request = (const struct phipia_path *)(uintptr_t)address;
+    if (number != PHIPIA_SYS_PATH_METADATA || flags != expected_metadata_flags ||
+        request->volume != PHIPIA_VOLUME_DATA || request->length != 6U ||
+        memcmp((const void *)(uintptr_t)request->address, "nested", 6U) != 0) invalid_request = 1;
+    if (syscall_result >= 0) memcpy((void *)(uintptr_t)output, &returned_metadata, sizeof(returned_metadata));
     return syscall_result;
 }
 
@@ -80,5 +92,38 @@ int main(void)
     if (phipia_file_open_mode(PHIPIA_VOLUME_DATA, "nested", PHIPIA_OPEN_READ, 0700U) != -PHIPIA_EINVAL ||
         phipia_file_open_mode(PHIPIA_VOLUME_DATA, "nested", PHIPIA_OPEN_CREATE, 010000U) != -PHIPIA_EINVAL) return 11;
     if (open_calls != 10U || close_calls != 6U || invalid_request) return 12;
+    returned_metadata = (struct phipia_path_metadata){
+        .size = sizeof(returned_metadata), .version = PHIPIA_ABI_VERSION,
+        .byte_length = UINT64_C(67108864), .object_id = 1234U,
+        .mode = 0100640U, .uid = 70000U, .gid = 90000U, .links = 3U,
+        .atime_seconds = -1, .atime_nanos = 123U,
+        .mtime_seconds = INT64_C(2147483648), .mtime_nanos = 999999999U,
+        .ctime_seconds = INT64_C(-2147483648), .ctime_nanos = 0U,
+        .flags = PHIPIA_METADATA_UNIX_FIELDS,
+    };
+    struct stat metadata;
+    syscall_result = 0;
+    if (stat("Data:/nested", &metadata) != 0 || metadata.st_mode != 0100640U ||
+        metadata.st_uid != 70000U || metadata.st_gid != 90000U || metadata.st_nlink != 3U ||
+        metadata.st_ino != 1234U || metadata.st_size != UINT64_C(67108864) ||
+        metadata.st_atim.tv_sec != -1 || metadata.st_atim.tv_nsec != 123L ||
+        metadata.st_mtim.tv_sec != INT64_C(2147483648) || metadata.st_mtim.tv_nsec != 999999999L ||
+        metadata.st_ctime != INT64_C(-2147483648) || !S_ISREG(metadata.st_mode)) return 13;
+    expected_metadata_flags = PHIPIA_METADATA_NOFOLLOW;
+    returned_metadata.mode = 0120777U;
+    if (lstat("nested", &metadata) != 0 || !S_ISLNK(metadata.st_mode) ||
+        S_ISREG(metadata.st_mode) || S_ISDIR(metadata.st_mode)) return 14;
+    returned_metadata.mode = 0042751U;
+    if (lstat("nested", &metadata) != 0 || !S_ISDIR(metadata.st_mode) || S_ISREG(metadata.st_mode)) return 15;
+    const struct stat saved = metadata;
+    syscall_result = -PHIPIA_ENOENT;
+    if (lstat("nested", &metadata) != -1 || errno != ENOENT || memcmp(&saved, &metadata, sizeof(saved)) != 0) return 16;
+    syscall_result = 0;
+    returned_metadata.atime_nanos = 1000000000U;
+    if (lstat("nested", &metadata) != -1 || errno != EIO || memcmp(&saved, &metadata, sizeof(saved)) != 0) return 17;
+    returned_metadata.atime_nanos = 0U;
+    returned_metadata.size = 24U;
+    if (lstat("nested", &metadata) != -1 || errno != EIO) return 18;
+    if (stat("nested", NULL) != -1 || errno != EFAULT || invalid_request) return 19;
     return 0;
 }

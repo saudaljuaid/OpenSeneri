@@ -699,6 +699,22 @@ impl Inode {
         Ok(())
     }
 
+    /// Return signed Unix access, modification and status-change timestamps.
+    /// Unlike the legacy Duration getters, this preserves dates before 1970.
+    pub fn unix_times(&self) -> Result<[(i64, u32); 3], Ext4Error> {
+        let mut result = [(0, 0); 3];
+        for (index, (base_offset, extra_offset)) in [(0x8, 0x8c), (0x10, 0x88), (0xc, 0x84)].into_iter().enumerate() {
+            let base = read_u32le(&self.inode_data, base_offset);
+            let extra = if usize::from(self.entry_size().get()) >= extra_offset + 4 {
+                read_u32le(&self.inode_data, extra_offset)
+            } else { 0 };
+            let nanos = extra >> 2;
+            if nanos >= 1_000_000_000 { return Err(Ext4Error::InvalidTimestamp); }
+            result[index] = (i64::from(i32::from_le_bytes(base.to_le_bytes())) + (i64::from(extra & 3) << 32), nanos);
+        }
+        Ok(result)
+    }
+
     /// Get the inode's access time.
     #[must_use]
     pub fn atime(&self) -> Duration {

@@ -78,6 +78,12 @@ struct phipfs_stat {
     uint8_t attributes;
     bool directory;
     bool read_only;
+    int64_t atime_seconds;
+    int64_t mtime_seconds;
+    int64_t ctime_seconds;
+    uint32_t atime_nanos;
+    uint32_t mtime_nanos;
+    uint32_t ctime_nanos;
 };
 
 struct phipfs_times {
@@ -146,6 +152,7 @@ enum phipfs_status phipfs_seek(
     enum phipfs_seek_origin origin,
     uint64_t *position
 );
+enum phipfs_status phipfs_lstat_path(enum phipfs_volume volume, const char *path, struct phipfs_stat *stat);
 enum phipfs_status phipfs_stat_path(
     enum phipfs_volume volume,
     const char *path,

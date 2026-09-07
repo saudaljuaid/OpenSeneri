@@ -283,6 +283,13 @@ allocation refusal, storage retries, recovery and malformed admission. Runtime
 verification of this addition is pending; general ACL access enforcement is
 outside the claimed profile.
 
+`Inode::unix_times` exposes signed access/modify/change seconds and nanoseconds
+without the legacy Duration getters' pre-epoch clamp. Only declared extra fields
+contribute epoch bits and nanoseconds; invalid declared nanoseconds are rejected
+during mount admission before any recovery write. The C/Rust metadata boundary
+and additive SDK stat/lstat ABI carry these values unchanged. Linux runtime
+verification of this extension is pending.
+
 `create_child_inode` applies Linux v6.12 `inode_init_owner` setgid inheritance
 before allocating the inode, then applies the default ACL. The coordinator's
 file/directory creation and ext4plus symlink creation use this path; raw

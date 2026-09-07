@@ -703,6 +703,10 @@ fn directory_times_follow_namespace_changes_and_explicit_times_preserve_nanoseco
     assert_eq!(value.atime, std::time::Duration::new(0x8000_0000, 123_456_789));
     assert_eq!(value.mtime, std::time::Duration::new(0xffff_ffff, 999_999_999));
     assert_eq!(value.ctime.as_secs(), now + 2);
+    let native = ext4::stat(&mounted, dir).unwrap();
+    assert_eq!((native.atime_seconds, native.atime_nanos), (0x8000_0000, 123_456_789));
+    assert_eq!((native.mtime_seconds, native.mtime_nanos), (0xffff_ffff, 999_999_999));
+    assert_eq!((native.ctime_seconds, native.ctime_nanos), (now as i64 + 2, 0));
     DEVICE.with_borrow_mut(|device| device.events.clear());
     assert_eq!(ext4::set_times(&mut mounted, dir, 1, 1_000_000_000, 2, 0), Err(Status::Range));
     DEVICE.with_borrow(|device| assert!(device.events.is_empty()));
@@ -854,6 +858,69 @@ fn linux_acl_entries_survive_user_xattr_mutation_and_acl_aware_chmod() {
             assert!(ext4::mount(1, hostile.len() as u64).is_err());
             DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
         }
+    }
+}
+
+#[test]
+fn stat_lstat_preserve_signed_times_owner_mode_and_link_identity() {
+    let Some(path) = fixture() else { return };
+    let mut bytes = std::fs::read(&path).unwrap();
+    let raw = ext4plus::Ext4::load(Box::new(bytes.clone())).unwrap();
+    let node = raw.path_to_inode(ext4plus::path::Path::try_from("/system/README.TXT").unwrap(),
+        ext4plus::FollowSymlinks::All).unwrap();
+    let number = node.index.get();
+    let ipg = u32::from_le_bytes(bytes[1064..1068].try_into().unwrap());
+    let descriptor = 4096 + ((number - 1) / ipg) as usize * 64;
+    let table = u32::from_le_bytes(bytes[descriptor + 8..descriptor + 12].try_into().unwrap()) as usize * 4096;
+    let start = table + ((number - 1) % ipg) as usize * 256;
+    for (offset, value) in [(8, u32::MAX), (0x10, 0x8000_0000), (0xc, 0x8000_0000),
+        (0x8c, 123 << 2), (0x88, (999_999_999 << 2) | 1), (0x84, 0)] {
+        bytes[start + offset..start + offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let image = path.with_extension("coordinator-signed-stat.img");
+    write_sparse_fixture(&image, &bytes).unwrap();
+    debugfs(&image, "set_inode_field /system/README.TXT uid 70000"); // also refresh inode CRC
+    debugfs(&image, "set_inode_field /system/README.TXT gid 90000");
+    debugfs(&image, &format!("set_inode_field /system/README.TXT mode {}", 0o100640));
+    let baseline = std::fs::read(&image).unwrap();
+    let mut mounted = mount_bytes(baseline.clone());
+    let stat = ext4::stat(&mounted, b"system/README.TXT").unwrap();
+    assert_eq!((stat.uid, stat.gid, stat.mode), (70000, 90000, 0o100640));
+    assert_eq!((stat.atime_seconds, stat.atime_nanos), (-1, 123));
+    assert_eq!((stat.mtime_seconds, stat.mtime_nanos), (0x8000_0000, 999_999_999));
+    assert_eq!((stat.ctime_seconds, stat.ctime_nanos), (i64::from(i32::MIN), 0));
+    fsck(&path, "coordinator-signed-stat-import");
+    ext4::link_file_probe(&mut mounted, b"system/README.TXT", b"system/stat-link").unwrap();
+    ext4::symlink_probe(&mut mounted, b"system/stat-sym", b"README.TXT").unwrap();
+    ext4::symlink_probe(&mut mounted, b"system/stat-dangling", b"absent").unwrap();
+    let linked = ext4::stat(&mounted, b"system/README.TXT").unwrap();
+    assert_eq!(ext4::stat(&mounted, b"system/stat-link").unwrap(), linked);
+    assert_eq!(ext4::stat(&mounted, b"system/stat-sym").unwrap(), linked);
+    assert_eq!(linked.links, stat.links + 1);
+    assert_eq!((linked.atime_seconds, linked.atime_nanos), (-1, 123));
+    assert_eq!((linked.mtime_seconds, linked.mtime_nanos), (stat.mtime_seconds, stat.mtime_nanos));
+    let symbolic = ext4::lstat(&mounted, b"system/stat-sym").unwrap();
+    assert_ne!(symbolic.inode, linked.inode);
+    assert_eq!((symbolic.mode, symbolic.size), (0o120777, 10));
+    assert_eq!(ext4::stat(&mounted, b"system/stat-dangling"), Err(Status::NotFound));
+    assert_eq!(ext4::lstat(&mounted, b"system/stat-dangling").unwrap().mode, 0o120777);
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-signed-stat-links");
+    drop(mounted);
+    for dirty in [false, true] {
+        let mut hostile = baseline.clone();
+        hostile[start + 0x8c..start + 0x90].copy_from_slice(&(1_000_000_000u32 << 2).to_le_bytes());
+        write_sparse_fixture(&image, &hostile).unwrap();
+        debugfs(&image, "set_inode_field /system/README.TXT uid 70000");
+        if dirty { debugfs(&image, "feature needs_recovery"); }
+        let hostile = std::fs::read(&image).unwrap();
+        let raw = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
+        let node = ext4plus::inode::Inode::read(&raw, node.index).unwrap(); // CRC valid
+        assert!(node.unix_times().is_err());
+        DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+        assert!(ext4::mount(1, hostile.len() as u64).is_err());
+        DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
     }
 }
 

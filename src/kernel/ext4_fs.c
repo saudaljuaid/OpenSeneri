@@ -142,11 +142,11 @@ extern int32_t phipia_ext4_write_inode(uintptr_t mounted, uint64_t inode, uint64
 extern int32_t phipia_ext4_append_inode(uintptr_t mounted, uint64_t inode,
     const uint8_t *source, size_t length, uint64_t maximum_size, uint64_t *start, size_t *count);
 
-_Static_assert(sizeof(struct phipia_ext4_metadata) == 40U,
+_Static_assert(sizeof(struct phipia_ext4_metadata) == 80U,
     "ext4 metadata C/Rust ABI drift");
 _Static_assert(offsetof(struct phipia_ext4_metadata, file_type) == 28U,
     "ext4 metadata C/Rust ABI offset drift");
-_Static_assert(sizeof(struct phipia_ext4_directory_entry) == 304U,
+_Static_assert(sizeof(struct phipia_ext4_directory_entry) == 344U,
     "ext4 directory C/Rust ABI drift");
 _Static_assert(sizeof(struct phipia_ext4_identity) == 48U,
     "ext4 identity C/Rust ABI drift");
@@ -707,6 +707,12 @@ static void fill_stat(
     destination->gid = source->gid;
     destination->mode = source->mode;
     destination->links = source->links;
+    destination->atime_seconds = source->atime_seconds;
+    destination->mtime_seconds = source->mtime_seconds;
+    destination->ctime_seconds = source->ctime_seconds;
+    destination->atime_nanos = source->atime_nanos;
+    destination->mtime_nanos = source->mtime_nanos;
+    destination->ctime_nanos = source->ctime_nanos;
     destination->directory = source->file_type == PHIPIA_EXT4_FILE_DIRECTORY;
     destination->read_only = false;
 }
@@ -1670,6 +1676,17 @@ enum phipfs_status ext4_backend_stat_path(enum phipfs_volume volume,
     if (status == PHIPFS_STATUS_OK) {
         fill_stat(&metadata, stat);
     }
+    return status;
+}
+
+enum phipfs_status ext4_backend_lstat_path(enum phipfs_volume volume,
+    const char *path, struct phipfs_stat *stat)
+{
+    struct phipia_ext4_metadata metadata;
+    if (stat == NULL || !valid_volume(volume)) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    zero_bytes(stat, sizeof(*stat));
+    const enum phipfs_status status = checked_metadata(&ext4_mounts[volume], path, &metadata, false);
+    if (status == PHIPFS_STATUS_OK) fill_stat(&metadata, stat);
     return status;
 }
 

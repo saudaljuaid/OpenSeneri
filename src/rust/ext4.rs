@@ -60,6 +60,12 @@ pub(crate) struct Metadata {
     pub(crate) links: u16,
     pub(crate) file_type: u8,
     pub(crate) reserved: [u8; 7],
+    pub(crate) atime_seconds: i64,
+    pub(crate) mtime_seconds: i64,
+    pub(crate) ctime_seconds: i64,
+    pub(crate) atime_nanos: u32,
+    pub(crate) mtime_nanos: u32,
+    pub(crate) ctime_nanos: u32,
 }
 
 /// One ext4 directory entry returned without borrowing Rust storage.
@@ -498,6 +504,8 @@ fn classify(file_type: FileType) -> Result<u8, Status> {
 }
 
 fn inode_metadata(inode: &ext4plus::inode::Inode) -> Result<Metadata, Status> {
+    let [(atime_seconds, atime_nanos), (mtime_seconds, mtime_nanos), (ctime_seconds, ctime_nanos)] =
+        inode.unix_times().map_err(map_error)?;
     Ok(Metadata {
         inode: u64::from(inode.index.get()),
         size: inode.size_in_bytes(),
@@ -507,6 +515,7 @@ fn inode_metadata(inode: &ext4plus::inode::Inode) -> Result<Metadata, Status> {
         links: inode.links_count(),
         file_type: classify(inode.file_type())?,
         reserved: [0; 7],
+        atime_seconds, mtime_seconds, ctime_seconds, atime_nanos, mtime_nanos, ctime_nanos,
     })
 }
 
@@ -625,6 +634,7 @@ fn validate_inode_storage(filesystem: &Ext4, path: &[u8],
     let inode = filesystem.path_to_inode(path, FollowSymlinks::ExcludeFinalComponent)
         .map_err(map_error)?;
     blocks.validate_inode_extents(&inode).map_err(map_error)?;
+    inode.unix_times().map_err(map_error)?;
     let xattrs = inode.list_xattrs(filesystem).map_err(map_error)?;
     for name in xattrs {
         let _value = inode

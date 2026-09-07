@@ -82,6 +82,20 @@ static enum phipfs_status mutation(enum phipfs_volume volume, const char *path)
     return mutation_result;
 }
 
+static enum phipfs_status nofollow_stat(enum phipfs_volume volume, const char *path,
+    struct phipfs_stat *result)
+{
+    const enum phipfs_status status = mutation(volume, path);
+    if (status == PHIPFS_STATUS_OK) {
+        result->object_id = 84U;
+        result->mode = 0120777U;
+        result->uid = 70000U;
+        result->atime_seconds = -1;
+        result->atime_nanos = 123U;
+    }
+    return status;
+}
+
 static enum phipfs_status pair(enum phipfs_volume volume, const char *from, const char *to)
 {
     assert(strcmp(to, "other/target") == 0);
@@ -233,6 +247,16 @@ int main(void)
     const unsigned before_invalid_create = calls;
     assert(phipfs_create_mode(PHIPFS_VOLUME_DATA, expected_path, 010000U) == PHIPFS_STATUS_INVALID_ARGUMENT);
     assert(calls == before_invalid_create);
+    backend.lstat_path = nofollow_stat;
+    expected_path = "parent/link/../file";
+    const unsigned before_lstat = stats;
+    assert(phipfs_lstat_path(PHIPFS_VOLUME_DATA, expected_path, &metadata) == PHIPFS_STATUS_OK);
+    assert(metadata.object_id == 84U && metadata.mode == 0120777U && metadata.uid == 70000U);
+    assert(metadata.atime_seconds == -1 && metadata.atime_nanos == 123U);
+    mutation_result = PHIPFS_STATUS_NOT_FOUND;
+    assert(phipfs_lstat_path(PHIPFS_VOLUME_DATA, expected_path, &metadata) == PHIPFS_STATUS_NOT_FOUND);
+    assert(metadata.object_id == 0U && metadata.mode == 0U && metadata.atime_seconds == 0);
+    assert(stats == before_lstat && mounts[PHIPFS_VOLUME_DATA].references == 0U);
     puts("VFS journal mutation retries, backend errors, path bounds and vnode census: PASS");
     return 0;
 }
