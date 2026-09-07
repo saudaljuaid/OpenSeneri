@@ -32,7 +32,7 @@ use crate::iters::file_blocks::FileBlocks;
 use crate::superblock::Superblock;
 use crate::util::{read_u32be, read_u32le, write_u32le};
 use crate::uuid::Uuid;
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::error::Error;
@@ -1092,6 +1092,22 @@ impl JournalTransaction {
             return Err(JournalTransactionError::DuplicateBlock);
         }
         self.revoked_blocks.push(block_index);
+        Ok(())
+    }
+
+    /// Append an already collected batch without quadratic duplicate scans.
+    /// Refusal leaves the transaction unchanged; insertion order is preserved
+    /// so journal bytes match individual successful stage_revocation calls.
+    pub(super) fn stage_revocations(&mut self, blocks: &[u64]) -> Result<(), JournalTransactionError> {
+        if blocks.len() > JOURNAL_TRANSACTION_MAX_REVOKED_BLOCKS - self.revoked_blocks.len() {
+            return Err(JournalTransactionError::TooManyBlocks);
+        }
+        let mut seen: BTreeSet<u64> = self.revoked_blocks.iter().copied().collect();
+        for block in blocks {
+            if *block > self.maximum_block { return Err(JournalTransactionError::BlockOutOfRange); }
+            if !seen.insert(*block) { return Err(JournalTransactionError::DuplicateBlock); }
+        }
+        self.revoked_blocks.extend_from_slice(blocks);
         Ok(())
     }
 
@@ -2439,12 +2455,13 @@ pub fn replay_committed_transaction(
             return Err(JournalTransactionError::TooManyBlocks);
         }
     }
-    for (index, revoked) in revoked_blocks.iter().enumerate() {
-        if *revoked > maximum_block || revoked_blocks[..index].contains(revoked) {
+    let mut revoked_set = BTreeSet::new();
+    for revoked in &revoked_blocks {
+        if *revoked > maximum_block || !revoked_set.insert(*revoked) {
             return Err(JournalTransactionError::CorruptRevocation);
         }
     }
-    replay.retain(|image| !revoked_blocks.contains(&image.block_index));
+    replay.retain(|image| !revoked_set.contains(&image.block_index));
 
     let commit = journal_blocks[journal_blocks.len() - 1];
     let commit_header =
@@ -2495,6 +2512,34 @@ mod tests {
         transaction.stage_metadata(200, &filled(0x22)).unwrap();
         transaction.stage_metadata(201, &filled(0x33)).unwrap();
         transaction
+    }
+
+    #[test]
+    fn batched_revocations_preserve_wire_order_and_roll_back_invalid_batches() {
+        let mut individual = transaction();
+        let mut batched = transaction();
+        for block in [6, 9, 4, 8] { individual.stage_revocation(block).unwrap(); }
+        batched.stage_revocation(6).unwrap();
+        batched.stage_revocations(&[9, 4, 8]).unwrap();
+        assert_eq!(batched.revoked_blocks(), &[6, 9, 4, 8]);
+        let slots = [3000, 3001, 3002, 3003, 3004];
+        let expected = individual.commit_plan(&slots).unwrap();
+        assert_eq!(batched.commit_plan(&slots).unwrap(), expected);
+        for (blocks, error) in [
+            (vec![7, 4], JournalTransactionError::DuplicateBlock),
+            (vec![7, 7], JournalTransactionError::DuplicateBlock),
+            (vec![7, MAXIMUM_BLOCK + 1], JournalTransactionError::BlockOutOfRange),
+            (vec![0; JOURNAL_TRANSACTION_MAX_REVOKED_BLOCKS], JournalTransactionError::TooManyBlocks),
+        ] {
+            assert_eq!(batched.stage_revocations(&blocks), Err(error));
+            assert_eq!(batched.commit_plan(&slots).unwrap(), expected);
+        }
+        let mut bounded = JournalTransaction::new(17, UUID, 16_384).unwrap();
+        let blocks: Vec<u64> = (0..JOURNAL_TRANSACTION_MAX_REVOKED_BLOCKS as u64).collect();
+        bounded.stage_revocations(&blocks).unwrap();
+        assert_eq!(bounded.revoked_blocks(), blocks.as_slice());
+        assert_eq!(bounded.stage_revocations(&[10_000]), Err(JournalTransactionError::TooManyBlocks));
+        assert_eq!(bounded.revoked_blocks(), blocks.as_slice());
     }
 
     fn mapped_ring(next_sequence: u32, slots: &[u64]) -> JournalRing {

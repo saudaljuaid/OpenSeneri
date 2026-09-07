@@ -236,11 +236,9 @@ impl JournalMutationStage {
             }
         }
         let mut output = transaction.clone();
-        for block in state.revoked_blocks.iter() {
-            if !output.revokes_block(*block) {
-                output.stage_revocation(*block)?;
-            }
-        }
+        let revoked: Vec<u64> = state.revoked_blocks.iter().copied()
+            .filter(|block| !transaction.revokes_block(*block)).collect();
+        output.stage_revocations(&revoked)?;
         for (block, bytes) in state.blocks.iter() {
             if output.revokes_block(*block) {
                 return Err(JournalMutationPlanError::StagedBlockRevoked);
