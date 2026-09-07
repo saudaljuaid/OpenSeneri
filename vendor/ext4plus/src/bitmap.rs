@@ -216,7 +216,7 @@ impl<'a> BlockAllocationSnapshot<'a> {
             let start = u64::from(sb.first_data_block()) + u64::from(group) * u64::from(sb.blocks_per_group().get());
             let bits = fs.blocks_in_group(group)? as usize;
             let end = start + bits as u64;
-            let mut expected = vec![0xff; sb.block_size().to_usize()];
+            let mut expected = vec![0xffu8; sb.block_size().to_usize()];
             expected.get_mut(..bits / 8).ok_or(CorruptKind::BlockGroupDescriptor(group))?.fill(0);
             if bits % 8 != 0 { expected[bits / 8] = 0xff << (bits % 8); }
             // Include a range that began in the previous group, then ranges
