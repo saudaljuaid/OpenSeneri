@@ -51,6 +51,7 @@ struct ext4_handle_state {
     char path[PHIPFS_MAX_PATH];
     bool directory;
     bool active;
+    bool closing;
 };
 
 static struct ext4_mount_state ext4_mounts[PHIPFS_VOLUME_COUNT];
@@ -399,13 +400,38 @@ static enum phipfs_status map_status(int32_t status)
 static enum phipfs_status end_operation(struct ext4_mount_state *mount,
     struct phipia_ext4_mount_diagnostic *diagnostic);
 
-static enum phipfs_status begin_operation(
-    struct ext4_mount_state *mount,
-    bool writable
-)
+static void release_operation(struct ext4_mount_state *mount)
 {
-    enum nvme_status status;
+    /* A close that reenters an operation retires the public handle at once,
+     * but its backing state must survive until the operation stops using it. */
+    for (;;) {
+        for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
+            struct ext4_handle_state *state = &ext4_handles[index];
 
+            if (state->active && state->closing && valid_volume(state->volume) &&
+                &ext4_mounts[state->volume] == mount) {
+                if (state->directory_snapshot != 0U) phipia_ext4_snapshot_free(state->directory_snapshot);
+                zero_bytes(state, sizeof(*state));
+            }
+        }
+        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
+        // A close can arrive after its slot was scanned but before the guard
+        // was released. Either reclaim it now or leave it to the next owner.
+        bool pending_close = false;
+        for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
+            const struct ext4_handle_state *state = &ext4_handles[index];
+            if (state->active && state->closing && valid_volume(state->volume) &&
+                &ext4_mounts[state->volume] == mount) pending_close = true;
+        }
+        if (!pending_close) return;
+        bool idle = false;
+        if (!__atomic_compare_exchange_n(&mount->operation_active, &idle,
+                true, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
+    }
+}
+
+static enum phipfs_status reserve_operation(struct ext4_mount_state *mount)
+{
     if (mount == NULL) return PHIPFS_STATUS_NOT_MOUNTED;
     bool expected_idle = false;
     if (!__atomic_compare_exchange_n(&mount->operation_active, &expected_idle,
@@ -413,24 +439,33 @@ static enum phipfs_status begin_operation(
         return PHIPFS_STATUS_BUSY;
     }
     if (!mount->active && !mount->mounting) {
-        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
+        release_operation(mount);
         return PHIPFS_STATUS_NOT_MOUNTED;
     }
     if (mount->detaching) {
-        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
+        release_operation(mount);
         return PHIPFS_STATUS_BUSY;
     }
     if (mount->active && (!mount->healthy || mount->close_failed)) {
-        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
+        release_operation(mount);
         return PHIPFS_STATUS_IO;
     }
+    return PHIPFS_STATUS_OK;
+}
+
+static enum phipfs_status begin_operation(struct ext4_mount_state *mount, bool writable)
+{
+    const enum phipfs_status reserved = reserve_operation(mount);
+    enum nvme_status status;
+
+    if (reserved != PHIPFS_STATUS_OK) return reserved;
     /* Reserve the coordinator before opening storage: controller setup can
      * invoke callbacks, and must not admit a second user of this session. */
     status = nvme_volume_open(&mount->session, mount->controller_index,
         writable);
     if (status != NVME_STATUS_OK) {
         if (mount->session.active) mount->close_failed = true;
-        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
+        release_operation(mount);
         return PHIPFS_STATUS_IO;
     }
     if (mount->session.logical_block_bytes == 0U ||
@@ -480,13 +515,13 @@ static enum phipfs_status end_operation(
         // Freeze new operations: the filesystem mutation may already be durable,
         // so automatically repeating an append here could apply it twice.
         mount->close_failed = true;
-        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
+        release_operation(mount);
         return PHIPFS_STATUS_IO;
     }
     zero_bytes(&mount->session, sizeof(mount->session));
     mount->close_failed = false;
     ++mount->completion_count;
-    __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
+    release_operation(mount);
     return PHIPFS_STATUS_OK;
 }
 
@@ -690,7 +725,7 @@ static enum phipfs_status handle_state(
         return PHIPFS_STATUS_STALE_HANDLE;
     }
     index = (size_t)(encoded - 1U);
-    if (!ext4_handles[index].active ||
+    if (!ext4_handles[index].active || ext4_handles[index].closing ||
         ext4_handles[index].generation != encoded_generation ||
         !valid_volume(ext4_handles[index].volume) ||
         !ext4_mounts[ext4_handles[index].volume].active ||
@@ -804,16 +839,16 @@ static enum phipfs_status retry_session_close(struct ext4_mount_state *mount)
     if (!__atomic_compare_exchange_n(&mount->operation_active, &expected_idle,
             true, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return PHIPFS_STATUS_BUSY;
     if (mount->detaching) {
-        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
+        release_operation(mount);
         return PHIPFS_STATUS_BUSY;
     }
     if (mount->session.active && nvme_volume_close(&mount->session) != NVME_STATUS_OK) {
-        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
+        release_operation(mount);
         return PHIPFS_STATUS_IO;
     }
     zero_bytes(&mount->session, sizeof(mount->session));
     mount->close_failed = false;
-    __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
+    release_operation(mount);
     return PHIPFS_STATUS_OK;
 }
 
@@ -983,6 +1018,13 @@ enum phipfs_status ext4_backend_sync(enum phipfs_volume volume)
     if (!mount->active) {
         return PHIPFS_STATUS_NOT_MOUNTED;
     }
+    if (mount->close_failed) {
+        // Explicit sync can finish retained NVMe teardown before resuming a
+        // journal plan. Ordinary reads/writes remain frozen, so an append is
+        // never implicitly submitted a second time by a new user operation.
+        status = retry_session_close(mount);
+        if (status != PHIPFS_STATUS_OK) return status;
+    }
     status = begin_operation(mount, true);
     if (status != PHIPFS_STATUS_OK) {
         return status;
@@ -1117,9 +1159,18 @@ enum phipfs_status ext4_backend_close(phipfs_handle handle)
 
     if (status == PHIPFS_STATUS_OK) {
         const enum phipfs_volume volume = state->volume;
-        const bool cleanup = ext4_mounts[volume].orphan_cleanup_pending;
-        if (state->directory_snapshot != 0U) phipia_ext4_snapshot_free(state->directory_snapshot);
-        zero_bytes(state, sizeof(*state));
+        struct ext4_mount_state *mount = &ext4_mounts[volume];
+        const bool cleanup = mount->orphan_cleanup_pending;
+        bool idle = false;
+
+        state->closing = true;
+        if (!__atomic_compare_exchange_n(&mount->operation_active, &idle,
+                true, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            // The active operation owns final release; sync/unmount can
+            // subsequently finish any orphan cleanup it leaves pending.
+            return PHIPFS_STATUS_OK;
+        }
+        release_operation(mount);
         /* Close releases the descriptor; it is not a durability barrier.
          * Writes have already reported their commit result. Try reclaiming
          * unreferenced orphans now; a refused plan remains mount-owned and
@@ -1129,9 +1180,9 @@ enum phipfs_status ext4_backend_close(phipfs_handle handle)
     return status;
 }
 
-enum phipfs_status ext4_backend_pread(phipfs_handle handle,
+static enum phipfs_status read_handle(phipfs_handle handle,
     uint8_t *destination, size_t capacity, uint64_t offset,
-    size_t *read_bytes)
+    size_t *read_bytes, bool advance)
 {
     struct ext4_handle_state *state;
     struct ext4_mount_state *mount;
@@ -1162,30 +1213,30 @@ enum phipfs_status ext4_backend_pread(phipfs_handle handle,
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
+    if (advance) offset = state->offset;
     status = map_status(phipia_ext4_pread_inode(mount->rust_mount, state->inode, offset,
         destination, capacity, read_bytes));
+    if (status == PHIPFS_STATUS_OK) {
+        if (*read_bytes > capacity || *read_bytes > UINT64_MAX - offset) {
+            status = PHIPFS_STATUS_CORRUPT;
+        } else if (advance) {
+            state->offset = offset + *read_bytes;
+        }
+    }
     close_status = end_operation(mount, NULL);
     return status != PHIPFS_STATUS_OK ? status : close_status;
+}
+
+enum phipfs_status ext4_backend_pread(phipfs_handle handle,
+    uint8_t *destination, size_t capacity, uint64_t offset, size_t *read_bytes)
+{
+    return read_handle(handle, destination, capacity, offset, read_bytes, false);
 }
 
 enum phipfs_status ext4_backend_read(phipfs_handle handle,
     uint8_t *destination, size_t capacity, size_t *read_bytes)
 {
-    struct ext4_handle_state *state;
-    enum phipfs_status status = handle_state(handle, &state);
-
-    if (status != PHIPFS_STATUS_OK) {
-        return status;
-    }
-    status = ext4_backend_pread(handle, destination, capacity, state->offset,
-        read_bytes);
-    if (status == PHIPFS_STATUS_OK && read_bytes != NULL) {
-        if (*read_bytes > UINT64_MAX - state->offset) {
-            return PHIPFS_STATUS_RANGE;
-        }
-        state->offset += *read_bytes;
-    }
-    return status;
+    return read_handle(handle, destination, capacity, 0U, read_bytes, true);
 }
 
 enum phipfs_status ext4_backend_transaction_probe(enum phipfs_volume volume,
@@ -1501,6 +1552,7 @@ enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
 {
     struct ext4_handle_state *state;
     struct ext4_mount_state *mount = NULL;
+    bool storage_lease = false;
     uint64_t base;
     uint64_t target;
     enum phipfs_status status;
@@ -1520,6 +1572,7 @@ enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
         status = begin_operation(candidate, false);
         if (status != PHIPFS_STATUS_OK) return status;
         mount = candidate;
+        storage_lease = true;
         zero_bytes(&metadata, sizeof(metadata));
         status = map_status(phipia_ext4_stat_inode(mount->rust_mount, state->inode, &metadata));
         if (status != PHIPFS_STATUS_OK) goto done;
@@ -1528,6 +1581,11 @@ enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
             goto done;
         }
         update_open_sizes(state->volume, state->inode, metadata.size);
+    } else {
+        struct ext4_mount_state *candidate = &ext4_mounts[state->volume];
+        status = reserve_operation(candidate);
+        if (status != PHIPFS_STATUS_OK) return status;
+        mount = candidate;
     }
     base = origin == PHIPFS_SEEK_START ? 0U :
         (origin == PHIPFS_SEEK_CURRENT ? state->offset :
@@ -1554,8 +1612,10 @@ enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
     *position = target;
 done:
     if (mount != NULL) {
-        const enum phipfs_status close_status = end_operation(mount, NULL);
-        if (status == PHIPFS_STATUS_OK) status = close_status;
+        if (storage_lease) {
+            const enum phipfs_status close_status = end_operation(mount, NULL);
+            if (status == PHIPFS_STATUS_OK) status = close_status;
+        } else { release_operation(mount); }
     }
     return status;
 }
@@ -1673,10 +1733,14 @@ enum phipfs_status ext4_backend_directory_read(phipfs_handle handle,
     if (!state->directory) {
         return PHIPFS_STATUS_NOT_DIRECTORY;
     }
+    struct ext4_mount_state *mount = &ext4_mounts[state->volume];
+    status = reserve_operation(mount);
+    if (status != PHIPFS_STATUS_OK) return status;
     status = indexed_entry(state, state->offset, entry, present);
     if (status == PHIPFS_STATUS_OK && *present) {
         ++state->offset;
     }
+    release_operation(mount);
     return status;
 }
 

@@ -35,6 +35,25 @@ static unsigned capacity_queries;
 static unsigned unmount_refusals;
 static unsigned live_mounts = 1U;
 static uint32_t logical_block_bytes = 4096U;
+static phipfs_handle callback_handle;
+static unsigned close_callback_kind;
+
+static void close_from_callback(unsigned kind)
+{
+    if (close_callback_kind != kind) return;
+    close_callback_kind = 0U;
+    uint64_t position = 99U;
+    struct ext4_handle_state *held;
+    const size_t index = (size_t)((callback_handle & 0xffU) - 1U);
+
+    assert(ext4_mounts[PHIPFS_VOLUME_DATA].operation_active);
+    assert(ext4_backend_seek(callback_handle, 0, PHIPFS_SEEK_START, &position) == PHIPFS_STATUS_BUSY);
+    assert(ext4_backend_close(callback_handle) == PHIPFS_STATUS_OK);
+    assert(handle_state(callback_handle, &held) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(ext4_backend_close(callback_handle) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(ext4_handles[index].active && ext4_handles[index].closing);
+    assert(ext4_handles[index].inode == 42U);
+}
 
 int32_t phipia_ext4_free_bytes(uintptr_t mounted, uint64_t *bytes)
 {
@@ -108,6 +127,8 @@ int32_t phipia_ext4_snapshot_entry(uintptr_t snapshot, uint64_t index,
     struct phipia_ext4_directory_entry *entry, bool *present)
 {
     assert(snapshot == 2U && live_snapshots == 1U);
+    close_from_callback(5U);
+    assert(live_snapshots == 1U);
     memset(entry, 0, sizeof(*entry));
     *present = index == 0U;
     if (*present) {
@@ -180,6 +201,7 @@ enum nvme_status nvme_volume_open(struct nvme_volume_session *session,
         reenter_on_open = false;
         assert(ext4_backend_sync(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_BUSY);
     }
+    close_from_callback(3U);
     if (open_reports_failure) return NVME_STATUS_TEARDOWN_FAILURE;
     memset(session, 0, sizeof(*session));
     session->namespace_blocks = 32768U;
@@ -195,6 +217,7 @@ enum nvme_status nvme_volume_open(struct nvme_volume_session *session,
 enum nvme_status nvme_volume_close(struct nvme_volume_session *session)
 {
     assert(session->active);
+    close_from_callback(4U);
     if (reenter_on_close) {
         reenter_on_close = false;
         assert(retry_session_close(&ext4_mounts[PHIPFS_VOLUME_DATA]) == PHIPFS_STATUS_BUSY);
@@ -284,6 +307,7 @@ int32_t phipia_ext4_pread_inode(uintptr_t mounted, uint64_t inode, uint64_t offs
     uint8_t *output, size_t capacity, size_t *count)
 {
     assert(mounted == 1U && inode == 42U && !ext4_mounts[PHIPFS_VOLUME_DATA].session.writable);
+    close_from_callback(1U);
     *count = 0U;
     if (pending) return PHIPIA_EXT4_STATUS_IO;
     *count = offset >= disk_size ? 0U : (size_t)(disk_size - offset);
@@ -296,6 +320,7 @@ int32_t phipia_ext4_write_inode(uintptr_t mounted, uint64_t inode, uint64_t offs
     const uint8_t *source, size_t length, size_t *count)
 {
     assert(mounted == 1U && inode == 42U && source != NULL && ext4_mounts[PHIPFS_VOLUME_DATA].session.writable);
+    close_from_callback(2U);
     *count = length;
     if (offset + length > disk_size) disk_size = offset + length;
     return PHIPIA_EXT4_STATUS_OK;
@@ -602,6 +627,37 @@ int main(void)
     assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);
     assert(!expect_registered_before_close && first != 0U);
     assert(ext4_backend_close(first) == PHIPFS_STATUS_OK);
+    for (unsigned kind = 1U; kind <= 4U; ++kind) {
+        assert(allocate_handle(PHIPFS_VOLUME_DATA, "file", 42U, disk_size,
+            kind == 2U ? PHIPFS_ACCESS_WRITE : PHIPFS_ACCESS_READ,
+            false, 0U, &callback_handle) == PHIPFS_STATUS_OK);
+        const size_t index = (size_t)((callback_handle & 0xffU) - 1U);
+        close_callback_kind = kind;
+        open_reports_failure = kind == 3U;
+        close_reports_failure = kind == 4U;
+        uint8_t value = 0U;
+        size_t count = 0U;
+        const enum phipfs_status result = kind == 2U ?
+            ext4_backend_write(callback_handle, (const uint8_t *)"race", 4U, &count) :
+            ext4_backend_read(callback_handle, &value, 1U, &count);
+        assert(result == (kind >= 3U ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK));
+        assert(close_callback_kind == 0U);
+        assert(handle_state(callback_handle, &state) == PHIPFS_STATUS_STALE_HANDLE);
+        assert(!ext4_handles[index].active && !ext4_handles[index].closing);
+        assert(ext4_handles[index].offset == 0U && ext4_handles[index].inode == 0U);
+        assert(!volume_has_open_handles(PHIPFS_VOLUME_DATA));
+        open_reports_failure = false;
+        close_reports_failure = false;
+        assert(ext4_backend_sync(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK);
+    }
+    assert(ext4_backend_directory_open(PHIPFS_VOLUME_DATA, "file", &callback_handle) == PHIPFS_STATUS_OK);
+    close_callback_kind = 5U;
+    const unsigned snapshots_before_close = freed_snapshots;
+    assert(ext4_backend_directory_read(callback_handle, &entry, &present) == PHIPFS_STATUS_OK);
+    assert(present && close_callback_kind == 0U);
+    assert(live_snapshots == 0U && freed_snapshots == snapshots_before_close + 1U);
+    assert(handle_state(callback_handle, &state) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(!volume_has_open_handles(PHIPFS_VOLUME_DATA));
     unmount_refusals = 1U;
     assert(ext4_backend_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_CORRUPT);
     assert(live_mounts == 1U && !ext4_mounts[PHIPFS_VOLUME_DATA].detaching);
