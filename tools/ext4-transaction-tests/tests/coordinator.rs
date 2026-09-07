@@ -1222,7 +1222,7 @@ fn checksummed_malformed_extent_trees_are_refused_before_traversal_or_mutation()
         | (u64::from(u16::from_le_bytes(bytes[inode_start + 0x3c..inode_start + 0x3e].try_into().unwrap())) << 32);
     let start = leaf as usize * 4096;
     let original = bytes.clone();
-    for case in 0..8 {
+    for case in 0..10 {
         bytes.clone_from(&original);
         match case {
             0 => {
@@ -1245,7 +1245,13 @@ fn checksummed_malformed_extent_trees_are_refused_before_traversal_or_mutation()
             6 => bytes[start + 12..start + 16].copy_from_slice(&8u32.to_le_bytes()),
             // Locally valid, non-overlapping leaf whose first key disagrees
             // with its parent's logical zero. The checksum alone admits it.
-            _ => bytes[start + 12..start + 16].copy_from_slice(&1u32.to_le_bytes()),
+            7 => bytes[start + 12..start + 16].copy_from_slice(&1u32.to_le_bytes()),
+            8 => bytes[start + 40..start + 42].fill(0), // malformed middle extent
+            _ => {
+                // A middle initialized extent outside the physical image.
+                bytes[start + 42..start + 44].fill(0);
+                bytes[start + 44..start + 48].copy_from_slice(&((original.len() / 4096) as u32).to_le_bytes());
+            }
         }
         let maximum = u16::from_le_bytes(bytes[start + 4..start + 6].try_into().unwrap()) as usize;
         let checksum_offset = start + 12 * (maximum + 1);
@@ -1260,14 +1266,19 @@ fn checksummed_malformed_extent_trees_are_refused_before_traversal_or_mutation()
         let stage = std::rc::Rc::new(ext4plus::JournalMutationStage::new(Box::new(bytes.clone()), bytes.len() as u64).unwrap());
         let filesystem = ext4plus::Ext4::load_with_writer(Box::new(stage.clone()), Some(Box::new(stage.clone()))).unwrap();
         let inode = ext4plus::inode::Inode::read(&filesystem, std::num::NonZeroU32::new(number).unwrap()).unwrap();
+        assert!(inode.validate_extent_tree(&filesystem).is_err());
         // Exercise the separate read-only iterator as well as mutable lookup and
         // complete-tree collection. No malformed directory entry is reached.
         let mut iterator = ext4plus::ReadDir::new(filesystem.clone(), &inode, ext4plus::path::PathBuf::empty()).unwrap();
         assert!(iterator.next().unwrap().is_err());
         assert!(iterator.next().is_none());
         let mut file = ext4plus::file::File::open_inode(&filesystem, inode).unwrap();
-        assert!(file.read_bytes_at(&mut [0; 1], 0).is_err());
-        assert!(file.write_bytes_at(b"bad", 0).is_err());
+        // A direct lookup need only visit the selected valid extent; the
+        // whole-tree admission and mutation collection must find case9 too.
+        if case != 9 {
+            assert!(file.read_bytes_at(&mut [0; 1], 0).is_err());
+            assert!(file.write_bytes_at(b"bad", 0).is_err());
+        }
         assert!(file.truncate(0).is_err());
         assert!(stage.is_empty());
         let size = bytes.len() as u64;
@@ -1278,6 +1289,20 @@ fn checksummed_malformed_extent_trees_are_refused_before_traversal_or_mutation()
             assert!(device.watched_reads <= 2);
             assert_eq!(device.bytes, bytes);
         });
+        if case >= 8 {
+            // Even a zero-size inode may own unwritten allocation beyond EOF.
+            // Validating only the first/last readable byte would miss this.
+            let image = path.with_extension(format!("coordinator-empty-corrupt-extents-{case}.img"));
+            std::fs::write(&image, &bytes).unwrap();
+            debugfs(&image, &format!("set_inode_field <{number}> size 0"));
+            let empty = std::fs::read(&image).unwrap();
+            DEVICE.with_borrow_mut(|device| *device = Device { bytes: empty.clone(), ..Device::default() });
+            assert!(ext4::mount(1, size).is_err());
+            DEVICE.with_borrow(|device| {
+                assert!(device.events.is_empty());
+                assert_eq!(device.bytes, empty);
+            });
+        }
     }
 }
 

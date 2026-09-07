@@ -159,6 +159,7 @@ pub(crate) struct Extents {
     to_visit: Vec<ToVisitItem>,
     checksum_base: Checksum,
     is_done: bool,
+    next_logical: u32,
 }
 
 impl Extents {
@@ -175,6 +176,7 @@ impl Extents {
             )?],
             checksum_base: inode.checksum_base().clone(),
             is_done: false,
+            next_logical: 0,
         })
     }
 
@@ -224,7 +226,17 @@ impl Extents {
             let start_block =
                 u64_from_hilo(u32::from(ee_start_hi), ee_start_low);
 
-            return Ok(Some(Extent::new(ee_block, start_block, ee_len)));
+            let extent = Extent::new(ee_block, start_block, ee_len);
+            if extent.block_within_file < self.next_logical
+                || extent.start_block.checked_add(u64::from(extent.num_blocks))
+                    .is_none_or(|end| end > self.ext4.superblock().blocks_count())
+            {
+                return Err(CorruptKind::ExtentBlock(self.inode).into());
+            }
+            self.next_logical = extent.block_within_file
+                .checked_add(u32::from(extent.num_blocks))
+                .ok_or(CorruptKind::ExtentBlock(self.inode))?;
+            return Ok(Some(extent));
         } else {
             let parent_depth = item.depth;
             let parent_first_logical = read_u32le(entry, 0);

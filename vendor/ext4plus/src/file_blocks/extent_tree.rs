@@ -294,12 +294,6 @@ impl ExtentNode {
             &header,
             inode,
         )?;
-        // The parent's search key must describe the first entry in this
-        // subtree. Linux permits an empty leaf during extent removal.
-        if header.num_entries != 0 && read_u32le(data, 12) != parent_first_logical {
-            return Err(CorruptKind::ExtentBlock(inode).into());
-        }
-
         if ext4.has_metadata_checksums() {
             let checksum_offset = header.checksum_offset();
             let checksum_end = checksum_offset
@@ -317,6 +311,11 @@ impl ExtentNode {
             if checksum.finalize() != expected_checksum {
                 return Err(CorruptKind::ExtentChecksum(inode).into());
             }
+        }
+        // The parent's search key must describe the first entry in this
+        // subtree. Linux permits an empty leaf during extent removal.
+        if header.num_entries != 0 && read_u32le(data, 12) != parent_first_logical {
+            return Err(CorruptKind::ExtentBlock(inode).into());
         }
         Ok(Self {
             block,
@@ -495,11 +494,23 @@ impl ExtentTree {
     #[maybe_async::maybe_async]
     async fn collect_extents(&self) -> Result<Vec<Extent>, Ext4Error> {
         let mut out = Vec::new();
+        let mut next_logical = 0;
         let mut stack = vec![self.node.clone()];
 
         while let Some(node) = stack.pop() {
             match node.entries {
-                ExtentNodeEntries::Leaf(extents) => out.extend(extents),
+                ExtentNodeEntries::Leaf(extents) => {
+                    for extent in extents {
+                        if extent.block_within_file < next_logical
+                            || extent.start_block.checked_add(u64::from(extent.num_blocks))
+                                .is_none_or(|end| end > self.ext4.superblock().blocks_count())
+                        {
+                            return Err(CorruptKind::ExtentBlock(self.inode).into());
+                        }
+                        next_logical = extent_end(&extent, self.inode)?;
+                        out.push(extent);
+                    }
+                }
                 ExtentNodeEntries::Internal(internal_nodes) => {
                     let mut children = Vec::with_capacity(internal_nodes.len());
                     for internal_node in internal_nodes {
@@ -2739,6 +2750,35 @@ mod tests {
         let err = tree.find_extent(0).await.unwrap_err();
         if err != CorruptKind::ExtentChecksum(tree.inode) {
             panic!("unexpected error: {err:?}");
+        }
+    }
+
+    #[maybe_async::test(
+        feature = "sync",
+        async(not(feature = "sync"), tokio::test)
+    )]
+    async fn test_extent_ranges_cannot_overlap_across_checked_leaves() {
+        let fs = load_test_disk1_rw().await;
+        let ext4 = fs.0.clone();
+        let mut inode = root_inode_as_extent_tree(&fs).await;
+        for (tree, leaf0, _) in [
+            build_depth1_tree(&ext4, &inode).await,
+            build_depth2_tree(&ext4, &inode).await,
+        ] {
+            let data = ext4.read_block(leaf0).await.unwrap();
+            let mut leaf = ExtentNode::from_bytes(Some(leaf0), &data,
+                inode.index, inode.checksum_base().clone(), &ext4, 1, 0).unwrap();
+            let ExtentNodeEntries::Leaf(entries) = &mut leaf.entries else { panic!("leaf") };
+            // Both nodes remain locally valid and match their parent keys,
+            // but this leaf overlaps the sibling beginning at logical10.
+            entries[0].num_blocks = 11;
+            leaf.write(&ext4, ext4.has_metadata_checksums().then_some(inode.checksum_base())).await.unwrap();
+            assert!(tree.collect_extents().await.is_err());
+            inode.set_inline_data(tree.to_bytes().unwrap());
+            assert!(inode.validate_extent_tree(&ext4).await.is_err());
+            ext4.write_to_block(leaf0, 0, &data).await.unwrap();
+            inode.validate_extent_tree(&ext4).await.unwrap();
+            tree.free_metadata_blocks().await.unwrap();
         }
     }
 

@@ -607,12 +607,13 @@ fn recover_dirty_journal(
     Ok(report)
 }
 
-fn validate_xattrs(filesystem: &Ext4, path: &[u8]) -> Result<(), Status> {
+fn validate_inode_storage(filesystem: &Ext4, path: &[u8]) -> Result<(), Status> {
     // Validate the entry itself: dangling/looping symlinks are valid namespace
     // objects and their targets must not replace their own xattr validation.
     let path = Path::try_from(path).map_err(|_| Status::Invalid)?;
     let inode = filesystem.path_to_inode(path, FollowSymlinks::ExcludeFinalComponent)
         .map_err(map_error)?;
+    inode.validate_extent_tree(filesystem).map_err(map_error)?;
     let xattrs = inode.list_xattrs(filesystem).map_err(map_error)?;
     for name in xattrs {
         let _value = inode
@@ -637,7 +638,7 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
     let mut root = Vec::new();
     root.try_reserve_exact(1).map_err(|_| Status::Range)?;
     root.push(b'/');
-    validate_xattrs(filesystem, root.as_slice())?;
+    validate_inode_storage(filesystem, root.as_slice())?;
     pending.push(root);
     let mut visited = 0usize;
     while let Some(path) = pending.pop() {
@@ -666,7 +667,7 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
                 *seen += 1;
                 if *seen > usize::from(*links) { return Err(Status::Invalid); }
             }
-            validate_xattrs(filesystem, entry_path.as_ref())?;
+            validate_inode_storage(filesystem, entry_path.as_ref())?;
             let kind = classify(metadata.file_type())?;
             if kind == 2 {
                 if pending.len() >= MAX_PENDING_DIRECTORIES {

@@ -26,6 +26,8 @@ use alloc::vec::Vec;
 use bitflags::bitflags;
 use core::num::{NonZeroU16, NonZeroU32};
 use core::time::Duration;
+#[cfg(not(feature = "sync"))]
+use crate::iters::AsyncIterator;
 
 /// Inode index.
 ///
@@ -182,6 +184,18 @@ pub struct Inode {
 }
 
 impl Inode {
+    /// Validate every extent, including holes and allocation beyond EOF.
+    /// This checks tree structure and physical bounds, not block ownership.
+    /// Non-extent inodes retain their existing block-map validation path.
+    #[maybe_async::maybe_async]
+    pub async fn validate_extent_tree(&self, ext4: &Ext4) -> Result<(), Ext4Error> {
+        if self.flags().contains(InodeFlags::EXTENTS) {
+            let mut extents = crate::iters::extents::Extents::new(ext4.clone(), self)?;
+            while let Some(extent) = extents.next().await { extent?; }
+        }
+        Ok(())
+    }
+
     const INLINE_DATA_LEN: usize = 60;
     const L_I_CHECKSUM_LO_OFFSET: usize = 0x74 + 0x8;
     const I_CHECKSUM_HI_OFFSET: usize = 0x82;
