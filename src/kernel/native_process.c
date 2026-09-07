@@ -812,7 +812,10 @@ static int64_t filesystem_error(enum phipfs_status status)
     case PHIPFS_STATUS_DIRECTORY_FULL:
         return -PHIPIA_ENOSPC;
     case PHIPFS_STATUS_NAME:
+    case PHIPFS_STATUS_NAME_TOO_LONG:
         return -PHIPIA_ENAMETOOLONG;
+    case PHIPFS_STATUS_SYMLINK_LOOP:
+        return -PHIPIA_ELOOP;
     case PHIPFS_STATUS_PATH:
     case PHIPFS_STATUS_INVALID_ARGUMENT:
     case PHIPFS_STATUS_RANGE:

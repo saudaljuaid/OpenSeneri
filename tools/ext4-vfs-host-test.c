@@ -478,6 +478,8 @@ int32_t phipia_ext4_rename_replace(uintptr_t mounted, const uint8_t *source,
 
 int main(void)
 {
+    assert(map_status(PHIPIA_EXT4_STATUS_SYMLINK_LOOP) == PHIPFS_STATUS_SYMLINK_LOOP);
+    assert(map_status(PHIPIA_EXT4_STATUS_NAME_TOO_LONG) == PHIPFS_STATUS_NAME_TOO_LONG);
     phipfs_handle first;
     phipfs_handle second;
     struct ext4_handle_state *state;

@@ -453,9 +453,8 @@ fn absolute_path(path: &[u8]) -> Result<Vec<u8>, Status> {
     if path == b"." {
         return Ok(Vec::from(&b"/"[..]));
     }
-    if path.is_empty() || path.len() >= 4096 {
-        return Err(Status::Range);
-    }
+    if path.is_empty() { return Err(Status::Range); }
+    if path.len() >= 4096 { return Err(Status::NameTooLong); }
     let capacity = path.len().checked_add(1).ok_or(Status::Range)?;
     let mut absolute = Vec::new();
     absolute
@@ -463,7 +462,10 @@ fn absolute_path(path: &[u8]) -> Result<Vec<u8>, Status> {
         .map_err(|_| Status::Range)?;
     absolute.push(b'/');
     absolute.extend_from_slice(path);
-    Path::try_from(absolute.as_slice()).map_err(|_| Status::Invalid)?;
+    Path::try_from(absolute.as_slice()).map_err(|error| match error {
+        ext4plus::path::PathError::ComponentTooLong => Status::NameTooLong,
+        _ => Status::Invalid,
+    })?;
     Ok(absolute)
 }
 
@@ -543,7 +545,9 @@ fn map_error(error: Ext4Error) -> Status {
         Ext4Error::DirectoryNotEmpty => Status::NotEmpty,
         Ext4Error::NotADirectory => Status::NotDirectory,
         Ext4Error::IsADirectory => Status::IsDirectory,
-        Ext4Error::PathTooLong | Ext4Error::FileTooLarge => Status::Range,
+        Ext4Error::PathTooLong => Status::NameTooLong,
+        Ext4Error::TooManySymlinks => Status::SymlinkLoop,
+        Ext4Error::FileTooLarge => Status::Range,
         Ext4Error::InvalidTimestamp => Status::Range,
         Ext4Error::IsASpecialFile => Status::Special,
         _ => Status::Invalid,
@@ -2635,6 +2639,10 @@ pub(crate) enum Status {
     ReadOnly = 13,
     /// An open inode requires unsupported orphan handling before deletion.
     Busy = 14,
+    /// A path or expanded component exceeds the admitted byte limit.
+    NameTooLong = 15,
+    /// Path resolution exceeded the symbolic-link traversal limit.
+    SymlinkLoop = 16,
 }
 
 const _: i32 = Status::Volume as i32;

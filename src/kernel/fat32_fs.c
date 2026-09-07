@@ -2864,6 +2864,8 @@ const char *phipfs_status_string(enum phipfs_status status)
     case PHIPFS_STATUS_PATH: return "path is malformed or escapes the mount";
     case PHIPFS_STATUS_WRITEBACK: return "dirty data could not be written";
     case PHIPFS_STATUS_RESET: return "device generation changed";
+    case PHIPFS_STATUS_NAME_TOO_LONG: return "filesystem path or name is too long";
+    case PHIPFS_STATUS_SYMLINK_LOOP: return "too many symbolic links";
     default: return "unknown filesystem status";
     }
 }

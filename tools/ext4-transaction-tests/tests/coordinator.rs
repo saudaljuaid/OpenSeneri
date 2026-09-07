@@ -677,9 +677,13 @@ fn prepared_open_exclusive_and_dangling_links_preserve_namespace_rules() {
     for name in [b"system/open-dangling".as_slice(), b"system/open-parent", b"system", b"system/README.TXT"] {
         assert_eq!(ext4::prepare_open(&mut mounted, name, 3, 7, 0o600), Err(Status::Exists));
     }
-    for name in [b"system/open-parent/absent/child".as_slice(), b"system/open-loop", b"system/missing/", b"system/README.TXT/child"] {
+    for name in [b"system/open-parent/absent/child".as_slice(), b"system/missing/", b"system/README.TXT/child"] {
         assert!(ext4::prepare_open(&mut mounted, name, 3, 1, 0o600).is_err());
     }
+    assert_eq!(ext4::prepare_open(&mut mounted, b"system/open-loop", 3, 1, 0o600), Err(Status::SymlinkLoop));
+    assert_eq!(ext4::stat(&mounted, b"system/open-loop"), Err(Status::SymlinkLoop));
+    assert_eq!(ext4::stat(&mounted, &[b'a'; 256]), Err(Status::NameTooLong));
+    assert_eq!(ext4::stat(&mounted, &[b'a'; 4096]), Err(Status::NameTooLong));
     assert_eq!(ext4::prepare_open(&mut mounted, b"system/new", 3, 4, 0o600), Err(Status::Invalid));
     DEVICE.with_borrow(|device| assert!(device.events.is_empty()));
     let created = ext4::prepare_open(&mut mounted, b"system/open-dangling", 3, 1, 0o620).unwrap();

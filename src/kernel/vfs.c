@@ -231,7 +231,8 @@ static enum phipfs_status canonicalize_path(
     size_t used = 0U;
     size_t index = 0U;
 
-    if (canonical == NULL || length == 0U || length >= PHIPFS_MAX_PATH ||
+    if (length >= PHIPFS_MAX_PATH) return PHIPFS_STATUS_NAME_TOO_LONG;
+    if (canonical == NULL || length == 0U ||
         path[0] == '/' || path[0] == '\\') {
         return PHIPFS_STATUS_PATH;
     }

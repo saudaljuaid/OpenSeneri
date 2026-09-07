@@ -276,6 +276,10 @@ int main(void)
     backend.lstat_path = nofollow_stat;
     expected_path = "parent/link/../file";
     const unsigned before_lstat = stats;
+    char too_long[PHIPFS_MAX_PATH + 1U];
+    memset(too_long, 'a', sizeof(too_long));
+    too_long[PHIPFS_MAX_PATH] = '\0';
+    assert(phipfs_lstat_path(PHIPFS_VOLUME_DATA, too_long, &metadata) == PHIPFS_STATUS_NAME_TOO_LONG);
     assert(phipfs_lstat_path(PHIPFS_VOLUME_DATA, expected_path, &metadata) == PHIPFS_STATUS_OK);
     assert(metadata.object_id == 84U && metadata.mode == 0120777U && metadata.uid == 70000U);
     assert(metadata.atime_seconds == -1 && metadata.atime_nanos == 123U);

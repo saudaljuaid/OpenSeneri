@@ -190,5 +190,10 @@ int main(void)
     if (fsync(descriptor) != 0 || close(descriptor) != 0) return 37;
     if (fsync(descriptor) != -1 || errno != EBADF || file_sync_calls != 2U) return 38;
     if (open_calls != 48U || close_calls != 43U || invalid_request) return 39;
+    syscall_result = -PHIPIA_ELOOP;
+    if (open("nested", O_RDONLY) != -1 || errno != ELOOP) return 40;
+    syscall_result = -PHIPIA_ENAMETOOLONG;
+    if (open("nested", O_RDONLY) != -1 || errno != ENAMETOOLONG) return 41;
+    if (open_calls != 50U || close_calls != 43U || invalid_request) return 42;
     return 0;
 }

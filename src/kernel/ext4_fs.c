@@ -392,6 +392,10 @@ static enum phipfs_status map_status(int32_t status)
         return PHIPFS_STATUS_READ_ONLY;
     case PHIPIA_EXT4_STATUS_BUSY:
         return PHIPFS_STATUS_BUSY;
+    case PHIPIA_EXT4_STATUS_NAME_TOO_LONG:
+        return PHIPFS_STATUS_NAME_TOO_LONG;
+    case PHIPIA_EXT4_STATUS_SYMLINK_LOOP:
+        return PHIPFS_STATUS_SYMLINK_LOOP;
     default:
         return PHIPFS_STATUS_CORRUPT;
     }
