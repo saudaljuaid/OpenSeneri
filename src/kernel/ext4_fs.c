@@ -27,6 +27,7 @@ struct ext4_mount_state {
     uint64_t generation;
     uint64_t media_bytes;
     uint64_t admitted_media_bytes;
+    uint64_t cached_free_bytes;
     uint64_t completion_count;
     uint32_t controller_index;
     bool active;
@@ -453,6 +454,13 @@ static enum phipfs_status end_operation(
 
     if (mount == NULL || !mount->operation_active) {
         return PHIPFS_STATUS_CORRUPT;
+    }
+    // Capacity queries must not borrow the Rust coordinator while another
+    // operation holds it mutably. Capture the last readable count here.
+    uint64_t free_bytes = 0U;
+    if (mount->rust_mount != 0U &&
+        phipia_ext4_free_bytes(mount->rust_mount, &free_bytes) == PHIPIA_EXT4_STATUS_OK) {
+        __atomic_store_n(&mount->cached_free_bytes, free_bytes, __ATOMIC_RELEASE);
     }
     status = nvme_volume_close(&mount->session);
     if (diagnostic != NULL) {
@@ -994,7 +1002,6 @@ struct phipfs_drive_info ext4_backend_drive(enum phipfs_volume volume)
 {
     struct phipfs_drive_info drive = {0};
     struct ext4_mount_state *mount;
-    uint64_t free_bytes = 0U;
 
     if (!valid_volume(volume)) {
         return drive;
@@ -1006,15 +1013,11 @@ struct phipfs_drive_info ext4_backend_drive(enum phipfs_volume volume)
         (uint32_t)mount->identity.uuid[2] << 16U |
         (uint32_t)mount->identity.uuid[3] << 24U;
     drive.total_bytes = mount->media_bytes;
-    if (mount->active &&
-        phipia_ext4_free_bytes(mount->rust_mount, &free_bytes) ==
-            PHIPIA_EXT4_STATUS_OK) {
-        drive.free_bytes = free_bytes;
-    }
+    drive.free_bytes = __atomic_load_n(&mount->cached_free_bytes, __ATOMIC_ACQUIRE);
     drive.present = mount->active;
     drive.mounted = mount->active;
     drive.read_only = false;
-    drive.healthy = mount->healthy;
+    drive.healthy = mount->healthy && !mount->close_failed;
     return drive;
 }
 

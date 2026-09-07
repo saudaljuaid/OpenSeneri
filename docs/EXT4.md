@@ -473,6 +473,10 @@ volume lease. A later writer cannot be followed by an older EOF update from
 the previous writer. If controller teardown then fails, that committed cursor
 and EOF remain visible while the mount refuses further storage operations.
 
+Drive capacity reports use the last readable allocator count captured before
+operation teardown. They do not borrow the Rust coordinator during a mutation;
+a frozen storage owner is reported unhealthy until explicit teardown succeeds.
+
 Append-only ext4 inodes accept the append operation, including bounded split
 requests, but reject ordinary writes (even at EOF), truncate, unlink, rename,
 new hard links, and explicit mode/time/xattr changes. Append-only directories

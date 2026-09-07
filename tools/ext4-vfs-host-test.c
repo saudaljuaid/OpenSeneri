@@ -31,8 +31,21 @@ static bool reenter_on_open;
 static bool reenter_on_close;
 static bool open_reports_failure;
 static bool expect_published_size_before_close;
+static unsigned capacity_queries;
 static unsigned live_mounts = 1U;
 static uint32_t logical_block_bytes = 4096U;
+
+int32_t phipia_ext4_free_bytes(uintptr_t mounted, uint64_t *bytes)
+{
+    assert(mounted == 1U && bytes != NULL);
+    assert(ext4_mounts[PHIPFS_VOLUME_DATA].operation_active);
+    const unsigned before = ++capacity_queries;
+    const struct phipfs_drive_info drive = ext4_backend_drive(PHIPFS_VOLUME_DATA);
+    assert(drive.mounted == ext4_mounts[PHIPFS_VOLUME_DATA].active);
+    assert(capacity_queries == before);
+    *bytes = 123U * 4096U;
+    return PHIPIA_EXT4_STATUS_OK;
+}
 
 int32_t phipia_ext4_mount(uintptr_t context, uint64_t media_bytes,
     struct phipia_ext4_identity *identity, uintptr_t *mounted)
@@ -399,6 +412,10 @@ int main(void)
     assert(ext4_backend_truncate(PHIPFS_VOLUME_DATA, "file", 101U) == PHIPFS_STATUS_OK);
     assert(truncates == 3U && stats == 1U);
     assert(!reenter_on_open);
+    const unsigned counted = capacity_queries;
+    const unsigned before_drive = opens;
+    assert(ext4_backend_drive(PHIPFS_VOLUME_DATA).free_bytes == 123U * 4096U);
+    assert(capacity_queries == counted && opens == before_drive);
     assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->size == 101U);
     assert(handle_state(second, &state) == PHIPFS_STATUS_OK && state->size == 101U);
     permanent_status = PHIPIA_EXT4_STATUS_FULL;
