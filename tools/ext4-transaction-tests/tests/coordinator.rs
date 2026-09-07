@@ -2248,7 +2248,11 @@ fn sparse_fragmented_extent_tree_grows_overwrites_and_shrinks() {
     assert_eq!(actual, expected);
     // Coalesce an unaligned overwrite across existing extents and holes.
     let replacement = vec![0xbc; 32 * 4096 + 11];
-    ext4::transaction_probe(&mut mounted, name, 4093, &replacement).unwrap();
+    ext4::set_stage_block_limit(&mut mounted, 12).unwrap();
+    DEVICE.with_borrow_mut(|device| device.events.clear());
+    assert_eq!(ext4::transaction_probe(&mut mounted, name, 4093, &replacement), Ok(replacement.len()));
+    DEVICE.with_borrow(|device| assert!(device.events.iter().filter(|event| **event == Event::Flush(3)).count() > 2));
+    ext4::set_stage_block_limit(&mut mounted, 64).unwrap();
     expected[4093..4093 + replacement.len()].copy_from_slice(&replacement);
     read_exact(&mounted, name, &mut actual);
     assert_eq!(actual, expected);
@@ -2472,6 +2476,12 @@ fn repeated_mount_recovery_refusals_converge_to_the_same_clean_disk() {
 
 #[test]
 fn unaligned_write_spans_transactions_and_retries_only_the_unfinished_suffix() {
+    for block_limit in [64, 12] {
+        split_write_retry_case(block_limit);
+    }
+}
+
+fn split_write_retry_case(block_limit: usize) {
     let Some(path) = fixture() else { return };
     let name = b"system/split-write";
     let mut mounted = mount_fixture(&path);
@@ -2481,9 +2491,12 @@ fn unaligned_write_spans_transactions_and_retries_only_the_unfinished_suffix() {
     drop(mounted);
     let source: Vec<u8> = (0..64 * 4096).map(|index| (index % 251) as u8).collect();
     let mut mounted = mount_bytes(initial.clone());
+    ext4::set_stage_block_limit(&mut mounted, block_limit).unwrap();
     assert_eq!(ext4::transaction_probe(&mut mounted, name, 7, &source), Ok(source.len()));
     let expected = DEVICE.with_borrow(|device| device.events.clone());
-    assert_eq!(expected.iter().filter(|event| **event == Event::Flush(3)).count(), 3);
+    let commits = expected.iter().filter(|event| **event == Event::Flush(3)).count();
+    if block_limit == 64 { assert_eq!(commits, 3); }
+    else { assert!(commits >= 9, "capacity pressure did not split the write"); }
     let mut result = vec![0xa5; source.len() + 7];
     read_exact(&mounted, name, &mut result);
     assert_eq!(&result[..7], &[0; 7]);
@@ -2500,6 +2513,7 @@ fn unaligned_write_spans_transactions_and_retries_only_the_unfinished_suffix() {
         for accept in [false, true] {
             for through_sync in [false, true] {
                 let mut mounted = mount_bytes(initial.clone());
+                ext4::set_stage_block_limit(&mut mounted, block_limit).unwrap();
                 DEVICE.with_borrow_mut(|device| {
                     device.fail_event = Some(fail_at);
                     device.accept_failed_write = accept;
@@ -2528,5 +2542,38 @@ fn unaligned_write_spans_transactions_and_retries_only_the_unfinished_suffix() {
             }
         }
     }
-    fsck(&path, "coordinator-split-write");
+    fsck(&path, &format!("coordinator-split-write-budget-{block_limit}"));
+}
+
+#[test]
+fn minimum_write_capacity_refusal_rolls_back_all_allocations() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let name = b"system/stage-full";
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    let free = ext4::free_bytes(&mounted).unwrap();
+    let initial = DEVICE.with_borrow_mut(|device| { device.events.clear(); device.bytes.clone() });
+    ext4::set_stage_block_limit(&mut mounted, 1).unwrap();
+    assert_eq!(ext4::transaction_probe(&mut mounted, name, 7, &[0x5a; 8192]), Err(Status::Io));
+    assert_eq!(ext4::stat(&mounted, name).unwrap().size, 0);
+    assert_eq!(ext4::free_bytes(&mounted), Ok(free));
+    // The durable recovery marker is the only permitted write before a
+    // transaction fits. The partially staged bitmap/counters never escape.
+    DEVICE.with_borrow(|device| {
+        assert_eq!(device.events.len(), 2);
+        assert!(matches!(&device.events[0], Event::Write(1024, bytes) if bytes.len() == 1024));
+        assert_eq!(device.events[1], Event::Flush(0));
+        assert_eq!(&device.bytes[..1024], &initial[..1024]);
+        assert_eq!(&device.bytes[2048..], &initial[2048..]);
+    });
+    ext4::sync(&mut mounted).unwrap();
+    DEVICE.with_borrow(|device| assert_eq!(device.bytes, initial));
+    ext4::set_stage_block_limit(&mut mounted, 64).unwrap();
+    assert_eq!(ext4::transaction_probe(&mut mounted, name, 7, &[0x5a; 8192]), Ok(8192));
+    ext4::unlink_file_probe(&mut mounted, name).unwrap();
+    assert_eq!(ext4::free_bytes(&mounted), Ok(free));
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-stage-capacity-rollback");
 }

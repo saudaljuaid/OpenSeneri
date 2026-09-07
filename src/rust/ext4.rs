@@ -17,7 +17,7 @@ use ext4plus::{
     DirEntryName, Ext4, Ext4Read, FileType, FilesystemSuperblockCheckpoint, FilesystemSuperblockImage,
     FollowSymlinks, JOURNAL_BLOCK_BYTES, JournalCommitOperation,
     JournalBlockImage, JournalExecutionError, JournalFlush, JournalInodeMap, JournalInodeMapError,
-    JournalMutationStage, JournalPreparedTransaction, JournalRing, JournalStorage,
+    JournalMutationStage, JournalMutationStageError, JournalPreparedTransaction, JournalRing, JournalStorage,
     execute_commit_operations, load_journal_inode_map, recover_committed_ring,
 };
 
@@ -163,6 +163,12 @@ struct PendingWrite {
     offset: u64,
     completed: usize,
     append: bool,
+    chunk_bytes: usize,
+}
+
+enum WriteTransactionOutcome {
+    Written(usize),
+    StageFull,
 }
 
 #[derive(Debug)]
@@ -282,9 +288,10 @@ fn load_staged_view(
     context: usize,
     image_bytes: u64,
     needs_recovery: bool,
+    block_limit: usize,
 ) -> Result<(Ext4, Rc<JournalMutationStage>), Status> {
     let stage = Rc::new(
-        JournalMutationStage::new(Box::new(PhipiaReader { context }), image_bytes)
+        JournalMutationStage::with_block_limit(Box::new(PhipiaReader { context }), image_bytes, block_limit)
             .map_err(|_| Status::Invalid)?,
     );
     let filesystem = if needs_recovery {
@@ -309,7 +316,7 @@ fn replace_staged_view(mounted: &mut Mounted, needs_recovery: bool) -> Result<()
     // every public reader refuses the absent view and sync can retry the load.
     mounted.filesystem = None;
     let (filesystem, stage) =
-        load_staged_view(mounted.context, mounted.image_bytes, needs_recovery)?;
+        load_staged_view(mounted.context, mounted.image_bytes, needs_recovery, mounted.stage.block_limit())?;
     mounted.filesystem = Some(filesystem);
     mounted.stage = stage;
     Ok(())
@@ -319,6 +326,16 @@ fn discard_uncommitted_stage(mounted: &mut Mounted, needs_recovery: bool) -> Res
     mounted.filesystem = None;
     mounted.stage.rollback();
     replace_staged_view(mounted, needs_recovery)
+}
+
+#[cfg(test)]
+pub(crate) fn set_stage_block_limit(mounted: &mut Mounted, block_limit: usize) -> Result<(), Status> {
+    mounted.readable_filesystem()?;
+    let recovery = mounted.journal.filesystem_recovery_marker_is_durable().map_err(|_| Status::Invalid)?;
+    let (filesystem, stage) = load_staged_view(mounted.context, mounted.image_bytes, recovery, block_limit)?;
+    mounted.filesystem = Some(filesystem);
+    mounted.stage = stage;
+    Ok(())
 }
 
 fn ensure_staged_view(mounted: &mut Mounted) -> Result<(), Status> {
@@ -684,7 +701,8 @@ pub(crate) fn mount(context: usize, media_bytes: u64) -> Result<(Box<Mounted>, I
     let needs_orphan_cleanup = journal.filesystem_needs_recovery();
     drop(journal);
     drop(filesystem);
-    let (filesystem, stage) = load_staged_view(context, image_bytes, needs_orphan_cleanup)?;
+    let (filesystem, stage) = load_staged_view(context, image_bytes, needs_orphan_cleanup,
+        ext4plus::JOURNAL_TRANSACTION_MAX_METADATA_BLOCKS)?;
     let journal = load_journal_inode_map(&filesystem).map_err(map_journal_error)?;
     let orphans = filesystem.orphan_inodes().map_err(map_error)?;
     let ring = if needs_orphan_cleanup { journal.into_orphan_cleanup_ring() }
@@ -1007,6 +1025,7 @@ fn write_target(mounted: &mut Mounted, absolute: Vec<u8>, offset: u64, source: &
         copy.extend_from_slice(source);
         mounted.pending_write = Some(PendingWrite {
             path: absolute, source: copy, offset, completed: 0, append,
+            chunk_bytes: TRANSACTION_WRITE_BYTES,
         });
     }
     resume_write_request(mounted)
@@ -1016,14 +1035,29 @@ fn resume_write_request(mounted: &mut Mounted) -> Result<usize, Status> {
     let mut request = mounted.pending_write.take().ok_or(Status::Invalid)?;
     while request.completed < request.source.len() {
         let offset = request.offset + request.completed as u64;
-        // At most 32 touched data blocks, including an unaligned first block,
-        // leave stage capacity for allocation, extents and inode metadata.
-        let capacity = TRANSACTION_WRITE_BYTES - (offset % BLOCK_BYTES) as usize;
+        // Start with at most 32 data blocks. Fragmented allocation can need
+        // more metadata than the remaining stage budget, so a precommit-only
+        // capacity refusal halves the touched-block count after full rollback.
+        let capacity = request.chunk_bytes - (offset % BLOCK_BYTES) as usize;
         let length = capacity.min(request.source.len() - request.completed);
         let end = request.completed + length;
-        match write_transaction(mounted, &request.path, offset,
-            &request.source[request.completed..end])
-        {
+        let outcome = write_transaction(mounted, &request.path, offset,
+            &request.source[request.completed..end]);
+        let outcome = match outcome {
+            Ok(WriteTransactionOutcome::StageFull) => {
+                let touched = ((offset % BLOCK_BYTES) as usize + length).div_ceil(JOURNAL_BLOCK_BYTES);
+                if touched > 1 {
+                    // Persist this exact choice through commit/checkpoint I/O
+                    // failures; retry must not recompute a larger chunk.
+                    request.chunk_bytes = (touched / 2) * JOURNAL_BLOCK_BYTES;
+                    continue;
+                }
+                Err(Status::Io)
+            }
+            Ok(WriteTransactionOutcome::Written(written)) => Ok(written),
+            Err(error) => Err(error),
+        };
+        match outcome {
             Ok(written) if written != 0 && written <= length => request.completed += written,
             Ok(_) => return Err(Status::Invalid),
             Err(error) => {
@@ -1075,7 +1109,7 @@ fn write_transaction(
     path: &[u8],
     offset: u64,
     source: &[u8],
-) -> Result<usize, Status> {
+) -> Result<WriteTransactionOutcome, Status> {
     if source.is_empty() || source.len() > MAX_PROBE_WRITE_BYTES {
         return Err(Status::Range);
     }
@@ -1087,7 +1121,7 @@ fn write_transaction(
             &absolute,
             offset,
             source,
-        );
+        ).map(WriteTransactionOutcome::Written);
     }
     if !mounted.stage.is_empty() || mounted.stage.is_sealed() {
         let recovery = mounted
@@ -1111,7 +1145,11 @@ fn write_transaction(
         }
         Ok(written) => written,
         Err(error) => {
+            let stage_full = matches!(&error, Ext4Error::Io(cause)
+                if cause.downcast_ref::<JournalMutationStageError>() == Some(&JournalMutationStageError::TooManyBlocks));
+            drop(file);
             discard_uncommitted_stage(mounted, true)?;
+            if stage_full { return Ok(WriteTransactionOutcome::StageFull); }
             return Err(map_error(error));
         }
     };
@@ -1187,7 +1225,7 @@ fn write_transaction(
         written,
         &ordered_data,
         None,
-    )
+    ).map(WriteTransactionOutcome::Written)
 }
 
 /// Execute one controlled truncate through the native journal executor.

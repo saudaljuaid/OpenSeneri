@@ -116,6 +116,7 @@ struct JournalMutationState {
 pub struct JournalMutationStage {
     reader: Box<dyn Ext4Read>,
     filesystem_bytes: u64,
+    block_limit: usize,
     state: RwLock<JournalMutationState>,
 }
 
@@ -126,18 +127,36 @@ impl JournalMutationStage {
         reader: Box<dyn Ext4Read>,
         filesystem_bytes: u64,
     ) -> Result<Self, JournalMutationStageError> {
-        if filesystem_bytes == 0 || filesystem_bytes % JOURNAL_BLOCK_BYTES as u64 != 0 {
+        Self::with_block_limit(reader, filesystem_bytes, JOURNAL_TRANSACTION_MAX_METADATA_BLOCKS)
+    }
+
+    /// Create a stage with a smaller memory budget, never exceeding the
+    /// transaction format's image bound. Reloads must preserve this budget.
+    pub fn with_block_limit(
+        reader: Box<dyn Ext4Read>,
+        filesystem_bytes: u64,
+        block_limit: usize,
+    ) -> Result<Self, JournalMutationStageError> {
+        if filesystem_bytes == 0 || filesystem_bytes % JOURNAL_BLOCK_BYTES as u64 != 0
+            || block_limit == 0 || block_limit > JOURNAL_TRANSACTION_MAX_METADATA_BLOCKS {
             return Err(JournalMutationStageError::Geometry);
         }
         Ok(Self {
             reader,
             filesystem_bytes,
+            block_limit,
             state: RwLock::new(JournalMutationState {
                 sealed: false,
                 blocks: BTreeMap::new(),
                 revoked_blocks: BTreeSet::new(),
             }),
         })
+    }
+
+    /// Maximum distinct block images retained by this stage.
+    #[must_use]
+    pub fn block_limit(&self) -> usize {
+        self.block_limit
     }
 
     fn range_end(&self, start_byte: u64, length: usize) -> Result<u64, JournalMutationStageError> {
@@ -294,7 +313,7 @@ impl Ext4Write for JournalMutationStage {
                 .map_err(|_| Box::new(JournalMutationStageError::Range) as BoxedError)?;
             let length = remaining.len().min(JOURNAL_BLOCK_BYTES - within);
             if !state.blocks.contains_key(&block_index) {
-                if state.blocks.len() >= JOURNAL_TRANSACTION_MAX_METADATA_BLOCKS {
+                if state.blocks.len() >= self.block_limit {
                     return Err(Box::new(JournalMutationStageError::TooManyBlocks));
                 }
                 let mut image = vec![0; JOURNAL_BLOCK_BYTES];
