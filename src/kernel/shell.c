@@ -473,7 +473,12 @@ static bool line_content(
 static void print_drive(const char *name, struct phipfs_drive_info drive)
 {
     console_write(name);
-    console_write("  fat32  ");
+    if (drive.volume == PHIPFS_VOLUME_DATA &&
+            phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) {
+        console_write("  ext4   ");
+    } else {
+        console_write("  fat32  ");
+    }
     if (!drive.present) {
         console_write("absent\n");
     } else if (!drive.healthy || !drive.mounted) {
