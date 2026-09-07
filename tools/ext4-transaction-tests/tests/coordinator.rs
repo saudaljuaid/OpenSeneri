@@ -330,7 +330,7 @@ fn commit_reload_failure_hides_view_and_retry_does_not_rewrite_storage() {
 #[test]
 fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
     let Some(path) = fixture() else { return };
-    for case in 0..25 {
+    for case in 0..28 {
         let mut mounted = mount_fixture(&path);
         if case != 0 && case < 5 {
             if case == 4 {
@@ -368,6 +368,9 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
             }
             if case == 11 {
                 ext4::set_xattr(&mut mounted, b"system/retry-test", b"user.note", Some(b"old")).unwrap();
+            }
+            if case == 26 || case == 27 {
+                ext4::set_xattr(&mut mounted, b"system/retry-test", b"user.note", Some(&[0x41; 701])).unwrap();
             }
             if case == 14 || case == 21 {
                 ext4::transaction_probe(&mut mounted, b"system/retry-test", 0, &vec![0x37; 8192]).unwrap();
@@ -417,6 +420,8 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
             23 => ext4::remove_directory_guarded(mounted, b"system/retry-test", &[inode, inode]),
             24 => ext4::rename_replace_guarded(mounted, b"system/retry-test", b"data/user/retry-test",
                 &[inode, replaced_inode, replaced_inode]),
+            25 | 26 => ext4::set_xattr(mounted, b"system/retry-test", b"user.note", Some(&[0x52; 701])),
+            27 => ext4::set_xattr(mounted, b"system/retry-test", b"user.note", Some(b"inline")),
             _ => ext4::symlink_probe(mounted, b"system/retry-test", &target),
         };
         mutate(&mut mounted).unwrap();
@@ -1076,6 +1081,63 @@ fn directory_snapshot_keeps_original_names_across_namespace_mutations() {
 }
 
 #[test]
+fn external_xattr_updates_pack_hashes_and_release_storage_without_losing_inline_values() {
+    let Some(path) = fixture() else { return };
+    let name = b"system/large-attributes";
+    let mut mounted = mount_fixture(&path);
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    ext4::set_xattr(&mut mounted, name, b"user.small", Some(b"inline")).unwrap();
+    let free = ext4::free_bytes(&mounted).unwrap();
+    // Exhaust the staging budget during allocation: the bitmap reservation
+    // must disappear before a larger-budget retry can allocate the same block.
+    ext4::set_stage_block_limit(&mut mounted, 1).unwrap();
+    let before = DEVICE.with_borrow_mut(|device| { device.events.clear(); device.bytes.clone() });
+    assert!(ext4::set_xattr(&mut mounted, name, b"user.a", Some(&[0x61; 301])).is_err());
+    DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, before); });
+    assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
+    ext4::set_stage_block_limit(&mut mounted, 64).unwrap();
+    let mut attributes = vec![("user.a", vec![0x61; 301]), ("user.aa", vec![0x62; 512]),
+        ("user.z", vec![0x63; 701]), ("user.é", vec![0x64; 105])];
+    for (key, value) in &attributes {
+        ext4::set_xattr(&mut mounted, name, key.as_bytes(), Some(value)).unwrap();
+        assert_eq!(ext4::free_bytes(&mounted).unwrap(), free - 4096);
+    }
+    attributes[0].1 = vec![0x7a; 401];
+    ext4::set_xattr(&mut mounted, name, b"user.a", Some(&attributes[0].1)).unwrap();
+    let before = DEVICE.with_borrow_mut(|device| { device.events.clear(); device.bytes.clone() });
+    assert_eq!(ext4::set_xattr(&mut mounted, name, b"user.a", Some(&[0x66; 4096])), Err(Status::Full));
+    DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, before); });
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-external-xattrs-written");
+    drop(mounted);
+    let persisted = DEVICE.with_borrow(|device| device.bytes.clone());
+    let image = path.with_extension("coordinator-external-xattrs.img");
+    write_sparse_fixture(&image, &persisted).unwrap();
+    let mut mounted = mount_bytes(persisted);
+    for (index, (key, value)) in attributes.iter().enumerate() {
+        let mut output = vec![0; value.len()];
+        assert_eq!(ext4::get_xattr(&mounted, name, key.as_bytes(), &mut output), Ok(value.len()));
+        assert_eq!(&output, value);
+        let exported = path.with_extension(format!("coordinator-external-xattr-{index}.bin"));
+        debugfs(&image, &format!("ea_get -f {} /system/large-attributes {key}", exported.display()));
+        assert_eq!(&std::fs::read(exported).unwrap(), value); // e2fsprogs validates entry hashes
+    }
+    let mut small = [0; 6];
+    assert_eq!(ext4::get_xattr(&mounted, name, b"user.small", &mut small), Ok(6));
+    assert_eq!(&small, b"inline");
+    for (key, _) in &attributes {
+        ext4::set_xattr(&mut mounted, name, key.as_bytes(), None).unwrap();
+    }
+    assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
+    assert_eq!(ext4::get_xattr(&mounted, name, b"user.small", &mut small), Ok(6));
+    assert_eq!(&small, b"inline");
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-external-xattrs-released");
+}
+
+#[test]
 fn external_xattr_checksums_shared_release_and_final_free() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);
@@ -1155,6 +1217,52 @@ fn external_xattr_checksums_shared_release_and_final_free() {
     ext4::unmount(&recovered).unwrap();
     fsck(&path, "coordinator-xattr-shared-orphan");
     drop(recovered);
+    let mut copied = mount_bytes(initial.clone());
+    let free_before_copy = ext4::free_bytes(&copied).unwrap();
+    ext4::set_xattr(&mut copied, b"system/ea-first", b"user.large", Some(&[b'r'; 301])).unwrap();
+    let copy_operations = DEVICE.with_borrow(|device| device.events.clone());
+    assert_eq!(ext4::free_bytes(&copied).unwrap(), free_before_copy - 4096);
+    assert_eq!(ext4::get_xattr(&copied, b"system/ea-second", b"user.large", &mut attribute), Ok(300));
+    assert_eq!(attribute, [b'q'; 300]);
+    let mut private = [0; 301];
+    assert_eq!(ext4::get_xattr(&copied, b"system/ea-first", b"user.large", &mut private), Ok(301));
+    assert_eq!(private, [b'r'; 301]);
+    ext4::sync(&mut copied).unwrap();
+    ext4::unmount(&copied).unwrap();
+    fsck(&path, "coordinator-xattr-shared-copy");
+    let copied_disk = DEVICE.with_borrow(|device| device.bytes.clone());
+    drop(copied);
+    let mut cut = initial.clone();
+    for (index, operation) in copy_operations.iter().enumerate() {
+        for accept in [false, true] {
+            let mut retry = mount_bytes(initial.clone());
+            DEVICE.with_borrow_mut(|device| {
+                device.fail_event = Some(index);
+                device.accept_failed_write = accept;
+            });
+            assert_eq!(ext4::set_xattr(&mut retry, b"system/ea-first", b"user.large", Some(&[b'r'; 301])), Err(Status::Io));
+            DEVICE.with_borrow_mut(|device| device.fail_event = None);
+            ext4::set_xattr(&mut retry, b"system/ea-first", b"user.large", Some(&[b'r'; 301])).unwrap();
+            ext4::sync(&mut retry).unwrap();
+            ext4::unmount(&retry).unwrap();
+            DEVICE.with_borrow(|device| assert_eq!(device.bytes, copied_disk, "shared copy event {index}, accept={accept}"));
+        }
+        if let Event::Write(start, bytes) = operation {
+            cut[*start as usize..*start as usize + bytes.len()].copy_from_slice(bytes);
+        }
+        let mut recovered = mount_bytes(cut.clone());
+        let size = ext4::get_xattr(&recovered, b"system/ea-first", b"user.large", &mut []).unwrap();
+        assert!(size == 300 || size == 301);
+        let mut value = vec![0; size];
+        assert_eq!(ext4::get_xattr(&recovered, b"system/ea-first", b"user.large", &mut value), Ok(size));
+        assert!(value.iter().all(|byte| *byte == if size == 300 { b'q' } else { b'r' }));
+        assert_eq!(ext4::free_bytes(&recovered).unwrap(), free_before_copy - if size == 301 { 4096 } else { 0 });
+        assert_eq!(ext4::get_xattr(&recovered, b"system/ea-second", b"user.large", &mut attribute), Ok(300));
+        assert_eq!(attribute, [b'q'; 300]);
+        ext4::sync(&mut recovered).unwrap();
+        ext4::unmount(&recovered).unwrap();
+        fsck(&path, &format!("coordinator-xattr-shared-copy-cut-{index}"));
+    }
     let mut mounted = mount_bytes(initial.clone());
     fsck(&path, "coordinator-xattr-shared-input");
     ext4::link_file_probe(&mut mounted, b"system/ea-first", b"system/ea-hardlink").unwrap();
@@ -2148,7 +2256,7 @@ fn inode_checksums_follow_declared_extra_size_and_preserve_undeclared_bytes() {
         ext4::transaction_probe(&mut mounted, b"checksum-width-file", 4093, b"checksum width").unwrap();
         if extra == 0 {
             let before = DEVICE.with_borrow(|device| device.bytes.clone());
-            assert_eq!(ext4::set_xattr(&mut mounted, b".", b"user.note", Some(b"opaque")), Err(Status::Full));
+            assert_eq!(ext4::set_xattr(&mut mounted, b".", b"user.note", Some(&[0x55; 4096])), Err(Status::Full));
             DEVICE.with_borrow(|device| assert_eq!(device.bytes, before));
         }
         ext4::set_times(&mut mounted, b".", 1_780_000_001, 0, 1_780_000_002, 0).unwrap();

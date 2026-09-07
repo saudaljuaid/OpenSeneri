@@ -260,6 +260,16 @@ block number, and complete block with h_checksum zeroed, following Linux
 v6.12 fs/ext4/xattr.c and e2fsprogs v1.47.2 lib/ext2fs/csum.c. The Linux fixture
 test checks shared release, final free, clean fsck, and corrupt-block refusal.
 
+The writable branch now stages external xattr allocation and replacement.
+Small attributes are packed into declared inode-body space; remaining entries
+use one block sorted by namespace, name length and name bytes. External entry
+and block hashes follow Linux v6.12 ext4_xattr_hash_entry/ext4_xattr_rehash.
+An exclusive block is journaled in place; a shared block receives a private
+copy before its old reference is dropped. Packing precedes allocation, and
+coordinator rollback discards reservations on failure. New Linux hash/export,
+shared-copy crash and allocation/rewrite/release fault tests remain pending.
+Inodes with extra_isize=0 retain their opaque tail and can use external xattrs.
+
 The journal coordinator sets an exclusive transaction time on its staged view.
 Inode writes update ctime (and directory mtime); file write/truncate updates
 mtime; creation sets all initial times after reserving the extra inode fields.

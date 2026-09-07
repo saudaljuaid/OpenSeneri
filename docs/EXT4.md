@@ -359,8 +359,8 @@ request and its checkpointed byte count across a storage refusal; the identical
 request or sync resumes only the unfinished chunk and remaining suffix. A
 precommit refusal such as ENOSPC after completed chunks returns their durable
 byte count as a short write. A power cut can preserve a prefix of a split write;
-this is not whole-request atomicity, and the public 16 MiB file-mutation limit
-remains. Writable namespace methods use
+this is not whole-request atomicity. The C mutation limit is now 64 MiB;
+Linux verification of that expanded VFS boundary is pending. Writable namespace methods use
 the same retained planner through the public VFS table.
 A bounded `JournalMutationStage`
 now gives synchronous ext4plus mutations an immutable backing reader and a
@@ -485,7 +485,9 @@ POSIX `O_APPEND`, and stdio append modes use this operation. Native append
 syscalls return at most one 4096-byte copied chunk; callers must handle short
 writes. Direct backend requests remain bounded to 256 KiB and can checkpoint
 multiple transactions, so crash atomicity for the entire request is not claimed.
-The current C file-size cap remains 16 MiB.
+The C mutation cap is now 64 MiB, matching the bounded split-reclaim profile.
+The changed C boundary/ownership host test passes; the corresponding Linux
+64 MiB sparse growth, tail, remount and reclamation fixture is pending.
 
 Successful writes publish their cursor and shared EOF while still owning the
 volume lease. A later writer cannot be followed by an older EOF update from
@@ -521,9 +523,14 @@ creation checks. Mount-relative syntax and existing path/depth bounds apply.
 VFS chmod replaces permission/special bits (0000–07777) through JBD2; immutable inodes and
 inodes with access ACLs are refused. The admitted xattr mutation namespace is
 `user.*`, with names up to 255 bytes. Set/replace/remove journal the inode and
-any released external attribute block. The complete resulting attribute set
-must fit in the inode body; larger sets return FULL with the old attributes
-and allocation counters preserved. Reads support size queries and refuse
+any allocated, rewritten or released external attribute block. The writer
+packs small values in the inode and remaining values in one external block,
+copying shared blocks before mutation. Entry hashes, block hashes, CRC32C,
+inode block counts and allocator changes belong to the same transaction.
+Sets that cannot be packed return FULL with the old attributes and allocation
+counters preserved; external value inodes remain refused. The new allocation,
+shared-copy, replay and e2fsprogs export fixtures await Linux verification.
+Reads support size queries and refuse
 undersized buffers. Native PATH_CHMOD/PATH_XATTR and SDK wrappers expose these
 operations with Data write capability checks; POSIX chmod uses PATH_CHMOD.
 Mutations sample validated RTC seconds before staging; inode changes record
