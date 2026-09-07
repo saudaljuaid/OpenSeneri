@@ -26,6 +26,7 @@ enum phipia_errno {
     PHIPIA_ENOTDIR = 20,
     PHIPIA_EISDIR = 21,
     PHIPIA_EINVAL = 22,
+    PHIPIA_EMFILE = 24,
     PHIPIA_ENOSPC = 28,
     PHIPIA_EROFS = 30,
     PHIPIA_EPIPE = 32,

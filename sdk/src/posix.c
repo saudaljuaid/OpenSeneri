@@ -28,7 +28,7 @@ static volatile uint32_t descriptor_lock;
 static struct descriptor_record *descriptor(int number)
 {
     return number >= 3 && number < DESCRIPTOR_MAX &&
-        descriptors[number].active ? &descriptors[number] : NULL;
+        descriptors[number].active == 1 ? &descriptors[number] : NULL;
 }
 
 int open(const char *path, int flags, ...)
@@ -47,6 +47,14 @@ int open(const char *path, int flags, ...)
     if ((flags & O_TRUNC) != 0) native |= PHIPIA_OPEN_TRUNCATE;
     if ((flags & O_APPEND) != 0) native |= PHIPIA_OPEN_APPEND;
     if ((flags & O_EXCL) != 0) native |= PHIPIA_OPEN_EXCLUSIVE;
+    // Reserve the descriptor before a native create/truncate can mutate disk.
+    // State 2 is private to this open and is not a usable descriptor.
+    phipia_runtime_lock(&descriptor_lock);
+    for (int index = 3; index < DESCRIPTOR_MAX; ++index) {
+        if (!descriptors[index].active) { number = index; descriptors[index].active = 2; break; }
+    }
+    phipia_runtime_unlock(&descriptor_lock);
+    if (number < 0) { errno = EMFILE; return -1; }
     if ((flags & O_CREAT) != 0) {
         va_list arguments;
         va_start(arguments, flags);
@@ -56,20 +64,16 @@ int open(const char *path, int flags, ...)
     } else {
         handle = phipia_file_open(parsed.volume, parsed.text, native);
     }
-    if (handle < 0) { errno = (int)-handle; return -1; }
     phipia_runtime_lock(&descriptor_lock);
-    for (int index = 3; index < DESCRIPTOR_MAX; ++index) {
-        if (!descriptors[index].active) { number = index; break; }
-    }
-    if (number >= 0) {
-        descriptors[number].active = 1;
+    if (handle >= 0) {
         descriptors[number].handle = (phipia_handle_t)handle;
         descriptors[number].volume = parsed.volume;
         (void)memcpy(descriptors[number].path, parsed.text, parsed.length + 1U);
-    }
+        descriptors[number].active = 1;
+    } else { (void)memset(&descriptors[number], 0, sizeof(descriptors[number])); }
     phipia_runtime_unlock(&descriptor_lock);
-    if (number < 0) { (void)phipia_handle_close((phipia_handle_t)handle); errno = EMFILE; }
-    if (number >= 0 && (flags & O_APPEND) != 0 &&
+    if (handle < 0) { errno = (int)-handle; return -1; }
+    if ((flags & O_APPEND) != 0 &&
         lseek(number, 0, SEEK_END) < 0) { (void)close(number); return -1; }
     return number;
 }

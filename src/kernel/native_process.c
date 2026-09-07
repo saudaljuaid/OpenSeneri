@@ -805,7 +805,7 @@ static int64_t filesystem_error(enum phipfs_status status)
     case PHIPFS_STATUS_BUSY:
         return -PHIPIA_EBUSY;
     case PHIPFS_STATUS_NO_HANDLES:
-        return -PHIPIA_ENOMEM;
+        return -PHIPIA_EMFILE;
     case PHIPFS_STATUS_STALE_HANDLE:
         return -PHIPIA_ESTALE;
     case PHIPFS_STATUS_FULL:
@@ -3244,6 +3244,8 @@ static int64_t syscall_file_open(
         ((request.flags & PHIPIA_OPEN_CREATE) != 0U ? PHIPFS_OPEN_CREATE : 0U) |
         ((request.flags & PHIPIA_OPEN_TRUNCATE) != 0U ? PHIPFS_OPEN_TRUNCATE : 0U) |
         ((request.flags & PHIPIA_OPEN_EXCLUSIVE) != 0U ? PHIPFS_OPEN_EXCLUSIVE : 0U));
+    if (process->handles.active_handles >= process->handles.limit ||
+        process->handles.active_objects >= process->handles.limit) return -PHIPIA_EMFILE;
     cpu_interrupt_enable();
     status = phipfs_open_options(volume, path, access, open_flags,
         (request.flags & PHIPIA_OPEN_MODE_PRESENT) != 0U ? (uint16_t)request.reserved : 0644U, &file);
@@ -3265,7 +3267,7 @@ static int64_t syscall_file_open(
             cpu_interrupt_enable();
             (void)phipfs_close(file);
             cpu_interrupt_disable();
-            return handle_error(handle_status);
+            return handle_status == NATIVE_HANDLE_FULL ? -PHIPIA_EMFILE : handle_error(handle_status);
         }
     }
     if (process->handles.active_handles > process->peak_handles) {

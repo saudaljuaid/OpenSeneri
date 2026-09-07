@@ -17,6 +17,8 @@ static unsigned close_calls;
 static int invalid_request;
 static uint32_t expected_metadata_flags;
 static struct phipia_path_metadata returned_metadata;
+static int reenter_open;
+static int nested_descriptor = -1;
 
 long phipia_syscall1(uint64_t number, uint64_t address)
 {
@@ -34,6 +36,10 @@ long phipia_syscall1(uint64_t number, uint64_t address)
         request->path.volume != PHIPIA_VOLUME_DATA || request->path.reserved != 0U ||
         request->path.length != 6U || memcmp((const void *)(uintptr_t)request->path.address, "nested", 6U) != 0) {
         invalid_request = 1;
+    }
+    if (reenter_open) {
+        reenter_open = 0;
+        nested_descriptor = open("nested", O_RDONLY);
     }
     return syscall_result;
 }
@@ -134,5 +140,21 @@ int main(void)
     if (descriptor < 3 || close(descriptor) != 0) return 21;
     if (open("nested", O_EXCL | O_WRONLY) != -1 || errno != EINVAL) return 22;
     if (open_calls != 12U || close_calls != 7U || invalid_request) return 23;
+    expected_mode = 0U;
+    expected_open_flags = PHIPIA_OPEN_READ;
+    reenter_open = 1;
+    descriptor = open("nested", O_RDONLY);
+    if (descriptor < 3 || nested_descriptor < 3 || descriptor == nested_descriptor) return 24;
+    if (close(descriptor) != 0 || close(nested_descriptor) != 0) return 25;
+    int held[29];
+    for (unsigned index = 0U; index < 29U; ++index) {
+        held[index] = open("nested", O_RDONLY);
+        if (held[index] != (int)index + 3) return 26;
+    }
+    const unsigned before_full = open_calls;
+    if (open("nested", O_CREAT | O_TRUNC | O_WRONLY, 0600) != -1 || errno != EMFILE ||
+        open_calls != before_full) return 27;
+    for (unsigned index = 0U; index < 29U; ++index) if (close(held[index]) != 0) return 28;
+    if (open_calls != 43U || close_calls != 38U || invalid_request) return 29;
     return 0;
 }
