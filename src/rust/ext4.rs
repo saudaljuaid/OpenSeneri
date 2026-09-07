@@ -372,7 +372,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     ))
 }
 
-fn validate_profile(context: usize, media_bytes: u64) -> Result<u64, Status> {
+pub(crate) fn validate_profile(context: usize, media_bytes: u64) -> Result<u64, Status> {
     let mut superblock = [0u8; SUPERBLOCK_BYTES];
     if !crate::abi::ext4_block_read(context, SUPERBLOCK_START, &mut superblock) {
         return Err(Status::Io);

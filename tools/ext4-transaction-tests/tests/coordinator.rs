@@ -113,6 +113,50 @@ fn mount_fixture(path: &std::path::Path) -> Box<ext4::Mounted> {
     mount_bytes(bytes)
 }
 
+#[test]
+fn admitted_fixture_has_complete_storage_and_namespace_census() {
+    let Some(path) = fixture() else { return };
+    let bytes = std::fs::read(&path).unwrap();
+    DEVICE.with_borrow_mut(|device| *device = Device { bytes: bytes.clone(), ..Device::default() });
+    let profile = ext4::validate_profile(1, bytes.len() as u64);
+    assert!(profile.is_ok(), "profile {profile:?}; fields={:?}",
+        [0x18, 0x1c, 0x20, 0x24, 0x28, 0x48, 0x4c, 0x174].map(|offset|
+            (offset, u32::from_le_bytes(bytes[1024 + offset..1028 + offset].try_into().unwrap()))));
+    let raw = ext4plus::Ext4::load(Box::new(bytes)).unwrap();
+    let mut blocks = raw.block_allocation_snapshot();
+    blocks.reserve_fixed_metadata().expect("fixed storage census");
+    blocks.validate_internal_journal().expect("journal storage census");
+    let mut allocations = raw.inode_allocation_snapshot();
+    let mut pending = vec![String::from("/")];
+    let mut known = std::collections::BTreeMap::new();
+    let mut references = std::collections::BTreeMap::<u32, u32>::new();
+    while let Some(path) = pending.pop() {
+        let node = raw.path_to_inode(ext4plus::Path::try_from(path.as_str()).unwrap(),
+            ext4plus::FollowSymlinks::ExcludeFinalComponent).unwrap();
+        if known.contains_key(&node.index.get()) { continue; }
+        blocks.validate_inode_extents(&node).unwrap_or_else(|error|
+            panic!("storage census {path}, inode {}: {error:?}", node.index));
+        assert!(allocations.is_allocated(node.index).unwrap());
+        known.insert(node.index.get(), (path.clone(), node.links_count()));
+        if node.file_type().is_dir() {
+            for entry in raw.read_dir(path.as_str()).unwrap() {
+                let entry = entry.unwrap();
+                *references.entry(entry.inode.get()).or_default() += 1;
+                if entry.file_name() != "." && entry.file_name() != ".." {
+                    pending.push(String::from_utf8(entry.path().as_ref().to_vec()).unwrap());
+                }
+            }
+        }
+    }
+    for (inode, (path, links)) in &known {
+        assert_eq!(references.get(inode).copied().unwrap_or(0), u32::from(*links),
+            "namespace census {path}, inode {inode}");
+    }
+    blocks.finish(&mut allocations).expect("complete bitmap/reserved-inode census");
+    let mounted = mount_fixture(&path);
+    ext4::unmount(&mounted).unwrap();
+}
+
 fn mount_bytes(bytes: Vec<u8>) -> Box<ext4::Mounted> {
     let length = bytes.len() as u64;
     DEVICE.with_borrow_mut(|device| {
@@ -707,6 +751,23 @@ fn debugfs(image: &std::path::Path, command: &str) {
     let result = std::process::Command::new("debugfs")
         .args(["-w", "-R", command]).arg(image).output().unwrap();
     assert!(result.status.success(), "debugfs: {}", String::from_utf8_lossy(&result.stderr));
+}
+
+fn refresh_fixture_descriptor_checksums(image: &std::path::Path, groups: &[usize]) {
+    let mut bytes = std::fs::read(image).unwrap();
+    assert_eq!(u16::from_le_bytes(bytes[1278..1280].try_into().unwrap()), 64);
+    for &group in groups {
+        let start = 4096 + group * 64;
+        let mut descriptor: [u8; 64] = bytes[start..start + 64].try_into().unwrap();
+        descriptor[30..32].fill(0);
+        let mut crc = u32::from_le_bytes(bytes[1648..1652].try_into().unwrap());
+        for byte in (group as u32).to_le_bytes().iter().chain(&descriptor) {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 { crc = (crc >> 1) ^ (0x82f6_3b78u32 & 0u32.wrapping_sub(crc & 1)); }
+        }
+        bytes[start + 30..start + 32].copy_from_slice(&(crc as u16).to_le_bytes());
+    }
+    write_sparse_fixture(image, &bytes).unwrap();
 }
 
 #[test]
@@ -1305,9 +1366,8 @@ fn inode_bitmap_census_checks_group_totals_directory_counts_and_unused_tail() {
                     write_sparse_fixture(&image, &hostile).unwrap();
                 }
             }
-            debugfs(&image, "set_bg 0 checksum calc");
-            debugfs(&image, &format!("set_bg {lazy} checksum calc"));
             if dirty { debugfs(&image, "feature needs_recovery"); }
+            refresh_fixture_descriptor_checksums(&image, &[0, lazy]);
             let hostile = std::fs::read(&image).unwrap();
             assert_ne!(hostile, pristine, "debugfs must create a real counter fault");
             // Refusal must come from the census, not stale descriptor CRCs.
@@ -1412,9 +1472,8 @@ fn block_bitmap_census_refuses_unowned_allocations_fixed_frees_and_false_counter
                     debugfs(&image, &format!("set_bg 0 block_bitmap {other}"));
                 }
             }
-            debugfs(&image, "set_bg 0 checksum calc");
-            debugfs(&image, &format!("set_bg {lazy} checksum calc"));
             if dirty { debugfs(&image, "feature needs_recovery"); }
+            refresh_fixture_descriptor_checksums(&image, &[0, lazy]);
             let hostile = std::fs::read(&image).unwrap();
             ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
             DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
