@@ -19,6 +19,7 @@ static unsigned renames;
 static uint64_t pending_size;
 static unsigned sync_refusals;
 static unsigned file_sync_calls;
+static unsigned publication_calls;
 static unsigned stat_refusals;
 static unsigned appends;
 static uint16_t changed_mode;
@@ -367,6 +368,18 @@ int32_t phipia_ext4_write_inode(uintptr_t mounted, uint64_t inode, uint64_t offs
     *count = length;
     if (offset + length > disk_size) disk_size = offset + length;
     return PHIPIA_EXT4_STATUS_OK;
+}
+
+int32_t phipia_ext4_publish_file(uintptr_t mounted, const uint8_t *source, size_t source_length,
+    const uint8_t *destination, size_t destination_length, uint64_t inode,
+    const uint64_t *open_inodes, size_t open_count)
+{
+    assert(mounted == 1U && inode == 42U && ext4_mounts[PHIPFS_VOLUME_DATA].session.writable);
+    assert(source_length == 4U && memcmp(source, "file", 4U) == 0);
+    assert(destination_length == 5U && memcmp(destination, "moved", 5U) == 0);
+    assert(open_count == 2U && open_inodes[0] == 42U && open_inodes[1] == 42U);
+    ++publication_calls;
+    return permanent_status;
 }
 
 int32_t phipia_ext4_sync(uintptr_t mounted, const uint64_t *open_inodes, size_t open_count)
@@ -837,6 +850,13 @@ int main(void)
     assert(ext4_backend_fstat(first, &path_metadata) == PHIPFS_STATUS_IO);
     assert(path_metadata.object_id == 0U && path_metadata.size == 0U);
     inode_links = 3U;
+    assert(ext4_backend_publish_file(first, "file", "moved") == PHIPFS_STATUS_ACCESS);
+    assert(publication_calls == 0U);
+    permanent_status = PHIPIA_EXT4_STATUS_IO;
+    assert(ext4_backend_publish_file(second, "file", "moved") == PHIPFS_STATUS_IO);
+    permanent_status = PHIPIA_EXT4_STATUS_OK;
+    assert(ext4_backend_publish_file(second, "file", "moved") == PHIPFS_STATUS_OK);
+    assert(publication_calls == 2U && opens == closes);
     callback_handle = first;
     close_callback_kind = 3U;
     const unsigned sync_before_stale = file_sync_calls;

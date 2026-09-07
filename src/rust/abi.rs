@@ -382,6 +382,32 @@ pub(crate) unsafe extern "C" fn phipia_ext4_unmount(mounted: usize) -> i32 {
     }
 }
 
+/// Publish a named temporary file only while it still names the held inode.
+///
+/// # Safety
+/// Mount, readable paths and live-inode array must be valid and non-overlapping.
+/// C must hold the volume's writable storage lease throughout this call.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn phipia_ext4_publish_file(
+    mounted: usize, source: *const u8, source_length: usize,
+    destination: *const u8, destination_length: usize, inode: u64,
+    open_inodes: *const u64, open_count: usize,
+) -> i32 {
+    if mounted == 0 || source.is_null() || destination.is_null() || open_inodes.is_null() {
+        return ext4::Status::NullArgument as i32;
+    }
+    if open_count > 128 { return ext4::Status::Range as i32; }
+    // SAFETY: the complete readable ranges and mutable mount are the caller's contract.
+    let (mounted, source, destination, open_inodes) = unsafe {
+        (&mut *(mounted as *mut ext4::Mounted), core::slice::from_raw_parts(source, source_length),
+            core::slice::from_raw_parts(destination, destination_length), core::slice::from_raw_parts(open_inodes, open_count))
+    };
+    match ext4::publish_file(mounted, source, destination, inode, open_inodes) {
+        Ok(()) => ext4::Status::Ok as i32,
+        Err(status) => status as i32,
+    }
+}
+
 /// Prepare a file open while C holds the mount's exclusive storage lease.
 ///
 /// # Safety

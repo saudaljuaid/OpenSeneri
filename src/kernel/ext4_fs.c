@@ -396,6 +396,8 @@ static enum phipfs_status map_status(int32_t status)
         return PHIPFS_STATUS_NAME_TOO_LONG;
     case PHIPIA_EXT4_STATUS_SYMLINK_LOOP:
         return PHIPFS_STATUS_SYMLINK_LOOP;
+    case PHIPIA_EXT4_STATUS_STALE:
+        return PHIPFS_STATUS_STALE_HANDLE;
     default:
         return PHIPFS_STATUS_CORRUPT;
     }
@@ -1114,6 +1116,31 @@ enum phipfs_status ext4_backend_fstat(phipfs_handle handle, struct phipfs_stat *
     if (status == PHIPFS_STATUS_OK) status = close_status;
     if (status == PHIPFS_STATUS_OK) fill_stat(&metadata, stat);
     return status;
+}
+
+enum phipfs_status ext4_backend_publish_file(phipfs_handle handle, const char *source, const char *destination)
+{
+    struct ext4_handle_state *state;
+    const size_t source_length = path_length(source);
+    const size_t destination_length = path_length(destination);
+    if (source_length == 0U || source_length >= PHIPFS_MAX_PATH ||
+        destination_length == 0U || destination_length >= PHIPFS_MAX_PATH) return PHIPFS_STATUS_PATH;
+    enum phipfs_status status = handle_state(handle, &state);
+    if (status != PHIPFS_STATUS_OK) return status;
+    if (state->directory || (state->access & PHIPFS_ACCESS_WRITE) == 0U) return PHIPFS_STATUS_ACCESS;
+    struct ext4_mount_state *mount = &ext4_mounts[state->volume];
+    status = begin_operation(mount, true);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = leased_handle_state(handle, mount, &state);
+    if (status == PHIPFS_STATUS_OK) {
+        uint64_t open_inodes[EXT4_MAX_HANDLES];
+        const size_t open_count = collect_open_inodes(state->volume, open_inodes, true);
+        mount->orphan_cleanup_pending = true;
+        status = map_status(phipia_ext4_publish_file(mount->rust_mount, (const uint8_t *)source, source_length,
+            (const uint8_t *)destination, destination_length, state->inode, open_inodes, open_count));
+    }
+    const enum phipfs_status close_status = end_operation(mount, NULL);
+    return status != PHIPFS_STATUS_OK ? status : close_status;
 }
 
 enum phipfs_status ext4_backend_fsync(phipfs_handle handle)

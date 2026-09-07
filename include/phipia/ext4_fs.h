@@ -33,6 +33,7 @@ enum phipia_ext4_status {
     PHIPIA_EXT4_STATUS_BUSY,
     PHIPIA_EXT4_STATUS_NAME_TOO_LONG,
     PHIPIA_EXT4_STATUS_SYMLINK_LOOP,
+    PHIPIA_EXT4_STATUS_STALE,
     PHIPIA_EXT4_STATUS_COUNT
 };
 
@@ -180,6 +181,10 @@ enum phipfs_status ext4_backend_open_options(enum phipfs_volume volume, const ch
 enum phipfs_status ext4_backend_lstat_path(enum phipfs_volume volume, const char *path, struct phipfs_stat *stat);
 enum phipfs_status ext4_backend_fsync(phipfs_handle handle);
 enum phipfs_status ext4_backend_fstat(phipfs_handle handle, struct phipfs_stat *stat);
+enum phipfs_status ext4_backend_publish_file(phipfs_handle handle, const char *source, const char *destination);
+int32_t phipia_ext4_publish_file(uintptr_t mounted, const uint8_t *source, size_t source_length,
+    const uint8_t *destination, size_t destination_length, uint64_t inode,
+    const uint64_t *open_inodes, size_t open_count);
 enum phipfs_status ext4_backend_stat_path(enum phipfs_volume volume,
     const char *path, struct phipfs_stat *stat);
 enum phipfs_status ext4_backend_open_with_stat(enum phipfs_volume volume,

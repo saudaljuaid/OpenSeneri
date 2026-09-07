@@ -579,6 +579,14 @@ generation to the backend's inode lookup. It shares stat/lstat field conversion
 and preserves metadata for an unlinked inode while its file remains open.
 The C tests cover zero-link metadata, refusal outputs, closure during storage
 acquisition and stale mount rejection; the new SDK route awaits Linux testing.
+The kernel VFS publication operation takes a writable file handle and two paths.
+Under one ext4 lease it checks that the temporary name still names that regular
+inode, then performs the existing journaled replace. A replaced temporary name
+or symlink refuses before marker writes. Pending publication binds both names
+and the expected inode, preserving open destination orphans. Callers must finish
+writing and syncing the temporary file before publication. C forwarding/lease
+tests pass; exact retry, old-or-new crash, inode-identity and fsck fixtures await
+Linux verification before applications can claim this save protocol is proved.
 The admitted explicit xattr mutation namespace is
 `user.*`, with names up to 255 bytes. Set/replace/remove journal the inode and
 any allocated, rewritten or released external attribute block. The writer

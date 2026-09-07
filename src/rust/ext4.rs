@@ -150,6 +150,7 @@ enum PendingMutationKind {
     RemoveDirectory,
     Rename,
     RenameReplace,
+    PublishFile,
     Symlink,
     Chmod,
     SetXattr,
@@ -2224,7 +2225,7 @@ pub(crate) fn rename_probe(
     source: &[u8],
     destination: &[u8],
 ) -> Result<(), Status> {
-    rename_transaction(mounted, source, destination, false, &[])
+    rename_transaction(mounted, source, destination, false, &[], None)
 }
 
 pub(crate) fn rename_replace_probe(
@@ -2238,7 +2239,14 @@ pub(crate) fn rename_replace_probe(
 /// Replace while preserving live regular inodes and open directory snapshots.
 pub(crate) fn rename_replace_guarded(mounted: &mut Mounted, source: &[u8],
     destination: &[u8], open_inodes: &[u64]) -> Result<(), Status> {
-    rename_transaction(mounted, source, destination, true, open_inodes)
+    rename_transaction(mounted, source, destination, true, open_inodes, None)
+}
+
+/// Publish only the regular inode still named by the caller's temporary path.
+pub(crate) fn publish_file(mounted: &mut Mounted, source: &[u8], destination: &[u8],
+    inode: u64, open_inodes: &[u64]) -> Result<(), Status> {
+    inode_index(inode)?;
+    rename_transaction(mounted, source, destination, true, open_inodes, Some(inode))
 }
 
 fn remove_rename_destination(
@@ -2293,11 +2301,14 @@ fn rename_transaction(
     destination: &[u8],
     replace: bool,
     open_inodes: &[u64],
+    expected_source: Option<u64>,
 ) -> Result<(), Status> {
-    let kind = if replace { PendingMutationKind::RenameReplace } else { PendingMutationKind::Rename };
+    let kind = if expected_source.is_some() { PendingMutationKind::PublishFile }
+        else if replace { PendingMutationKind::RenameReplace } else { PendingMutationKind::Rename };
     let source_absolute = absolute_path(source)?;
     let destination_absolute = absolute_path(destination)?;
-    let pending_key = namespace_pair_key(&source_absolute, &destination_absolute)?;
+    let mut pending_key = namespace_pair_key(&source_absolute, &destination_absolute)?;
+    if let Some(inode) = expected_source { pending_key.extend_from_slice(&inode.to_le_bytes()); }
     if let Some(pending) = &mounted.pending_reclaim {
         if pending.kind != kind || pending.path != pending_key { return Err(Status::Invalid); }
         return resume_reclaim_request(mounted);
@@ -2315,6 +2326,10 @@ fn rename_transaction(
             .filesystem_recovery_marker_is_durable()
             .map_err(|_| Status::Invalid)?;
         discard_uncommitted_stage(mounted, recovery)?;
+    }
+    if let Some(expected) = expected_source {
+        let source = lstat(mounted, source)?;
+        if source.inode != expected || source.file_type != 1 { return Err(Status::Stale); }
     }
     let mut defer_target = None;
     loop {
@@ -2643,6 +2658,8 @@ pub(crate) enum Status {
     NameTooLong = 15,
     /// Path resolution exceeded the symbolic-link traversal limit.
     SymlinkLoop = 16,
+    /// A supplied inode no longer matches the named object.
+    Stale = 17,
 }
 
 const _: i32 = Status::Volume as i32;

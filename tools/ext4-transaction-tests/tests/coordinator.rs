@@ -428,8 +428,8 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
             18 => ext4::unlink_file_guarded(mounted, b"system/retry-test", &[inode]),
             19 | 20 => ext4::remove_entry_guarded(mounted, b"system/retry-test", &[]),
             21 => ext4::unlink_file_guarded(mounted, b"system/retry-test", &[inode, inode]),
-            22 => ext4::rename_replace_guarded(mounted, b"system/retry-test", b"data/user/retry-test",
-                &[inode, replaced_inode, replaced_inode]),
+            22 => ext4::publish_file(mounted, b"system/retry-test", b"data/user/retry-test",
+                inode, &[inode, replaced_inode, replaced_inode]),
             23 => ext4::remove_directory_guarded(mounted, b"system/retry-test", &[inode, inode]),
             24 => ext4::rename_replace_guarded(mounted, b"system/retry-test", b"data/user/retry-test",
                 &[inode, replaced_inode, replaced_inode]),
@@ -467,9 +467,15 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
                 );
                 let failed_prefix = DEVICE.with_borrow(|device| device.events.clone());
                 assert_eq!(failed_prefix, expected[..=failed_at]);
-                let acl_crash = (case >= 28).then(|| DEVICE.with_borrow(|device| device.bytes.clone()));
+                let acl_crash = (case == 22 || case >= 28).then(|| DEVICE.with_borrow(|device| device.bytes.clone()));
                 if failed_at >= 2 {
                     assert_public_reads_refused(&mounted);
+                    if case == 22 {
+                        assert_eq!(ext4::publish_file(&mut mounted, b"system/retry-test", b"data/user/retry-test",
+                            inode + 1, &[inode, replaced_inode]), Err(Status::Invalid));
+                        assert_eq!(ext4::rename_replace_guarded(&mut mounted, b"system/retry-test", b"data/user/retry-test",
+                            &[inode, replaced_inode]), Err(Status::Invalid));
+                    }
                     if case == 29 {
                         assert_eq!(ext4::create_directory_mode(&mut mounted, b"system/retry-test", 0o755),
                             Err(Status::Invalid), "different mode stole pending mkdir");
@@ -523,6 +529,23 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
                 if let Some(crash) = acl_crash {
                     drop(mounted);
                     let recovered = mount_bytes(crash);
+                    if case == 22 {
+                        let target = ext4::stat(&recovered, b"data/user/retry-test").unwrap();
+                        if target.inode == inode {
+                            assert_eq!(target.size, 0);
+                            assert_eq!(ext4::stat(&recovered, b"system/retry-test"), Err(Status::NotFound));
+                            assert_eq!(ext4::stat_inode(&recovered, replaced_inode), Err(Status::NotFound));
+                        } else {
+                            assert_eq!((target.inode, target.size), (replaced_inode, 8192));
+                            assert_eq!(ext4::stat(&recovered, b"system/retry-test").unwrap().inode, inode);
+                            let mut content = [0; 8192];
+                            read_exact(&recovered, b"data/user/retry-test", &mut content);
+                            assert_eq!(content, [0x33; 8192]);
+                        }
+                        ext4::unmount(&recovered).unwrap();
+                        fsck(&path, &format!("coordinator-publication-cut-{failed_at}-{accept}"));
+                        continue;
+                    }
                     let state = ext4::stat(&recovered, b"system/retry-test");
                     if case == 30 || state.is_ok() {
                         let mode = state.unwrap().mode & 0o777;
@@ -700,6 +723,44 @@ fn prepared_open_exclusive_and_dangling_links_preserve_namespace_rules() {
     ext4::sync(&mut mounted).unwrap();
     ext4::unmount(&mounted).unwrap();
     fsck(&path, "coordinator-exclusive-create-links");
+}
+
+#[test]
+fn file_publication_refuses_replaced_temporary_names_before_mutation() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let temporary = b"system/publish-temp";
+    let target = b"data/user/publish-target";
+    let source = ext4::prepare_open(&mut mounted, temporary, 3, 5, 0o600).unwrap();
+    let destination = ext4::prepare_open(&mut mounted, target, 3, 5, 0o640).unwrap();
+    ext4::write_inode(&mut mounted, source.inode, 0, b"complete new").unwrap();
+    ext4::write_inode(&mut mounted, destination.inode, 0, b"original").unwrap();
+    ext4::symlink_probe(&mut mounted, b"system/publish-sym", b"publish-temp").unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    DEVICE.with_borrow_mut(|device| device.events.clear());
+    assert_eq!(ext4::publish_file(&mut mounted, temporary, target, destination.inode, &[source.inode]), Err(Status::Stale));
+    assert_eq!(ext4::publish_file(&mut mounted, b"system/publish-sym", target, source.inode, &[source.inode]), Err(Status::Stale));
+    DEVICE.with_borrow(|device| assert!(device.events.is_empty()));
+    ext4::rename_probe(&mut mounted, temporary, b"system/publish-moved").unwrap();
+    ext4::create_file_probe(&mut mounted, temporary, 0o640).unwrap();
+    let intruder = ext4::stat(&mounted, temporary).unwrap();
+    ext4::write_inode(&mut mounted, intruder.inode, 0, b"unrelated").unwrap();
+    DEVICE.with_borrow_mut(|device| device.events.clear());
+    assert_eq!(ext4::publish_file(&mut mounted, temporary, target, source.inode, &[source.inode]), Err(Status::Stale));
+    DEVICE.with_borrow(|device| assert!(device.events.is_empty()));
+    assert_eq!(ext4::stat(&mounted, target).unwrap().inode, destination.inode);
+    ext4::publish_file(&mut mounted, b"system/publish-moved", target, source.inode,
+        &[source.inode, destination.inode]).unwrap();
+    assert_eq!(ext4::stat(&mounted, target).unwrap().inode, source.inode);
+    assert_eq!(ext4::stat(&mounted, temporary).unwrap().inode, intruder.inode);
+    assert_eq!(ext4::stat_inode(&mounted, destination.inode).unwrap().links, 0);
+    let mut old = [0; 8];
+    assert_eq!(ext4::pread_inode(&mounted, destination.inode, 0, &mut old), Ok(8));
+    assert_eq!(&old, b"original");
+    ext4::sync_with_open_inodes(&mut mounted, &[source.inode, destination.inode]).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-publication-identity");
 }
 
 #[test]

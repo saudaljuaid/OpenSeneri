@@ -137,6 +137,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
 enum phipfs_status phipfs_close(phipfs_handle handle);
 enum phipfs_status phipfs_fsync(phipfs_handle handle);
 enum phipfs_status phipfs_fstat(phipfs_handle handle, struct phipfs_stat *stat);
+enum phipfs_status phipfs_publish_file(phipfs_handle handle, const char *source, const char *destination);
 enum phipfs_status phipfs_read(
     phipfs_handle handle,
     uint8_t *destination,

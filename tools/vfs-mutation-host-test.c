@@ -20,6 +20,15 @@ static unsigned prepared_calls;
 static uint8_t expected_prepared_flags = PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE;
 static unsigned file_sync_calls;
 static unsigned file_stat_calls;
+static unsigned publication_calls;
+
+static enum phipfs_status publish_file(phipfs_handle handle, const char *source, const char *destination)
+{
+    assert(handle == 77U && live_backend_handles == 1U);
+    assert(strcmp(source, expected_path) == 0 && strcmp(destination, "other/target") == 0);
+    ++publication_calls;
+    return mutation_result;
+}
 
 static enum phipfs_status file_stat(phipfs_handle handle, struct phipfs_stat *result)
 {
@@ -332,6 +341,7 @@ int main(void)
     assert(opened == 0U && prepared_calls == 3U);
     backend.fsync = file_sync;
     backend.fstat = file_stat;
+    backend.publish_file = publish_file;
     mutation_result = PHIPFS_STATUS_OK;
     assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,
         expected_prepared_flags, 01720U, &opened) == PHIPFS_STATUS_OK);
@@ -343,10 +353,17 @@ int main(void)
     assert(phipfs_fstat(opened, &metadata) == PHIPFS_STATUS_OK);
     assert(metadata.object_id == 500U && metadata.size == 777U && metadata.mode == 0100600U);
     assert(stats == before_file_stat && file_stat_calls == 1U);
+    mutation_result = PHIPFS_STATUS_IO;
+    assert(phipfs_publish_file(opened, expected_path, "other/target") == PHIPFS_STATUS_IO);
+    mutation_result = PHIPFS_STATUS_OK;
+    assert(phipfs_publish_file(opened, expected_path, "other/target") == PHIPFS_STATUS_OK);
+    assert(publication_calls == 2U && stats == before_file_stat);
     ++mounts[PHIPFS_VOLUME_DATA].generation;
     assert(phipfs_fsync(opened) == PHIPFS_STATUS_STALE_HANDLE && file_sync_calls == 2U);
     assert(phipfs_fstat(opened, &metadata) == PHIPFS_STATUS_STALE_HANDLE && file_stat_calls == 1U);
     assert(metadata.object_id == 0U);
+    assert(phipfs_publish_file(opened, expected_path, "other/target") == PHIPFS_STATUS_STALE_HANDLE);
+    assert(publication_calls == 2U);
     --mounts[PHIPFS_VOLUME_DATA].generation;
     assert(phipfs_close(opened) == PHIPFS_STATUS_OK);
     assert(phipfs_fsync(opened) == PHIPFS_STATUS_STALE_HANDLE && file_sync_calls == 2U);
