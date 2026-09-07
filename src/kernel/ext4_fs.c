@@ -787,12 +787,16 @@ void ext4_backend_initialize(void)
 
 static enum phipfs_status retry_session_close(struct ext4_mount_state *mount)
 {
-    if (mount->operation_active) return PHIPFS_STATUS_BUSY;
+    bool expected_idle = false;
+    if (!__atomic_compare_exchange_n(&mount->operation_active, &expected_idle,
+            true, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return PHIPFS_STATUS_BUSY;
     if (mount->session.active && nvme_volume_close(&mount->session) != NVME_STATUS_OK) {
+        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
         return PHIPFS_STATUS_IO;
     }
     zero_bytes(&mount->session, sizeof(mount->session));
     mount->close_failed = false;
+    __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
     return PHIPFS_STATUS_OK;
 }
 

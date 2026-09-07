@@ -28,6 +28,7 @@ static bool expected_remove_directory;
 static bool expect_registered_before_close;
 static bool close_reports_failure;
 static bool reenter_on_open;
+static bool reenter_on_close;
 static bool open_reports_failure;
 static unsigned live_mounts = 1U;
 static uint32_t logical_block_bytes = 4096U;
@@ -173,6 +174,10 @@ enum nvme_status nvme_volume_open(struct nvme_volume_session *session,
 enum nvme_status nvme_volume_close(struct nvme_volume_session *session)
 {
     assert(session->active);
+    if (reenter_on_close) {
+        reenter_on_close = false;
+        assert(retry_session_close(&ext4_mounts[PHIPFS_VOLUME_DATA]) == PHIPFS_STATUS_BUSY);
+    }
     if (expect_registered_before_close) {
         assert(ext4_mounts[PHIPFS_VOLUME_DATA].operation_active);
         assert(volume_has_open_handles(PHIPFS_VOLUME_DATA));
@@ -538,11 +543,15 @@ int main(void)
         const unsigned before_retry = opens;
         assert(retained_generation != 0U && ext4_mounts[PHIPFS_VOLUME_DATA].session.active);
         assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_IO);
+        reenter_on_close = true;
         assert(ext4_backend_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_IO);
+        assert(!reenter_on_close);
         assert(opens == before_retry && live_mounts == 1U);
         assert(ext4_mounts[PHIPFS_VOLUME_DATA].session.generation == retained_generation);
         close_reports_failure = false;
+        reenter_on_close = true;
         assert(ext4_backend_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK);
+        assert(!reenter_on_close);
         assert(live_mounts == 0U);
         assert(ext4_backend_mount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK);
     }
