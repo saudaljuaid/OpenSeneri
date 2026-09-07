@@ -138,9 +138,37 @@ fn assert_public_reads_refused(mounted: &ext4::Mounted) {
     assert!(ext4::unmount(mounted).is_err());
 }
 
+fn write_sparse_fixture(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut file = std::fs::File::create(path)?;
+    for (index, block) in bytes.chunks(4096).enumerate() {
+        if block.iter().any(|byte| *byte != 0) {
+            file.seek(SeekFrom::Start(index as u64 * 4096))?;
+            file.write_all(block)?;
+        }
+    }
+    file.set_len(bytes.len() as u64)
+}
+
+#[test]
+fn sparse_fixture_writer_preserves_holes_partial_tail_and_overwrite_length() {
+    let Some(path) = fixture() else { return };
+    let output = path.with_extension("coordinator-sparse-writer.img");
+    let mut bytes = vec![0; 9 * 4096 + 3];
+    bytes[4093..4101].copy_from_slice(b"boundary");
+    bytes[9 * 4096..].copy_from_slice(b"end");
+    write_sparse_fixture(&output, &bytes).unwrap();
+    assert_eq!(std::fs::read(&output).unwrap(), bytes);
+    bytes.truncate(13);
+    write_sparse_fixture(&output, &bytes).unwrap();
+    assert_eq!(std::fs::read(&output).unwrap(), bytes);
+}
+
 fn fsck(path: &std::path::Path, suffix: &str) {
     let output = path.with_extension(format!("{suffix}.img"));
-    DEVICE.with_borrow(|device| std::fs::write(&output, &device.bytes).unwrap());
+    // Keep every exact image, but represent zero-filled ranges as host holes.
+    // Dense copies of every crash cut exhausted the Linux runner's disk.
+    DEVICE.with_borrow(|device| write_sparse_fixture(&output, &device.bytes).unwrap());
     let result = std::process::Command::new("e2fsck")
         .args(["-f", "-n"])
         .arg(&output)
@@ -155,6 +183,7 @@ fn fsck(path: &std::path::Path, suffix: &str) {
     println!("ext4 coordinator fsck {suffix}:\n{log}");
     let hash = std::process::Command::new("sha256sum").arg(&output).output().unwrap();
     assert!(hash.status.success(), "could not hash coordinator disk");
+    std::fs::write(output.with_extension("sha256.txt"), &hash.stdout).unwrap();
     println!("ext4 coordinator disk {}", String::from_utf8_lossy(&hash.stdout));
     assert!(result.status.success(), "e2fsck rejected {suffix}: {log}");
 }
