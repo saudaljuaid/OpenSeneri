@@ -1303,11 +1303,14 @@ fn file_extents_cannot_overwrite_or_free_fixed_metadata() {
         ext4::sync(&mut mounted).unwrap();
         ext4::unmount(&mounted).unwrap();
         DEVICE.with_borrow(|device| assert_eq!(device.bytes, hostile));
-        for unlink in [false, true] {
+        for operation in 0..3 {
             let mut mounted = mount_bytes(hostile.clone());
-            let result = if unlink { ext4::unlink_file_probe(&mut mounted, name) }
-                else { ext4::truncate_probe(&mut mounted, name, 0) };
-            assert_eq!(result, Err(Status::Invalid), "free fixed block {target}, unlink={unlink}");
+            let result = match operation {
+                0 => ext4::truncate_probe(&mut mounted, name, 0),
+                1 => ext4::truncate_probe(&mut mounted, name, 1),
+                _ => ext4::unlink_file_probe(&mut mounted, name),
+            };
+            assert_eq!(result, Err(Status::Invalid), "fixed block {target}, operation={operation}");
             assert_eq!(ext4::stat(&mounted, name).unwrap(), metadata);
             DEVICE.with_borrow(|device| {
                 assert_eq!(device.events.len(), 2);

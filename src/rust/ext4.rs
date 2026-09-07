@@ -1313,6 +1313,24 @@ fn truncate_target(mounted: &mut Mounted, absolute: Vec<u8>, size: u64) -> Resul
     }
     arm_recovery_marker(mounted)?;
     let mut file = open_io_target(mounted.filesystem()?, &absolute)?;
+    if size < old_size && size % BLOCK_BYTES != 0 {
+        // Tail zeroing is journaled as metadata, so the ordered-data and
+        // freed-block classifiers never see it. Check its physical owner
+        // class before upstream can stage bytes over fixed allocator metadata.
+        let validation = (|| {
+            if let Some(block) = file.filesystem_block_at_offset(size).map_err(map_error)? {
+                if mounted.filesystem()?.is_fixed_metadata_block(block).map_err(map_error)? {
+                    return Err(Status::Invalid);
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = validation {
+            drop(file);
+            discard_uncommitted_stage(mounted, true)?;
+            return Err(error);
+        }
+    }
     if let Err(error) = file.truncate(size) {
         discard_uncommitted_stage(mounted, true)?;
         return Err(map_error(error));
