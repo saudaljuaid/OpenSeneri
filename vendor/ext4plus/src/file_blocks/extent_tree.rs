@@ -146,7 +146,7 @@ impl NodeHeader {
         if eh_depth > 5 {
             return Err(CorruptKind::ExtentDepth(inode).into());
         }
-        if eh_max == 0 || eh_entries > eh_max {
+        if eh_max == 0 || eh_entries > eh_max || (eh_depth != 0 && eh_entries == 0) {
             return Err(CorruptKind::ExtentNodeSize(inode).into());
         }
 
@@ -223,6 +223,7 @@ impl ExtentNodeEntries {
         header: &NodeHeader,
         inode: InodeIndex,
     ) -> Result<Self, Ext4Error> {
+        crate::extent::validate_extent_entries(data, header.depth, header.num_entries, inode)?;
         if header.depth == 0 {
             let mut entries = Vec::with_capacity(usize_from_u32(u32::from(
                 header.num_entries,

@@ -28,6 +28,45 @@ pub(crate) struct Extent {
     pub(crate) is_initialized: bool,
 }
 
+/// Validate the complete on-disk entry array before a lookup can select one
+/// apparently valid entry from a malformed tree. Match Linux's local ordering,
+/// nonempty range and logical-overflow checks for both leaves and indexes.
+pub(crate) fn validate_extent_entries(
+    data: &[u8],
+    depth: u16,
+    count: u16,
+    inode: InodeIndex,
+) -> Result<(), Ext4Error> {
+    let mut next_logical = 0u32;
+    for index in 0..usize::from(count) {
+        let start = (index + 1) * 12;
+        let entry = data
+            .get(start..start + 12)
+            .ok_or(CorruptKind::ExtentNotEnoughData(inode))?;
+        let logical = read_u32le(entry, 0);
+        if logical < next_logical {
+            return Err(CorruptKind::ExtentBlock(inode).into());
+        }
+        if depth == 0 {
+            let extent = Extent::from_bytes(entry);
+            if extent.num_blocks == 0 || extent.start_block == 0 {
+                return Err(CorruptKind::ExtentBlock(inode).into());
+            }
+            next_logical = logical
+                .checked_add(u32::from(extent.num_blocks))
+                .ok_or(CorruptKind::ExtentBlock(inode))?;
+        } else {
+            if u64_from_hilo(u32::from(read_u16le(entry, 8)), read_u32le(entry, 4)) == 0 {
+                return Err(CorruptKind::ExtentBlock(inode).into());
+            }
+            next_logical = logical
+                .checked_add(1)
+                .ok_or(CorruptKind::ExtentBlock(inode))?;
+        }
+    }
+    Ok(())
+}
+
 impl Extent {
     #[maybe_async::maybe_async]
     async fn allocate_inner(

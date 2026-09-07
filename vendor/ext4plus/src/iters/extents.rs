@@ -88,7 +88,7 @@ impl NodeHeader {
         if eh_depth > 5 {
             return Err(CorruptKind::ExtentDepth(inode).into());
         }
-        if eh_max == 0 || eh_entries > eh_max {
+        if eh_max == 0 || eh_entries > eh_max || (eh_depth != 0 && eh_entries == 0) {
             return Err(CorruptKind::ExtentNodeSize(inode).into());
         }
 
@@ -124,6 +124,7 @@ impl ToVisitItem {
         if node.len() < header.node_size_in_bytes() {
             return Err(CorruptKind::ExtentNotEnoughData(inode).into());
         }
+        crate::extent::validate_extent_entries(&node, header.depth, header.num_entries, inode)?;
 
         // Remove unused data at the end (e.g. checksum data).
         node.truncate(header.node_size_in_bytes());

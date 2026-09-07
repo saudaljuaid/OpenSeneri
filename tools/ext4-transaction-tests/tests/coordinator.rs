@@ -1221,45 +1221,61 @@ fn checksummed_extent_cycles_are_refused_before_traversal_or_mutation() {
     let leaf = u64::from(u32::from_le_bytes(bytes[inode_start + 0x38..inode_start + 0x3c].try_into().unwrap()))
         | (u64::from(u16::from_le_bytes(bytes[inode_start + 0x3c..inode_start + 0x3e].try_into().unwrap())) << 32);
     let start = leaf as usize * 4096;
-    // Turn the checksummed leaf into an internal node referring to itself.
-    // Its depth no longer decreases from the root, so it must never be followed.
-    bytes[start + 2..start + 4].copy_from_slice(&1u16.to_le_bytes());
-    bytes[start + 6..start + 8].copy_from_slice(&1u16.to_le_bytes());
-    bytes[start + 12..start + 16].fill(0);
-    bytes[start + 16..start + 20].copy_from_slice(&(leaf as u32).to_le_bytes());
-    bytes[start + 20..start + 22].copy_from_slice(&((leaf >> 32) as u16).to_le_bytes());
-    bytes[start + 22..start + 24].fill(0);
-    let maximum = u16::from_le_bytes(bytes[start + 4..start + 6].try_into().unwrap()) as usize;
-    let checksum_offset = start + 12 * (maximum + 1);
-    let mut checksum = u32::from_le_bytes(bytes[1648..1652].try_into().unwrap());
-    for byte in number.to_le_bytes().iter()
-        .chain(&bytes[inode_start + 0x64..inode_start + 0x68])
-        .chain(&bytes[start..checksum_offset]) {
-        checksum ^= u32::from(*byte);
-        for _ in 0..8 { checksum = (checksum >> 1) ^ (0x82f6_3b78u32 & 0u32.wrapping_sub(checksum & 1)); }
+    let original = bytes.clone();
+    for case in 0..7 {
+        bytes.clone_from(&original);
+        match case {
+            0 => {
+                // A checksummed node referring to itself cannot decrease depth.
+                bytes[start + 2..start + 4].copy_from_slice(&1u16.to_le_bytes());
+                bytes[start + 6..start + 8].copy_from_slice(&1u16.to_le_bytes());
+                bytes[start + 12..start + 16].fill(0);
+                bytes[start + 16..start + 20].copy_from_slice(&(leaf as u32).to_le_bytes());
+                bytes[start + 20..start + 22].copy_from_slice(&((leaf >> 32) as u16).to_le_bytes());
+                bytes[start + 22..start + 24].fill(0);
+            }
+            1 => bytes[start + 16..start + 18].fill(0), // zero-length extent
+            2 => bytes[start + 24..start + 28].fill(0), // overlapping logical ranges
+            3 => bytes[start + 12..start + 16].copy_from_slice(&u32::MAX.to_le_bytes()),
+            4 => {
+                bytes[start + 2..start + 4].fill(0);
+                bytes[start + 6..start + 8].copy_from_slice(&1u16.to_le_bytes());
+            }
+            5 => bytes[start + 18..start + 24].fill(0), // initialized block zero
+            _ => bytes[start + 12..start + 16].copy_from_slice(&8u32.to_le_bytes()),
+        }
+        let maximum = u16::from_le_bytes(bytes[start + 4..start + 6].try_into().unwrap()) as usize;
+        let checksum_offset = start + 12 * (maximum + 1);
+        let mut checksum = u32::from_le_bytes(bytes[1648..1652].try_into().unwrap());
+        for byte in number.to_le_bytes().iter()
+            .chain(&bytes[inode_start + 0x64..inode_start + 0x68])
+            .chain(&bytes[start..checksum_offset]) {
+            checksum ^= u32::from(*byte);
+            for _ in 0..8 { checksum = (checksum >> 1) ^ (0x82f6_3b78u32 & 0u32.wrapping_sub(checksum & 1)); }
+        }
+        bytes[checksum_offset..checksum_offset + 4].copy_from_slice(&checksum.to_le_bytes());
+        let stage = std::rc::Rc::new(ext4plus::JournalMutationStage::new(Box::new(bytes.clone()), bytes.len() as u64).unwrap());
+        let filesystem = ext4plus::Ext4::load_with_writer(Box::new(stage.clone()), Some(Box::new(stage.clone()))).unwrap();
+        let inode = ext4plus::inode::Inode::read(&filesystem, std::num::NonZeroU32::new(number).unwrap()).unwrap();
+        // Exercise the separate read-only iterator as well as mutable lookup and
+        // complete-tree collection. No malformed directory entry is reached.
+        let mut iterator = ext4plus::ReadDir::new(filesystem.clone(), &inode, ext4plus::path::PathBuf::empty()).unwrap();
+        assert!(iterator.next().unwrap().is_err());
+        assert!(iterator.next().is_none());
+        let mut file = ext4plus::file::File::open_inode(&filesystem, inode).unwrap();
+        assert!(file.read_bytes_at(&mut [0; 1], 0).is_err());
+        assert!(file.write_bytes_at(b"bad", 0).is_err());
+        assert!(file.truncate(0).is_err());
+        assert!(stage.is_empty());
+        let size = bytes.len() as u64;
+        DEVICE.with_borrow_mut(|device| *device = Device { bytes: bytes.clone(), watched_read_block: Some(leaf), ..Device::default() });
+        assert!(ext4::mount(1, size).is_err());
+        DEVICE.with_borrow(|device| {
+            assert!(device.events.is_empty());
+            assert!(device.watched_reads <= 2);
+            assert_eq!(device.bytes, bytes);
+        });
     }
-    bytes[checksum_offset..checksum_offset + 4].copy_from_slice(&checksum.to_le_bytes());
-    let stage = std::rc::Rc::new(ext4plus::JournalMutationStage::new(Box::new(bytes.clone()), bytes.len() as u64).unwrap());
-    let filesystem = ext4plus::Ext4::load_with_writer(Box::new(stage.clone()), Some(Box::new(stage.clone()))).unwrap();
-    let inode = ext4plus::inode::Inode::read(&filesystem, std::num::NonZeroU32::new(number).unwrap()).unwrap();
-    // Exercise the separate read-only iterator as well as mutable lookup and
-    // complete-tree collection. No malformed directory entry is reached.
-    let mut iterator = ext4plus::ReadDir::new(filesystem.clone(), &inode, ext4plus::path::PathBuf::empty()).unwrap();
-    assert!(iterator.next().unwrap().is_err());
-    assert!(iterator.next().is_none());
-    let mut file = ext4plus::file::File::open_inode(&filesystem, inode).unwrap();
-    assert!(file.read_bytes_at(&mut [0; 1], 0).is_err());
-    assert!(file.write_bytes_at(b"bad", 0).is_err());
-    assert!(file.truncate(0).is_err());
-    assert!(stage.is_empty());
-    let size = bytes.len() as u64;
-    DEVICE.with_borrow_mut(|device| *device = Device { bytes: bytes.clone(), watched_read_block: Some(leaf), ..Device::default() });
-    assert!(ext4::mount(1, size).is_err());
-    DEVICE.with_borrow(|device| {
-        assert!(device.events.is_empty());
-        assert!(device.watched_reads <= 2);
-        assert_eq!(device.bytes, bytes);
-    });
 }
 
 #[test]
