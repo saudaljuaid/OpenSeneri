@@ -815,7 +815,7 @@ fn linux_acl_entries_survive_user_xattr_mutation_and_acl_aware_chmod() {
     write_sparse_fixture(&image, &output).unwrap();
     let exported = path.with_extension("coordinator-posix-acl-export.bin");
     debugfs(&image, &format!("ea_get -f {} /system/acl-preserve system.posix_acl_access", exported.display()));
-    assert_eq!(std::fs::read(exported).unwrap(), posix);
+    assert_eq!(std::fs::read(exported).unwrap(), debugfs_acl_export(posix));
     drop(mounted);
 
     let ipg = u32::from_le_bytes(baseline[1064..1068].try_into().unwrap());
@@ -859,6 +859,19 @@ fn linux_acl_entries_survive_user_xattr_mutation_and_acl_aware_chmod() {
 
 // A default ACL with owner=rwx, group/mask=r-x, other=x. Named users retain
 // rw- while the access mask controls their effective permissions.
+fn debugfs_acl_export(mut posix: Vec<u8>) -> Vec<u8> {
+    assert_eq!(&posix[..4], &2u32.to_le_bytes());
+    assert_eq!((posix.len() - 4) % 8, 0);
+    // e2fsprogs convert_disk_buffer_to_posix_acl emits zero for IDs that
+    // have no on-disk field. Linux's xattr ABI uses ACL_UNDEFINED_ID there.
+    // Preserve every tag, permission and named user/group ID in the comparison.
+    for entry in posix[4..].chunks_exact_mut(8) {
+        let tag = u16::from_le_bytes(entry[..2].try_into().unwrap());
+        if tag != 2 && tag != 8 { entry[4..].fill(0); }
+    }
+    posix
+}
+
 fn posix_acl_fixture(named: u32, version: u32) -> Vec<u8> {
     let mut entries = vec![(1u16, 7u16, u32::MAX)];
     entries.extend((0..named).map(|id| (2, 6, 1000 + id)));
@@ -959,7 +972,7 @@ fn inherited_acls_mask_new_modes_survive_rename_and_rollback_allocations() {
                     let other = expected.len() - 6;
                     expected[other..other + 2].fill(0);
                 }
-                assert_eq!(std::fs::read(export).unwrap(), expected, "{name}");
+                assert_eq!(std::fs::read(export).unwrap(), debugfs_acl_export(expected), "{name}");
             }
         }
         drop(mounted);
