@@ -528,6 +528,10 @@ masked as in Linux; directories also retain the default for their children.
 Hard links, rename and symlinks do not acquire a destination parent's ACL.
 ACL parsing, inheritance, chmod, allocation rollback and crash fixtures await
 Linux verification; this does not claim complete multiuser ACL enforcement.
+Creation also inherits a setgid parent's group (including symlinks), and new
+subdirectories retain setgid. A non-setgid parent's group is not inherited;
+the current VFS supplies caller uid/gid 0. Linux comparison fixtures include
+group IDs above 65535 and nested default-ACL/setgid inheritance.
 The admitted explicit xattr mutation namespace is
 `user.*`, with names up to 255 bytes. Set/replace/remove journal the inode and
 any allocated, rewritten or released external attribute block. The writer

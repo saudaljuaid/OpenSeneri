@@ -396,6 +396,8 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
             let acl = path.with_extension(format!("coordinator-acl-retry-{case}.bin"));
             std::fs::write(&acl, posix_acl_fixture(20, 2)).unwrap();
             debugfs(&image, &format!("ea_set -f {} /system system.posix_acl_default", acl.display()));
+            debugfs(&image, "set_inode_field /system gid 70000");
+            debugfs(&image, &format!("set_inode_field /system mode {}", 0o042755));
             if case == 30 {
                 debugfs(&image, &format!("ea_set -f {} /system/retry-test system.posix_acl_access", acl.display()));
                 debugfs(&image, &format!("set_inode_field /system/retry-test mode {}", 0o100751));
@@ -520,6 +522,8 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
                     let state = ext4::stat(&recovered, b"system/retry-test");
                     if case == 30 || state.is_ok() {
                         let mode = state.unwrap().mode & 0o777;
+                        assert_eq!(state.unwrap().gid, if case == 30 { 0 } else { 70000 });
+                        assert_eq!(state.unwrap().mode & 0o2000, if case == 29 { 0o2000 } else { 0 });
                         assert!(if case == 30 { mode == 0o751 || mode == 0o777 }
                             else { mode == if case == 28 { 0o600 } else { 0o751 } });
                         let raw = ext4plus::Ext4::load(Box::new(DEVICE.with_borrow(|device| device.bytes.clone()))).unwrap();
@@ -878,6 +882,9 @@ fn inherited_acls_mask_new_modes_survive_rename_and_rollback_allocations() {
         let default = posix_acl_fixture(named, 2);
         std::fs::write(&acl, &default).unwrap();
         debugfs(&image, &format!("ea_set -f {} /system system.posix_acl_default", acl.display()));
+        debugfs(&image, "set_inode_field /system uid 54321");
+        debugfs(&image, "set_inode_field /system gid 70000");
+        debugfs(&image, &format!("set_inode_field /system mode {}", if named == 0 { 0o040755 } else { 0o042755 }));
         let mut mounted = mount_fixture(&image);
         // Arm recovery outside the allocation-refusal experiment.
         ext4::create_file_probe(&mut mounted, b"data/user/anchor", 0o600).unwrap();
@@ -893,6 +900,7 @@ fn inherited_acls_mask_new_modes_survive_rename_and_rollback_allocations() {
         ext4::create_file_probe(&mut mounted, b"system/acl-file", 0o666).unwrap();
         ext4::create_file_probe(&mut mounted, b"system/acl-directory/grandchild", 0o666).unwrap();
         ext4::symlink_probe(&mut mounted, b"system/acl-symlink", b"acl-file").unwrap();
+        ext4::symlink_probe(&mut mounted, b"system/acl-slow-symlink", &[b'x'; 97]).unwrap();
         ext4::create_file_probe(&mut mounted, b"data/user/no-acl", 0o666).unwrap();
         ext4::link_file_probe(&mut mounted, b"data/user/no-acl", b"system/acl-hardlink").unwrap();
         ext4::rename_probe(&mut mounted, b"data/user/no-acl", b"system/acl-renamed").unwrap();
@@ -900,13 +908,21 @@ fn inherited_acls_mask_new_modes_survive_rename_and_rollback_allocations() {
         assert_eq!(ext4::stat(&mounted, b"system/acl-directory").unwrap().mode & 0o777, 0o751);
         assert_eq!(ext4::stat(&mounted, b"system/acl-directory/grandchild").unwrap().mode & 0o777, 0o640);
         assert_eq!(ext4::stat(&mounted, b"system/acl-renamed").unwrap().mode & 0o777, 0o666);
+        for name in [b"system/acl-file".as_slice(), b"system/acl-directory", b"system/acl-directory/grandchild",
+            b"system/acl-symlink", b"system/acl-slow-symlink"] {
+            let node = ext4::lstat(&mounted, name).unwrap();
+            assert_eq!(node.uid, 0, "creation uses the caller uid, not the parent uid");
+            assert_eq!(node.gid, if named == 0 { 0 } else { 70000 });
+            assert_eq!(node.mode & 0o2000, if named != 0 && name == b"system/acl-directory" { 0o2000 } else { 0 });
+        }
+        assert_eq!(ext4::stat(&mounted, b"system/acl-renamed").unwrap().gid, 0);
         ext4::sync(&mut mounted).unwrap();
         ext4::unmount(&mounted).unwrap();
         fsck(&path, &format!("coordinator-inherited-acl-{named}"));
         let bytes = DEVICE.with_borrow(|device| device.bytes.clone());
         write_sparse_fixture(&image, &bytes).unwrap();
         let raw = ext4plus::Ext4::load(Box::new(bytes.clone())).unwrap();
-        for name in ["/system/acl-symlink", "/system/acl-hardlink", "/system/acl-renamed"] {
+        for name in ["/system/acl-symlink", "/system/acl-slow-symlink", "/system/acl-hardlink", "/system/acl-renamed"] {
             let inode = raw.path_to_inode(ext4plus::path::Path::try_from(name).unwrap(),
                 ext4plus::FollowSymlinks::ExcludeFinalComponent).unwrap();
             assert_eq!(inode.get_xattr(&raw, b"system.posix_acl_access").unwrap(), None);
@@ -940,6 +956,7 @@ fn inherited_acls_mask_new_modes_survive_rename_and_rollback_allocations() {
         ext4::unlink_file_probe(&mut mounted, b"system/acl-directory/grandchild").unwrap();
         ext4::remove_directory_probe(&mut mounted, b"system/acl-directory").unwrap();
         ext4::unlink_file_probe(&mut mounted, b"system/acl-symlink").unwrap();
+        ext4::unlink_file_probe(&mut mounted, b"system/acl-slow-symlink").unwrap();
         ext4::unlink_file_probe(&mut mounted, b"system/acl-hardlink").unwrap();
         ext4::unlink_file_probe(&mut mounted, b"system/acl-renamed").unwrap();
         assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
@@ -3596,7 +3613,7 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
     let acl_input = path.with_extension("kernel-default-acl.bin");
     std::fs::write(&acl_input, posix_acl_fixture(20, 2)).unwrap();
     let acl_parent = directory.join("system/kernel-acl-parent");
-    linux(&["python3", "-c", "import os,sys; p=sys.argv[1]; os.mkdir(p); os.setxattr(p, 'system.posix_acl_default', open(sys.argv[2], 'rb').read()); os.close(os.open(p+'/linux-file', os.O_CREAT|os.O_WRONLY, 0o666)); os.mkdir(p+'/linux-dir', 0o755)",
+    linux(&["python3", "-c", "import os,sys; p=sys.argv[1]; os.mkdir(p); os.chown(p, 54321, 70000); os.chmod(p, 0o2755); os.setxattr(p, 'system.posix_acl_default', open(sys.argv[2], 'rb').read()); os.close(os.open(p+'/linux-file', os.O_CREAT|os.O_WRONLY, 0o666)); os.mkdir(p+'/linux-dir', 0o755); os.symlink('linux-file', p+'/linux-sym')",
         acl_parent.to_str().unwrap(), acl_input.to_str().unwrap()]);
     kernel.unmount();
     let mut mounted = mount_fixture(&image);
@@ -3611,6 +3628,7 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
     ext4::append_probe(&mut mounted, b"system/linux-alias", b"+phipia", 16384).unwrap();
     ext4::create_file_probe(&mut mounted, b"system/kernel-acl-parent/phipia-file", 0o666).unwrap();
     ext4::create_directory_probe(&mut mounted, b"system/kernel-acl-parent/phipia-dir").unwrap();
+    ext4::symlink_probe(&mut mounted, b"system/kernel-acl-parent/phipia-sym", b"phipia-file").unwrap();
     assert_eq!(ext4::stat(&mounted, b"system/kernel-acl-parent/phipia-file").unwrap().mode & 0o777, 0o640);
     ext4::chmod(&mut mounted, b"system/kernel-acl-parent/phipia-file", 0o702).unwrap();
     ext4::sync(&mut mounted).unwrap();
@@ -3623,6 +3641,8 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
     linux(&["python3", "-c", "import os,sys; p=sys.argv[1]; assert os.getxattr(p, 'user.kernel') == b'p'*3011; assert os.getxattr(p, 'user.z') == b'z'*701; assert os.getxattr(p, 'user.small') == b'inline'; os.setxattr(p, 'user.kernel', b'l'*903)",
         kernel_file.to_str().unwrap()]);
     linux(&["python3", "-c", "import os,sys; p=sys.argv[1]; os.chmod(p+'/linux-file', 0o702); assert os.stat(p+'/linux-file').st_mode == os.stat(p+'/phipia-file').st_mode; assert os.getxattr(p+'/linux-file', 'system.posix_acl_access') == os.getxattr(p+'/phipia-file', 'system.posix_acl_access'); assert os.stat(p+'/linux-dir').st_mode == os.stat(p+'/phipia-dir').st_mode; assert os.getxattr(p+'/linux-dir', 'system.posix_acl_access') == os.getxattr(p+'/phipia-dir', 'system.posix_acl_access'); assert os.getxattr(p+'/linux-dir', 'system.posix_acl_default') == os.getxattr(p+'/phipia-dir', 'system.posix_acl_default')",
+        acl_parent.to_str().unwrap()]);
+    linux(&["python3", "-c", "import os,sys; p=sys.argv[1]; nodes=[os.lstat(p+'/'+creator+'-'+kind) for creator in ['linux','phipia'] for kind in ['file','dir','sym']]; assert all(n.st_uid == 0 and n.st_gid == 70000 for n in nodes)",
         acl_parent.to_str().unwrap()]);
     kernel.unmount();
     let mut mounted = mount_fixture(&image);

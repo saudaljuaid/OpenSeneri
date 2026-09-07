@@ -283,6 +283,15 @@ allocation refusal, storage retries, recovery and malformed admission. Runtime
 verification of this addition is pending; general ACL access enforcement is
 outside the claimed profile.
 
+`create_child_inode` applies Linux v6.12 `inode_init_owner` setgid inheritance
+before allocating the inode, then applies the default ACL. The coordinator's
+file/directory creation and ext4plus symlink creation use this path; raw
+`create_inode` remains available for internal allocation. Caller uid is retained,
+the parent's gid is inherited only with setgid, and only subdirectories inherit
+the setgid bit. Real fixtures compare uid/gid/mode with Linux for a parent owned
+by uid54321/gid70000, including fast/slow symlinks and nested creation. Pending
+storage retries and crash recovery check the inherited group and mode together.
+
 The journal coordinator sets an exclusive transaction time on its staged view.
 Inode writes update ctime (and directory mtime); file write/truncate updates
 mtime; creation sets all initial times after reserving the extra inode fields.

@@ -1257,6 +1257,27 @@ impl Ext4 {
         Inode::create(inode_index, options, self).await
     }
 
+    /// Create an unpublished child with its parent's setgid and default ACL
+    /// inheritance. Allocation, attributes and the later link must share the
+    /// caller's transaction; `create_inode` remains a raw allocation primitive.
+    #[maybe_async::maybe_async]
+    pub async fn create_child_inode(
+        &self,
+        parent: &Inode,
+        mut options: InodeCreationOptions,
+    ) -> Result<Inode, Ext4Error> {
+        if !parent.file_type().is_dir() { return Err(Ext4Error::NotADirectory); }
+        // Linux inode_init_owner: inherit the group for every child type,
+        // and propagate S_ISGID only to subdirectories.
+        if parent.mode().contains(InodeMode::S_ISGID) {
+            options.gid = parent.gid();
+            if options.file_type.is_dir() { options.mode |= InodeMode::S_ISGID; }
+        }
+        let mut inode = self.create_inode(options).await?;
+        inode.inherit_default_acl(self, parent).await?;
+        Ok(inode)
+    }
+
     /// Read the entire contents of a file into a `Vec<u8>`.
     ///
     /// Holes are filled with zero.
@@ -1312,7 +1333,7 @@ impl Ext4 {
         time: Duration,
     ) -> Result<Inode, Ext4Error> {
         let mut inode = self
-            .create_inode(InodeCreationOptions {
+            .create_child_inode(parent_dir.inode(), InodeCreationOptions {
                 file_type: FileType::Symlink,
                 mode: InodeMode::S_IFLNK | InodeMode::from_bits_truncate(0o777),
                 uid,

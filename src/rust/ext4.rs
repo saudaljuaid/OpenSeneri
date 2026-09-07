@@ -1623,7 +1623,7 @@ pub(crate) fn create_file_probe(
         let parent_inode = filesystem
             .path_to_inode(parent, FollowSymlinks::All)?;
         let mut directory = Dir::open_inode(filesystem, parent_inode)?;
-        let mut inode = filesystem.create_inode(InodeCreationOptions {
+        let mut inode = filesystem.create_child_inode(directory.inode(), InodeCreationOptions {
             file_type: FileType::Regular,
             mode: InodeMode::S_IFREG | InodeMode::from_bits_retain(mode),
             uid: 0,
@@ -1631,7 +1631,6 @@ pub(crate) fn create_file_probe(
             time: Duration::from_secs(0),
             flags: InodeFlags::empty(),
         })?;
-        inode.inherit_default_acl(filesystem, directory.inode())?;
         directory.link(name, &mut inode)
     })();
     if let Err(error) = mutation {
@@ -2007,7 +2006,7 @@ pub(crate) fn create_directory_probe(
             .path_to_inode(parent, FollowSymlinks::All)?;
         let mut parent_directory =
             Dir::open_inode(filesystem, parent_inode)?;
-        let mut inode = filesystem.create_inode(InodeCreationOptions {
+        let inode = filesystem.create_child_inode(parent_directory.inode(), InodeCreationOptions {
             file_type: FileType::Directory,
             mode: InodeMode::S_IFDIR
                 | InodeMode::S_IRUSR
@@ -2022,7 +2021,6 @@ pub(crate) fn create_directory_probe(
             time: Duration::from_secs(0),
             flags: InodeFlags::empty(),
         })?;
-        inode.inherit_default_acl(filesystem, parent_directory.inode())?;
         let mut directory = Dir::init(
             filesystem.clone(),
             inode,
