@@ -416,7 +416,9 @@ int main(void)
         assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->size == 8192U);
         assert(opens == closes && !ext4_mounts[PHIPFS_VOLUME_DATA].operation_active);
     }
+    expect_published_size_before_close = true;
     assert(ext4_backend_truncate(PHIPFS_VOLUME_DATA, "file", 101U) == PHIPFS_STATUS_OK);
+    assert(!expect_published_size_before_close);
     assert(truncates == 3U && stats == 1U);
     assert(!reenter_on_open);
     const unsigned counted = capacity_queries;

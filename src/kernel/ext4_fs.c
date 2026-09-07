@@ -1232,6 +1232,18 @@ enum phipfs_status ext4_backend_truncate_probe(enum phipfs_volume volume,
     }
     status = map_status(phipia_ext4_truncate_probe(mount->rust_mount,
         (const uint8_t *)path, length, size));
+    if (status == PHIPFS_STATUS_OK) {
+        struct phipia_ext4_metadata metadata;
+
+        zero_bytes(&metadata, sizeof(metadata));
+        status = map_status(phipia_ext4_stat(mount->rust_mount,
+            (const uint8_t *)path, length, &metadata));
+        if (status == PHIPFS_STATUS_OK) {
+            /* Publish the checkpointed size before another writer can
+             * acquire the volume. Never overwrite its newer EOF after close. */
+            update_open_sizes(volume, metadata.inode, metadata.size);
+        }
+    }
     close_status = end_operation(mount, NULL);
     return status != PHIPFS_STATUS_OK ? status : close_status;
 }
@@ -1697,26 +1709,15 @@ enum phipfs_status ext4_backend_create(enum phipfs_volume volume,
 enum phipfs_status ext4_backend_truncate(enum phipfs_volume volume,
     const char *path, uint64_t size)
 {
-    struct phipia_ext4_metadata metadata;
-    enum phipfs_status status;
-
     if (!valid_volume(volume)) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
     if (size > PHIPFS_MAX_FILE_BYTES) {
         return PHIPFS_STATUS_RANGE;
     }
-    /* A failed transaction hides its staged view from stat. Retry the exact
-     * mutation first, then refresh handle sizes from checkpointed metadata. */
-    status = ext4_backend_truncate_probe(volume, path, size);
-    if (status != PHIPFS_STATUS_OK) {
-        return status;
-    }
-    status = checked_stat(&ext4_mounts[volume], path, &metadata);
-    if (status == PHIPFS_STATUS_OK) {
-        update_open_sizes(volume, metadata.inode, metadata.size);
-    }
-    return status;
+    /* Retry the exact mutation before reading checkpointed metadata; the
+     * coordinator keeps retained journal plans hidden from public stat. */
+    return ext4_backend_truncate_probe(volume, path, size);
 }
 
 enum phipfs_status ext4_backend_mkdir(enum phipfs_volume volume,
