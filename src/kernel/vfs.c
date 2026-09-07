@@ -99,6 +99,7 @@ static const struct vfs_backend_ops fat32_backend_ops = {
 };
 
 static const struct vfs_backend_ops ext4_backend_ops = {
+    .open_options = ext4_backend_open_options,
     .mount = ext4_backend_mount,
     .unmount = ext4_backend_unmount,
     .sync = ext4_backend_sync,
@@ -713,9 +714,15 @@ enum phipfs_status phipfs_open(
     phipfs_handle *handle
 )
 {
+    return phipfs_open_options(volume, path, access, 0U, 0644U, handle);
+}
+
+enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *path,
+    enum phipfs_access access, uint8_t flags, uint16_t mode, phipfs_handle *handle)
+{
     char canonical[PHIPFS_MAX_PATH];
     phipfs_handle backend_handle = 0U;
-    size_t vnode_index;
+    size_t vnode_index = VFS_NO_INDEX;
     size_t slot = VFS_MAX_OPEN_FILES;
     enum phipfs_status status;
 
@@ -723,14 +730,14 @@ enum phipfs_status phipfs_open(
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
     *handle = 0U;
-    status = resolve_path(volume, path, canonical, &vnode_index);
-    if (status != PHIPFS_STATUS_OK) {
-        return status;
-    }
-    if (vnodes[vnode_index].stat.directory) {
-        vnode_release(vnode_index, vnodes[vnode_index].generation);
-        return PHIPFS_STATUS_IS_DIRECTORY;
-    }
+    if ((flags & ~(PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE)) != 0U || (mode & ~07777U) != 0U ||
+        (access != PHIPFS_ACCESS_READ && access != PHIPFS_ACCESS_WRITE && access != PHIPFS_ACCESS_READ_WRITE))
+        return PHIPFS_STATUS_INVALID_ARGUMENT;
+    if ((flags & PHIPFS_OPEN_TRUNCATE) != 0U && (access & PHIPFS_ACCESS_WRITE) == 0U)
+        return PHIPFS_STATUS_ACCESS;
+    status = resolve_metadata_path(volume, path, canonical);
+    if (status != PHIPFS_STATUS_OK) return status;
+    const struct vfs_backend_ops *backend = mounts[volume].backend;
     for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index) {
         if (!open_files[index].active) {
             slot = index;
@@ -738,24 +745,40 @@ enum phipfs_status phipfs_open(
         }
     }
     if (slot == VFS_MAX_OPEN_FILES) {
-        vnode_release(vnode_index, vnodes[vnode_index].generation);
         return PHIPFS_STATUS_NO_HANDLES;
     }
     struct phipfs_stat opened_stat;
-    const struct vfs_backend_ops *backend = mounts[volume].backend;
-    if (backend->open_with_stat != NULL) {
+    if (backend->open_options == NULL) {
+        // Compatibility backends retain their checked parent traversal.
+        if ((flags & PHIPFS_OPEN_CREATE) != 0U) {
+            status = phipfs_stat_path(volume, path, &opened_stat);
+            if (status == PHIPFS_STATUS_NOT_FOUND) status = phipfs_create_mode(volume, path, mode);
+            if (status != PHIPFS_STATUS_OK) return status;
+        }
+        status = resolve_path(volume, path, canonical, &vnode_index);
+        if (status != PHIPFS_STATUS_OK) return status;
+        if (vnodes[vnode_index].stat.directory) {
+            vnode_release(vnode_index, vnodes[vnode_index].generation);
+            return PHIPFS_STATUS_IS_DIRECTORY;
+        }
+    }
+    if (backend->open_options != NULL) {
+        // The backend resolves the target and retries any retained creation or
+        // inode-bound truncation before exporting a checkpointed vnode.
+        status = backend->open_options(volume, canonical, access, flags, mode, &backend_handle, &opened_stat);
+    } else if (backend->open_with_stat != NULL) {
         status = backend->open_with_stat(volume, canonical, access, &backend_handle, &opened_stat);
     } else {
         status = backend->open(volume, canonical, access, &backend_handle);
     }
     if (status != PHIPFS_STATUS_OK) {
-        vnode_release(vnode_index, vnodes[vnode_index].generation);
+        if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnodes[vnode_index].generation);
         return status;
     }
-    if (backend->open_with_stat != NULL) {
+    if (backend->open_options != NULL || backend->open_with_stat != NULL) {
         /* A rename/unlink/recreate may occur between resolve_path and open.
          * Bind the VFS description to the inode actually held by the backend. */
-        vnode_release(vnode_index, vnodes[vnode_index].generation);
+        if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnodes[vnode_index].generation);
         status = vnode_retain(volume, canonical, &opened_stat, &vnode_index);
         if (status != PHIPFS_STATUS_OK) {
             (void)backend->close(backend_handle);
@@ -771,6 +794,14 @@ enum phipfs_status phipfs_open(
     open_files[slot].vnode_index = (uint16_t)vnode_index;
     open_files[slot].active = true;
     *handle = encode_handle(slot, open_files[slot].generation);
+    if (backend->open_options == NULL && (flags & PHIPFS_OPEN_TRUNCATE) != 0U) {
+        status = phipfs_ftruncate(*handle, 0U);
+        if (status != PHIPFS_STATUS_OK) {
+            (void)phipfs_close(*handle);
+            *handle = 0U;
+            return status;
+        }
+    }
     return PHIPFS_STATUS_OK;
 }
 

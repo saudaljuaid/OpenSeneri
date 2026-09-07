@@ -541,8 +541,15 @@ verification alongside the inherited-ACL fixtures.
 POSIX open with O_CREAT now carries its variadic mode through an optional
 native request flag to VFS creation; legacy requests retain mode 0644.
 Permissions and special bits enter the new inode's journal transaction before
-default-ACL masking. The native open/create retry sequence remains unfinished;
-mode propagation alone does not close that application-access gate.
+default-ACL masking. Native open now uses a prepared backend operation under
+one volume lease: resolve/create, optional inode-bound truncate, then register
+the handle. VFS does not pre-stat this path, so a retained create can retry.
+Failed opens bind path/access/flags/mode and any selected truncate inode;
+sync or an external exact retry retires that identity before inode reuse.
+Known handle exhaustion refuses before mutation, and failed opens release
+their handles. Storage failures may still commit the requested mutation.
+Every-write/flush retry and old-or-new crash fixtures await Linux verification.
+Creation through a dangling final symlink and exclusive create remain unfinished.
 The additive PATH_METADATA syscall supplies SDK stat/lstat with inode identity,
 mode, uid/gid, link count and signed access/modify/change seconds plus nanoseconds.
 lstat keeps the final symlink's own metadata, including dangling links. The older

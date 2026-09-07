@@ -382,6 +382,33 @@ pub(crate) unsafe extern "C" fn phipia_ext4_unmount(mounted: usize) -> i32 {
     }
 }
 
+/// Prepare a file open while C holds the mount's exclusive storage lease.
+///
+/// # Safety
+/// The mount and readable path must be live; metadata must be writable and
+/// non-overlapping. Create/truncate requires a writable storage lease.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn phipia_ext4_prepare_open(
+    mounted: usize, path: *const u8, path_length: usize,
+    access: u8, flags: u8, mode: u16, metadata: *mut ext4::Metadata,
+) -> i32 {
+    if mounted == 0 || path.is_null() || metadata.is_null() {
+        return ext4::Status::NullArgument as i32;
+    }
+    // SAFETY: the complete, non-overlapping ranges are the caller's contract.
+    let (mounted, path) = unsafe {
+        (&mut *(mounted as *mut ext4::Mounted), core::slice::from_raw_parts(path, path_length))
+    };
+    match ext4::prepare_open(mounted, path, access, flags, mode) {
+        Ok(value) => {
+            // SAFETY: the caller supplied one writable result.
+            unsafe { *metadata = value };
+            ext4::Status::Ok as i32
+        }
+        Err(status) => status as i32,
+    }
+}
+
 /// Resolve one mount-relative ext4 path.
 ///
 /// # Safety

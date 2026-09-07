@@ -10,6 +10,9 @@
  * directory iterators.
  */
 struct vfs_backend_ops {
+    enum phipfs_status (*open_options)(enum phipfs_volume volume, const char *path,
+        enum phipfs_access access, uint8_t flags, uint16_t mode,
+        phipfs_handle *handle, struct phipfs_stat *stat);
     enum phipfs_status (*mount)(enum phipfs_volume volume);
     enum phipfs_status (*unmount)(enum phipfs_volume volume);
     enum phipfs_status (*sync)(enum phipfs_volume volume);

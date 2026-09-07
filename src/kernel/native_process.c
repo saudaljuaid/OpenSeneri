@@ -3239,20 +3239,12 @@ static int64_t syscall_file_open(
     access = (request.flags & PHIPIA_OPEN_WRITE) != 0U ?
         ((request.flags & PHIPIA_OPEN_READ) != 0U ? PHIPFS_ACCESS_READ_WRITE :
             PHIPFS_ACCESS_WRITE) : PHIPFS_ACCESS_READ;
+    const uint8_t open_flags = (uint8_t)(
+        ((request.flags & PHIPIA_OPEN_CREATE) != 0U ? PHIPFS_OPEN_CREATE : 0U) |
+        ((request.flags & PHIPIA_OPEN_TRUNCATE) != 0U ? PHIPFS_OPEN_TRUNCATE : 0U));
     cpu_interrupt_enable();
-    status = phipfs_stat_path(volume, path, &(struct phipfs_stat){0});
-    if (status == PHIPFS_STATUS_NOT_FOUND &&
-        (request.flags & PHIPIA_OPEN_CREATE) != 0U) {
-        status = phipfs_create_mode(volume, path,
-            (request.flags & PHIPIA_OPEN_MODE_PRESENT) != 0U ? (uint16_t)request.reserved : 0644U);
-    }
-    if (status == PHIPFS_STATUS_OK &&
-        (request.flags & PHIPIA_OPEN_TRUNCATE) != 0U) {
-        status = phipfs_truncate(volume, path, 0U);
-    }
-    if (status == PHIPFS_STATUS_OK) {
-        status = phipfs_open(volume, path, access, &file);
-    }
+    status = phipfs_open_options(volume, path, access, open_flags,
+        (request.flags & PHIPIA_OPEN_MODE_PRESENT) != 0U ? (uint16_t)request.reserved : 0644U, &file);
     if (status == PHIPFS_STATUS_OK && (request.flags & PHIPIA_OPEN_APPEND) != 0U) {
         status = phipfs_set_append(file, true);
         if (status != PHIPFS_STATUS_OK) (void)phipfs_close(file);

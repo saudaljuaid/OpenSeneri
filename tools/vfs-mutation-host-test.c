@@ -16,6 +16,23 @@ static phipfs_handle closing_frontend;
 static bool closing_directory;
 static uint16_t requested_directory_mode;
 static uint16_t expected_file_mode = 0644U;
+static unsigned prepared_calls;
+
+static enum phipfs_status prepared_open(enum phipfs_volume volume, const char *path,
+    enum phipfs_access access, uint8_t flags, uint16_t mode,
+    phipfs_handle *handle, struct phipfs_stat *result)
+{
+    assert(volume == PHIPFS_VOLUME_DATA && strcmp(path, expected_path) == 0);
+    assert(access == PHIPFS_ACCESS_READ_WRITE && flags == (PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE));
+    assert(mode == 01720U);
+    ++prepared_calls;
+    if (mutation_result != PHIPFS_STATUS_OK) return mutation_result;
+    *handle = 77U;
+    memset(result, 0, sizeof(*result));
+    result->object_id = 500U;
+    ++live_backend_handles;
+    return PHIPFS_STATUS_OK;
+}
 
 static enum phipfs_status replaced_open(enum phipfs_volume volume, const char *path,
     enum phipfs_access access, phipfs_handle *handle, struct phipfs_stat *stat)
@@ -257,6 +274,30 @@ int main(void)
     assert(phipfs_lstat_path(PHIPFS_VOLUME_DATA, expected_path, &metadata) == PHIPFS_STATUS_NOT_FOUND);
     assert(metadata.object_id == 0U && metadata.mode == 0U && metadata.atime_seconds == 0);
     assert(stats == before_lstat && mounts[PHIPFS_VOLUME_DATA].references == 0U);
+    backend.open_options = prepared_open;
+    const unsigned before_prepared_stats = stats;
+    for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+        mutation_result = attempt == 0U ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK;
+        assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,
+            PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE, 01720U, &opened) == mutation_result);
+        if (attempt == 0U) assert(opened == 0U && live_backend_handles == 0U);
+        else {
+            assert(open_file_state(opened, &file) == PHIPFS_STATUS_OK);
+            assert(vnodes[file->vnode_index].stat.object_id == 500U);
+            assert(phipfs_close(opened) == PHIPFS_STATUS_OK && live_backend_handles == 0U);
+        }
+    }
+    assert(prepared_calls == 2U && stats == before_prepared_stats);
+    assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ,
+        PHIPFS_OPEN_TRUNCATE, 01720U, &opened) == PHIPFS_STATUS_ACCESS);
+    assert(opened == 0U && prepared_calls == 2U);
+    for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index) open_files[index].active = true;
+    assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE, 01720U, &opened) == PHIPFS_STATUS_NO_HANDLES);
+    assert(opened == 0U && prepared_calls == 2U);
+    for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index) open_files[index].active = false;
+    assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
+    for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) assert(!vnodes[index].active);
     puts("VFS journal mutation retries, backend errors, path bounds and vnode census: PASS");
     return 0;
 }

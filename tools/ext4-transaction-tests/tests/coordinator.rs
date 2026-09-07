@@ -556,6 +556,108 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
 }
 
 #[test]
+fn prepared_open_retries_create_and_inode_truncate_with_old_or_new_crash_states() {
+    let Some(path) = fixture() else { return };
+    let name = b"system/open-test";
+    for create in [false, true] {
+        let mut mounted = mount_fixture(&path);
+        if !create {
+            ext4::create_file_probe(&mut mounted, name, 0o640).unwrap();
+            ext4::transaction_probe(&mut mounted, name, 0, &[0x67; 8192]).unwrap();
+        }
+        ext4::sync(&mut mounted).unwrap();
+        let initial = DEVICE.with_borrow(|device| device.bytes.clone());
+        drop(mounted);
+        let flags = if create { 3 } else { 2 };
+        let perform = |mounted: &mut ext4::Mounted| ext4::prepare_open(mounted, name, 3, flags, 0o1720);
+        let mut reference = mount_bytes(initial.clone());
+        let old_free = ext4::free_bytes(&reference).unwrap();
+        let expected = perform(&mut reference).unwrap();
+        assert_eq!(expected.size, 0);
+        assert_eq!(expected.mode & 0o7777, if create { 0o1720 } else { 0o640 });
+        let new_free = ext4::free_bytes(&reference).unwrap();
+        let trace = DEVICE.with_borrow(|device| device.events.clone());
+        ext4::sync(&mut reference).unwrap();
+        let expected_disk = DEVICE.with_borrow(|device| device.bytes.clone());
+        drop(reference);
+        for accept in [false, true] {
+            for fail in 0..trace.len() {
+                let mut mounted = mount_bytes(initial.clone());
+                DEVICE.with_borrow_mut(|device| { device.fail_event = Some(fail); device.accept_failed_write = accept; });
+                assert_eq!(perform(&mut mounted), Err(Status::Io), "open {create}/{fail}/{accept}");
+                let crash = DEVICE.with_borrow(|device| {
+                    assert_eq!(device.events, trace[..=fail]);
+                    device.bytes.clone()
+                });
+                if fail >= 2 {
+                    assert_public_reads_refused(&mounted);
+                    assert_eq!(ext4::prepare_open(&mut mounted, name, 3, flags, 0o600), Err(Status::Invalid));
+                    assert_eq!(ext4::prepare_open(&mut mounted, b"system/other", 3, flags, 0o1720), Err(Status::Invalid));
+                    assert_eq!(ext4::prepare_open(&mut mounted, name, 2, flags, 0o1720), Err(Status::Invalid));
+                }
+                DEVICE.with_borrow_mut(|device| { device.events.clear(); device.fail_event = None; });
+                assert_eq!(perform(&mut mounted), Ok(expected));
+                let start = trace[..fail].iter().rposition(|event|
+                    matches!(event, Event::Flush(0 | 4 | 5))).map_or(0, |index| index + 1);
+                DEVICE.with_borrow(|device| assert_eq!(device.events, trace[start..], "open retry {create}/{fail}"));
+                ext4::sync(&mut mounted).unwrap();
+                ext4::unmount(&mounted).unwrap();
+                DEVICE.with_borrow(|device| assert!(device.bytes == expected_disk));
+                drop(mounted);
+                let recovered = mount_bytes(crash);
+                match ext4::stat(&recovered, name) {
+                    Err(Status::NotFound) if create => assert_eq!(ext4::free_bytes(&recovered), Ok(old_free)),
+                    Ok(metadata) => {
+                        assert_eq!(metadata.inode, expected.inode);
+                        assert_eq!(metadata.mode, expected.mode);
+                        assert!(metadata.size == 0 || (!create && metadata.size == 8192));
+                        assert_eq!(ext4::free_bytes(&recovered), Ok(if metadata.size == 0 { new_free } else { old_free }));
+                        if metadata.size != 0 {
+                            let mut content = [0; 8192];
+                            read_exact(&recovered, name, &mut content);
+                            assert_eq!(content, [0x67; 8192]);
+                        }
+                    }
+                    state => panic!("invalid open crash state: {state:?}"),
+                }
+                ext4::unmount(&recovered).unwrap();
+                fsck(&path, &format!("coordinator-open-cut-{create}-{fail}-{accept}"));
+            }
+        }
+    }
+}
+
+#[test]
+fn prepared_open_follows_existing_links_and_drops_completed_retry_identity() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let name = b"system/open-test";
+    let original = ext4::prepare_open(&mut mounted, name, 3, 1, 0o640).unwrap();
+    ext4::transaction_probe(&mut mounted, name, 0, b"old").unwrap();
+    ext4::symlink_probe(&mut mounted, b"system/open-sym", b"open-test").unwrap();
+    assert_eq!(ext4::prepare_open(&mut mounted, b"system/open-sym", 3, 1, 0), ext4::stat(&mounted, name));
+    ext4::sync(&mut mounted).unwrap();
+    DEVICE.with_borrow_mut(|device| { device.events.clear(); device.fail_event = Some(3); });
+    assert_eq!(ext4::prepare_open(&mut mounted, name, 3, 2, 0o640), Err(Status::Io));
+    DEVICE.with_borrow_mut(|device| device.fail_event = None);
+    // Another exact inode retry can finish the plan without retrying open.
+    ext4::truncate_inode(&mut mounted, original.inode, 0).unwrap();
+    ext4::rename_probe(&mut mounted, name, b"system/open-old").unwrap();
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    ext4::transaction_probe(&mut mounted, name, 0, b"replacement").unwrap();
+    let replacement = ext4::prepare_open(&mut mounted, name, 3, 1, 0o777).unwrap();
+    assert_ne!(replacement.inode, original.inode);
+    assert_eq!((replacement.size, replacement.mode & 0o777), (11, 0o600));
+    DEVICE.with_borrow_mut(|device| device.events.clear());
+    assert_eq!(ext4::prepare_open(&mut mounted, name, 1, 2, 0o640), Err(Status::ReadOnly));
+    assert_eq!(ext4::prepare_open(&mut mounted, b"system", 3, 1, 0o640), Err(Status::IsDirectory));
+    DEVICE.with_borrow(|device| assert!(device.events.is_empty()));
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-open-identity");
+}
+
+#[test]
 fn append_uses_live_eof_through_aliases_and_refuses_overflow_without_writes() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);

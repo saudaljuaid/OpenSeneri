@@ -170,6 +170,11 @@ enum phipfs_status ext4_backend_append(phipfs_handle handle,
     const uint8_t *source, size_t source_bytes, size_t *written_bytes);
 enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
     enum phipfs_seek_origin origin, uint64_t *position);
+int32_t phipia_ext4_prepare_open(uintptr_t mounted, const uint8_t *path, size_t path_length,
+    uint8_t access, uint8_t flags, uint16_t mode, struct phipia_ext4_metadata *metadata);
+enum phipfs_status ext4_backend_open_options(enum phipfs_volume volume, const char *path,
+    enum phipfs_access access, uint8_t flags, uint16_t mode,
+    phipfs_handle *handle, struct phipfs_stat *stat);
 enum phipfs_status ext4_backend_lstat_path(enum phipfs_volume volume, const char *path, struct phipfs_stat *stat);
 enum phipfs_status ext4_backend_stat_path(enum phipfs_volume volume,
     const char *path, struct phipfs_stat *stat);

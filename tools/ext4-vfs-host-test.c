@@ -34,6 +34,9 @@ static bool open_reports_failure;
 static bool expect_published_size_before_close;
 static unsigned capacity_queries;
 static bool lstat_symbolic;
+static uint8_t prepared_flags;
+static uint16_t prepared_mode;
+static unsigned prepared_opens;
 static unsigned unmount_refusals;
 static unsigned live_mounts = 1U;
 static uint32_t logical_block_bytes = 4096U;
@@ -306,6 +309,20 @@ int32_t phipia_ext4_stat(uintptr_t mounted, const uint8_t *path,
     metadata->mtime_nanos = 999999999U;
     metadata->ctime_seconds = INT32_MIN;
     return PHIPIA_EXT4_STATUS_OK;
+}
+
+int32_t phipia_ext4_prepare_open(uintptr_t mounted, const uint8_t *path, size_t length,
+    uint8_t access, uint8_t flags, uint16_t mode, struct phipia_ext4_metadata *metadata)
+{
+    assert(access >= PHIPFS_ACCESS_READ && access <= PHIPFS_ACCESS_READ_WRITE);
+    assert(ext4_mounts[PHIPFS_VOLUME_DATA].operation_active);
+    assert(ext4_mounts[PHIPFS_VOLUME_DATA].session.writable == (flags != 0U));
+    prepared_flags = flags;
+    prepared_mode = mode;
+    ++prepared_opens;
+    if (flags != 0U && permanent_status != PHIPIA_EXT4_STATUS_OK) return permanent_status;
+    if ((flags & PHIPFS_OPEN_TRUNCATE) != 0U) disk_size = 0U;
+    return phipia_ext4_stat(mounted, path, length, metadata);
 }
 
 int32_t phipia_ext4_stat_inode(uintptr_t mounted, uint64_t inode, struct phipia_ext4_metadata *metadata)
@@ -758,6 +775,25 @@ int main(void)
     assert(path_metadata.object_id == 0U && path_metadata.mode == 0U && path_metadata.atime_seconds == 0);
     lstat_symbolic = false;
     assert(opens == closes);
+    for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+        permanent_status = attempt == 0U ? PHIPIA_EXT4_STATUS_IO : PHIPIA_EXT4_STATUS_OK;
+        const unsigned previous_opens = opens;
+        phipfs_handle prepared = 99U;
+        assert(ext4_backend_open_options(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ_WRITE,
+            PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE, 01720U, &prepared, &path_metadata) ==
+            (attempt == 0U ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK));
+        assert(prepared_flags == (PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE) && prepared_mode == 01720U);
+        assert(opens == previous_opens + 1U && opens == closes);
+        if (attempt == 0U) assert(prepared == 0U && path_metadata.object_id == 0U);
+        else {
+            assert(path_metadata.size == 0U && path_metadata.object_id == 42U);
+            assert(ext4_backend_close(prepared) == PHIPFS_STATUS_OK);
+        }
+    }
+    const unsigned before_invalid_open = prepared_opens;
+    assert(ext4_backend_open_options(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ,
+        PHIPFS_OPEN_TRUNCATE, 0600U, &first, &path_metadata) == PHIPFS_STATUS_ACCESS);
+    assert(first == 0U && prepared_opens == before_invalid_open && opens == closes);
     for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
         permanent_status = attempt == 0U ? PHIPIA_EXT4_STATUS_IO : PHIPIA_EXT4_STATUS_OK;
         assert(ext4_backend_mkdir_mode(PHIPFS_VOLUME_DATA, "file", 01720U) ==

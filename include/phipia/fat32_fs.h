@@ -29,6 +29,9 @@ enum phipfs_access {
     PHIPFS_ACCESS_READ_WRITE = 3U
 };
 
+#define PHIPFS_OPEN_CREATE 1U
+#define PHIPFS_OPEN_TRUNCATE 2U
+
 enum phipfs_seek_origin {
     PHIPFS_SEEK_START = 0,
     PHIPFS_SEEK_CURRENT,
@@ -126,6 +129,8 @@ enum phipfs_status phipfs_open(
     enum phipfs_access access,
     phipfs_handle *handle
 );
+enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *path,
+    enum phipfs_access access, uint8_t flags, uint16_t mode, phipfs_handle *handle);
 enum phipfs_status phipfs_close(phipfs_handle handle);
 enum phipfs_status phipfs_read(
     phipfs_handle handle,

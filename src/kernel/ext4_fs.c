@@ -1134,28 +1134,44 @@ enum phipfs_status ext4_backend_open(enum phipfs_volume volume,
 enum phipfs_status ext4_backend_open_with_stat(enum phipfs_volume volume,
     const char *path, enum phipfs_access access, phipfs_handle *handle, struct phipfs_stat *stat)
 {
+    return ext4_backend_open_options(volume, path, access, 0U, 0644U, handle, stat);
+}
+
+enum phipfs_status ext4_backend_open_options(enum phipfs_volume volume, const char *path,
+    enum phipfs_access access, uint8_t flags, uint16_t mode,
+    phipfs_handle *handle, struct phipfs_stat *stat)
+{
     struct phipia_ext4_metadata metadata;
     const size_t length = path_length(path);
     phipfs_handle opened = 0U;
     enum phipfs_status status;
 
     if (handle == NULL || stat == NULL || !valid_volume(volume) || length == 0U || length >= PHIPFS_MAX_PATH ||
+        (flags & ~(PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE)) != 0U || (mode & ~07777U) != 0U ||
         (access != PHIPFS_ACCESS_READ && access != PHIPFS_ACCESS_WRITE &&
             access != PHIPFS_ACCESS_READ_WRITE)) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
     *handle = 0U;
+    zero_bytes(stat, sizeof(*stat));
+    if ((flags & PHIPFS_OPEN_TRUNCATE) != 0U && (access & PHIPFS_ACCESS_WRITE) == 0U)
+        return PHIPFS_STATUS_ACCESS;
     struct ext4_mount_state *mount = &ext4_mounts[volume];
-    status = begin_operation(mount, false);
+    status = begin_operation(mount, flags != 0U);
     if (status != PHIPFS_STATUS_OK) return status;
-    status = map_status(phipia_ext4_stat(mount->rust_mount,
-        (const uint8_t *)path, length, &metadata));
+    // Refuse known handle exhaustion before create/truncate can change disk.
+    bool available = false;
+    for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index)
+        if (!ext4_handles[index].active) { available = true; break; }
+    status = available ? map_status(phipia_ext4_prepare_open(mount->rust_mount,
+        (const uint8_t *)path, length, (uint8_t)access, flags, mode, &metadata)) : PHIPFS_STATUS_NO_HANDLES;
     if (status == PHIPFS_STATUS_OK && metadata.file_type == PHIPIA_EXT4_FILE_DIRECTORY) {
         status = PHIPFS_STATUS_IS_DIRECTORY;
     }
     // Register the inode while its lookup still owns the volume lease, so
     // unlink/final-close guards cannot miss a successfully opening handle.
     if (status == PHIPFS_STATUS_OK) {
+        if ((flags & PHIPFS_OPEN_TRUNCATE) != 0U) update_open_sizes(volume, metadata.inode, metadata.size);
         status = allocate_handle(volume, path, metadata.inode, metadata.size,
             access, false, 0U, &opened);
     }

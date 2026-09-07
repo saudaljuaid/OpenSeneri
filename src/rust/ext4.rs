@@ -98,6 +98,7 @@ pub(crate) struct Mounted {
     pending_mutation: Option<PendingMutation>,
     pending_write: Option<PendingWrite>,
     pending_reclaim: Option<PendingReclaim>,
+    pending_open: Option<PendingOpen>,
     context: usize,
     image_bytes: u64,
 }
@@ -173,6 +174,15 @@ struct PendingWrite {
     completed: usize,
     append: bool,
     chunk_bytes: usize,
+}
+
+struct PendingOpen {
+    path: Vec<u8>,
+    mode: u16,
+    access: u8,
+    flags: u8,
+    // None while creating; Some binds truncation to the resolved inode.
+    inode: Option<u64>,
 }
 
 struct PendingReclaim {
@@ -804,6 +814,7 @@ pub(crate) fn mount(context: usize, media_bytes: u64) -> Result<(Box<Mounted>, I
             pending_mutation: None,
             pending_write: None,
             pending_reclaim: None,
+            pending_open: None,
             context,
             image_bytes,
         });
@@ -898,6 +909,7 @@ fn resume_pending_mutation_inner(mounted: &mut Mounted) -> Result<usize, Status>
                             .abort_precommit(ticket)
                             .map_err(|_| Status::Invalid)?;
                         mounted.pending_mutation = None;
+                        mounted.pending_open = None;
                         discard_uncommitted_stage(mounted, true)?;
                         return Err(Status::Invalid);
                     }
@@ -965,6 +977,10 @@ fn resume_pending_mutation_inner(mounted: &mut Mounted) -> Result<usize, Status>
                 .written;
             replace_staged_view(mounted, true)?;
             mounted.pending_mutation = None;
+            // An external exact retry may finish a failed open's plan. Its
+            // cached inode must not survive into an unrelated later mutation.
+            // prepare_open keeps its own request locally while executing.
+            mounted.pending_open = None;
             return Ok(written);
         }
         return Err(Status::Invalid);
@@ -1592,6 +1608,58 @@ pub(crate) fn get_xattr(mounted: &Mounted, path: &[u8], name: &[u8],
     if output.len() < value.len() { return Err(Status::Range); }
     output[..value.len()].copy_from_slice(&value);
     Ok(value.len())
+}
+
+/// Resolve/create and optionally truncate under the caller's single volume
+/// lease. A failed open owns no handle, but retains its exact mutation identity
+/// until retry or filesystem sync finishes the outstanding storage plan.
+pub(crate) fn prepare_open(mounted: &mut Mounted, path: &[u8], access: u8,
+    flags: u8, mode: u16) -> Result<Metadata, Status> {
+    const CREATE: u8 = 1;
+    const TRUNCATE: u8 = 2;
+    if !(1..=3).contains(&access) || flags & !(CREATE | TRUNCATE) != 0 || mode & !0o7777 != 0 {
+        return Err(Status::Invalid);
+    }
+    if flags & TRUNCATE != 0 && access & 2 == 0 { return Err(Status::ReadOnly); }
+    let absolute = absolute_path(path)?;
+    let pending = mounted.pending_mutation.is_some() || mounted.pending_reclaim.is_some()
+        || mounted.pending_write.is_some();
+    // A sync or another exact retry may already have completed the plan. Never
+    // reuse its cached inode after that point: the name may have been replaced.
+    if !pending { mounted.pending_open = None; }
+    if let Some(request) = &mounted.pending_open {
+        if request.path != absolute || request.access != access || request.flags != flags || request.mode != mode {
+            return Err(Status::Invalid);
+        }
+    } else if pending { return Err(Status::Busy); }
+    let retry = mounted.pending_open.is_some();
+    let mut request = mounted.pending_open.take().unwrap_or(PendingOpen {
+        path: absolute, mode, access, flags, inode: None,
+    });
+    let result = (|| {
+        if request.inode.is_none() {
+            if retry {
+                create_file_probe(mounted, &request.path, mode)?;
+            } else {
+                match stat(mounted, &request.path) {
+                    Ok(_) => {},
+                    Err(Status::NotFound) if flags & CREATE != 0 => create_file_probe(mounted, &request.path, mode)?,
+                    Err(status) => return Err(status),
+                }
+            }
+            let metadata = stat(mounted, &request.path)?;
+            if metadata.file_type == 2 { return Err(Status::IsDirectory); }
+            if metadata.file_type != 1 { return Err(Status::Special); }
+            request.inode = Some(metadata.inode);
+        }
+        let inode = request.inode.ok_or(Status::Invalid)?;
+        if flags & TRUNCATE != 0 { truncate_inode(mounted, inode, 0)?; }
+        stat_inode(mounted, inode)
+    })();
+    if result.is_err() && (mounted.pending_mutation.is_some() || mounted.pending_reclaim.is_some()) {
+        mounted.pending_open = Some(request);
+    }
+    result
 }
 
 /// Create one empty regular file through the journaled mutation path.
@@ -2321,6 +2389,7 @@ pub(crate) fn sync_with_open_inodes(mounted: &mut Mounted, open_inodes: &[u64]) 
     } else if mounted.pending_mutation.is_some() {
         let _ = resume_pending_mutation_inner(mounted)?;
     }
+    mounted.pending_open = None;
     ensure_staged_view(mounted)?;
     if !mounted.stage.is_empty() || mounted.stage.is_sealed() {
         return Err(Status::Invalid);
