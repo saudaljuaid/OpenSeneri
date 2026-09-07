@@ -254,10 +254,10 @@ impl Extents {
                 .checked_add(u32::from(extent.num_blocks))
                 .ok_or(CorruptKind::ExtentBlock(self.inode))?;
             if let Some(allocations) = allocations {
+                allocations.claim_extent_range(extent.start_block, u32::from(extent.num_blocks), self.inode)?;
                 if !allocations.range_is_allocated(extent.start_block, u32::from(extent.num_blocks)).await? {
                     return Err(CorruptKind::ExtentBlock(self.inode).into());
                 }
-                allocations.claim_extent_range(extent.start_block, u32::from(extent.num_blocks), self.inode)?;
             }
             return Ok(Some(extent));
         } else {
@@ -267,10 +267,10 @@ impl Extents {
             let ei_leaf_hi = read_u16le(entry, 8);
             let child_block = u64_from_hilo(u32::from(ei_leaf_hi), ei_leaf_lo);
             if let Some(allocations) = allocations {
+                allocations.claim_extent_range(child_block, 1, self.inode)?;
                 if !allocations.range_is_allocated(child_block, 1).await? {
                     return Err(CorruptKind::ExtentBlock(self.inode).into());
                 }
-                allocations.claim_extent_range(child_block, 1, self.inode)?;
             }
 
             // Read just the header of the child node. This is needed to

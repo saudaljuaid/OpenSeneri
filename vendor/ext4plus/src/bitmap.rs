@@ -133,10 +133,10 @@ impl<'a> BlockAllocationSnapshot<'a> {
             if block != 0 { pending.push((block, index.saturating_sub(11) as u8)); }
         }
         while let Some((block, depth)) = pending.pop() {
+            self.claim_extent_range(block, 1, inode.index)?;
             if !self.range_is_allocated(block, 1).await? {
                 return Err(CorruptKind::BlockMap(block as u32).into());
             }
-            self.claim_extent_range(block, 1, inode.index)?;
             if depth != 0 {
                 let bytes = self.filesystem.read_block(block).await?;
                 for entry in bytes.chunks_exact(4) {
@@ -157,10 +157,10 @@ impl<'a> BlockAllocationSnapshot<'a> {
             }
             *seen += 1;
         } else {
+            self.claim_extent_range(block, 1, inode.index)?;
             if !self.range_is_allocated(block, 1).await? {
                 return Err(CorruptKind::Xattr(inode.index).into());
             }
-            self.claim_extent_range(block, 1, inode.index)?;
             self.xattr_references.insert(block, (expected, 1, inode.index));
         }
         Ok(())
