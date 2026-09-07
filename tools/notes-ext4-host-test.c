@@ -1,0 +1,238 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+/* Exercise the production Notes save path against storage boundary failures. */
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include "../src/kernel/ui.c"
+
+enum save_fault {
+    SAVE_OK, CREATE_FAIL, CREATE_LOST, STAT_FAIL, WRITE_FAIL, SHORT_WRITE,
+    FIRST_SYNC_FAIL, PUBLISH_FAIL, PUBLISH_LOST, PUBLISH_WRONG_INODE,
+    SOURCE_REPLACED, SECOND_SYNC_FAIL, CLOSE_FAIL
+};
+
+static enum save_fault fault;
+static unsigned occupied_names;
+static unsigned opens;
+static unsigned writes;
+static unsigned syncs;
+static unsigned publications;
+static unsigned closes;
+static unsigned live_handles;
+static uint64_t target_inode;
+static uint64_t scratch_inode;
+static size_t target_length;
+static size_t scratch_length;
+static uint16_t expected_mode;
+static bool pending_publication;
+static char scratch_name[PHIPFS_MAX_PATH + 1U];
+static uint8_t target_bytes[1536];
+static uint8_t scratch_bytes[1536];
+
+static void assert_handle(phipfs_handle handle)
+{
+    assert(handle == 77U && live_handles == 1U);
+}
+
+bool phipfs_has_atomic_replace(enum phipfs_volume volume)
+{
+    assert(volume == PHIPFS_VOLUME_DATA);
+    return true;
+}
+
+const char *phipfs_status_string(enum phipfs_status status)
+{
+    return status == PHIPFS_STATUS_OK ? "ok" : "error";
+}
+
+enum phipfs_status phipfs_stat_path(enum phipfs_volume volume, const char *path,
+    struct phipfs_stat *result)
+{
+    assert(volume == PHIPFS_VOLUME_DATA && strcmp(path, note_path) == 0);
+    if (target_inode == 0U) return PHIPFS_STATUS_NOT_FOUND;
+    memset(result, 0, sizeof(*result));
+    result->object_id = target_inode;
+    result->size = target_length;
+    result->mode = 0100600U;
+    return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_lstat_path(enum phipfs_volume volume, const char *path,
+    struct phipfs_stat *result)
+{
+    assert(volume == PHIPFS_VOLUME_DATA && strcmp(path, scratch_name) == 0);
+    if (scratch_inode == 0U) return PHIPFS_STATUS_NOT_FOUND;
+    memset(result, 0, sizeof(*result));
+    result->object_id = scratch_inode;
+    result->size = scratch_length;
+    return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *path,
+    enum phipfs_access access, uint8_t flags, uint16_t mode, phipfs_handle *handle)
+{
+    assert(volume == PHIPFS_VOLUME_DATA && access == PHIPFS_ACCESS_READ_WRITE);
+    assert(flags == (PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE));
+    assert(mode == expected_mode && live_handles == 0U);
+    ++opens;
+    char expected[] = "folder/SNTMP1.TMP";
+    expected[12] = (char)('0' + opens);
+    assert(strcmp(path, expected) == 0);
+    if (opens <= occupied_names) return PHIPFS_STATUS_EXISTS;
+    strcpy(scratch_name, path);
+    if (fault == CREATE_FAIL) return PHIPFS_STATUS_IO;
+    scratch_inode = 20U;
+    if (fault == CREATE_LOST) return PHIPFS_STATUS_IO;
+    *handle = 77U;
+    live_handles = 1U;
+    return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_fstat(phipfs_handle handle, struct phipfs_stat *result)
+{
+    assert_handle(handle);
+    if (fault == STAT_FAIL) return PHIPFS_STATUS_IO;
+    memset(result, 0, sizeof(*result));
+    result->object_id = 20U;
+    return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_write(phipfs_handle handle, const uint8_t *bytes,
+    size_t length, size_t *written)
+{
+    assert_handle(handle);
+    assert(syncs == 0U && publications == 0U && length == note_length);
+    ++writes;
+    if (fault == WRITE_FAIL) return PHIPFS_STATUS_IO;
+    *written = fault == SHORT_WRITE ? length / 2U : length;
+    memcpy(scratch_bytes, bytes, *written);
+    scratch_length = *written;
+    return PHIPFS_STATUS_OK;
+}
+
+static void finish_publication(void)
+{
+    target_inode = scratch_inode;
+    target_length = scratch_length;
+    memcpy(target_bytes, scratch_bytes, scratch_length);
+    scratch_inode = 0U;
+    pending_publication = false;
+}
+
+enum phipfs_status phipfs_fsync(phipfs_handle handle)
+{
+    assert_handle(handle);
+    ++syncs;
+    if (syncs == 1U) {
+        assert(publications == 0U && target_inode != 20U);
+        if (fault == FIRST_SYNC_FAIL) return PHIPFS_STATUS_IO;
+    } else {
+        assert(syncs == 2U && publications == 1U);
+        if (fault == SECOND_SYNC_FAIL) return PHIPFS_STATUS_IO;
+        if (pending_publication) finish_publication();
+    }
+    return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_publish_file(phipfs_handle handle, const char *source,
+    const char *destination)
+{
+    assert_handle(handle);
+    assert(strcmp(source, scratch_name) == 0 && strcmp(destination, note_path) == 0);
+    assert(syncs == 1U && scratch_length == note_length);
+    assert(memcmp(scratch_bytes, note_buffer, note_length) == 0);
+    ++publications;
+    if (fault == PUBLISH_FAIL) return PHIPFS_STATUS_IO;
+    if (fault == SOURCE_REPLACED) {
+        scratch_inode = 30U;
+        return PHIPFS_STATUS_STALE_HANDLE;
+    }
+    if (fault == PUBLISH_LOST) {
+        pending_publication = true;
+        return PHIPFS_STATUS_IO;
+    }
+    finish_publication();
+    if (fault == PUBLISH_WRONG_INODE) target_inode = 30U;
+    return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_close(phipfs_handle handle)
+{
+    assert_handle(handle);
+    ++closes;
+    live_handles = 0U;
+    return fault == CLOSE_FAIL ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK;
+}
+
+static void reset_save(enum save_fault next_fault)
+{
+    assert(live_handles == 0U);
+    fault = next_fault;
+    occupied_names = opens = writes = syncs = publications = closes = 0U;
+    target_inode = 10U;
+    target_length = 3U;
+    scratch_inode = 0U;
+    scratch_length = 0U;
+    expected_mode = 0600U;
+    pending_publication = false;
+    memcpy(target_bytes, "old", 3U);
+    memset(scratch_bytes, 0, sizeof(scratch_bytes));
+    strcpy(note_path, "folder/NOTES.TXT");
+    strcpy(note_buffer, "complete new note\n");
+    note_length = strlen(note_buffer);
+    note_dirty = true;
+    note_savable = true;
+}
+
+static void assert_saved(void)
+{
+    assert(!note_dirty && live_handles == 0U && closes == 1U);
+    assert(target_inode == 20U && scratch_inode == 0U && target_length == note_length);
+    assert(memcmp(target_bytes, note_buffer, note_length) == 0);
+    assert(syncs == 2U && publications == 1U);
+}
+
+int main(void)
+{
+    reset_save(SAVE_OK);
+    occupied_names = 2U; /* Existing files and dangling symlinks both refuse O_EXCL. */
+    assert(note_save() == PHIPFS_STATUS_OK && opens == 3U);
+    assert_saved();
+    reset_save(SAVE_OK);
+    target_inode = 0U;
+    expected_mode = 0644U;
+    note_length = 0U;
+    assert(note_save() == PHIPFS_STATUS_OK && writes == 0U);
+    assert_saved();
+    reset_save(PUBLISH_LOST);
+    assert(note_save() == PHIPFS_STATUS_OK);
+    assert_saved();
+
+    const enum save_fault faults[] = { CREATE_FAIL, CREATE_LOST, STAT_FAIL,
+        WRITE_FAIL, SHORT_WRITE, FIRST_SYNC_FAIL, PUBLISH_FAIL, SOURCE_REPLACED,
+        PUBLISH_WRONG_INODE, SECOND_SYNC_FAIL, CLOSE_FAIL };
+    for (size_t index = 0U; index < sizeof(faults) / sizeof(faults[0]); ++index) {
+        reset_save(faults[index]);
+        const enum phipfs_status status = note_save();
+        assert(status != PHIPFS_STATUS_OK && note_dirty && live_handles == 0U);
+        assert(closes == (fault == CREATE_FAIL || fault == CREATE_LOST ? 0U : 1U));
+        assert(strstr(app_status, "save note failed") != NULL);
+        if (fault <= FIRST_SYNC_FAIL) assert(publications == 0U);
+        if (fault <= PUBLISH_FAIL || fault == SOURCE_REPLACED) {
+            assert(target_inode == 10U && target_length == 3U);
+            assert(memcmp(target_bytes, "old", 3U) == 0);
+        }
+        if (fault == CREATE_LOST || fault == PUBLISH_FAIL) assert(scratch_inode == 20U);
+        if (fault == SOURCE_REPLACED) assert(scratch_inode == 30U);
+        if (fault == PUBLISH_FAIL || fault == SOURCE_REPLACED) assert(syncs == 2U);
+    }
+    reset_save(SAVE_OK);
+    occupied_names = 9U;
+    assert(note_save() == PHIPFS_STATUS_EXISTS && opens == 9U);
+    assert(note_dirty && live_handles == 0U && closes == 0U && writes == 0U);
+    reset_save(SAVE_OK);
+    note_savable = false;
+    assert(note_save() == PHIPFS_STATUS_RANGE && opens == 0U && note_dirty);
+    puts("Notes ext4 save: exclusive ownership, complete publication, failure handling PASS");
+    return 0;
+}

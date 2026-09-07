@@ -2935,6 +2935,59 @@ static enum phipfs_status note_restore_original(
     return status;
 }
 
+static enum phipfs_status note_save_journaled(void)
+{
+    struct phipfs_stat original;
+    struct phipfs_stat owned;
+    phipfs_handle handle = 0U;
+    char temporary[PHIPFS_MAX_PATH + 1U];
+    char leaf[] = "SNTMP1.TMP";
+    uint16_t mode = 0644U;
+    if (!note_savable) return PHIPFS_STATUS_RANGE;
+    enum phipfs_status status = phipfs_stat_path(PHIPFS_VOLUME_DATA, note_path, &original);
+    if (status == PHIPFS_STATUS_OK) {
+        if (original.directory) return PHIPFS_STATUS_IS_DIRECTORY;
+        mode = original.mode & 07777U;
+    } else if (status != PHIPFS_STATUS_NOT_FOUND) { return status; }
+    for (uint32_t number = 1U; number <= 9U; ++number) {
+        leaf[5] = (char)('0' + number);
+        if (!note_sibling_path(leaf, temporary)) return PHIPFS_STATUS_PATH;
+        status = phipfs_open_options(PHIPFS_VOLUME_DATA, temporary, PHIPFS_ACCESS_READ_WRITE,
+            PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, mode, &handle);
+        if (status != PHIPFS_STATUS_EXISTS) break;
+    }
+    // A refused create may have an unknown durable result. It supplies no
+    // ownership handle, so never unlink a name in this branch.
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = phipfs_fstat(handle, &owned);
+    size_t written = 0U;
+    if (status == PHIPFS_STATUS_OK && note_length != 0U)
+        status = phipfs_write(handle, (const uint8_t *)note_buffer, note_length, &written);
+    if (status == PHIPFS_STATUS_OK && written != note_length) status = PHIPFS_STATUS_WRITEBACK;
+    if (status == PHIPFS_STATUS_OK) status = phipfs_fsync(handle);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_publish_file(handle, temporary, note_path);
+        const enum phipfs_status synced = phipfs_fsync(handle);
+        if (synced != PHIPFS_STATUS_OK) status = synced;
+        else {
+            struct phipfs_stat published;
+            struct phipfs_stat scratch;
+            const enum phipfs_status target_status = phipfs_stat_path(PHIPFS_VOLUME_DATA, note_path, &published);
+            const enum phipfs_status scratch_status = phipfs_lstat_path(PHIPFS_VOLUME_DATA, temporary, &scratch);
+            // Sync can finish a publish whose write/flush completion was lost.
+            // Only this exact inode at the destination proves the save visible.
+            if (target_status == PHIPFS_STATUS_OK && published.object_id == owned.object_id &&
+                published.size == note_length && scratch_status == PHIPFS_STATUS_NOT_FOUND) status = PHIPFS_STATUS_OK;
+            else if (status == PHIPFS_STATUS_OK) status = target_status != PHIPFS_STATUS_OK ?
+                target_status : PHIPFS_STATUS_STALE_HANDLE;
+        }
+    }
+    // On failure leave the scratch name for recovery/repair. It may be
+    // incomplete or have been replaced; deleting it by name would be unsafe.
+    const enum phipfs_status closed = phipfs_close(handle);
+    return status == PHIPFS_STATUS_OK ? closed : status;
+}
+
 static enum phipfs_status note_save(void)
 {
     struct phipfs_stat stat;
@@ -2943,6 +2996,13 @@ static enum phipfs_status note_save(void)
     bool original_exists = false;
     bool original_backed_up = false;
     enum phipfs_status status;
+
+    if (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) {
+        status = note_save_journaled();
+        if (status == PHIPFS_STATUS_OK) note_dirty = false;
+        set_app_status(status == PHIPFS_STATUS_OK ? "note saved" : "save note failed", status);
+        return status;
+    }
 
     if (!note_savable) {
         status = PHIPFS_STATUS_RANGE;
