@@ -7,7 +7,7 @@ use crate::{Ext4, Ext4Error};
 
 use crate::util::usize_from_u32;
 use alloc::vec;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::ops::RangeBounds;
 
@@ -23,11 +23,30 @@ pub struct InodeAllocationSnapshot<'a> {
 pub struct BlockAllocationSnapshot<'a> {
     filesystem: &'a Ext4,
     groups: BTreeMap<u32, Vec<u8>>,
+    extent_ranges: BTreeMap<u64, u64>,
+    validated_inodes: BTreeSet<crate::inode::InodeIndex>,
+    invalid: bool,
 }
 
 impl<'a> BlockAllocationSnapshot<'a> {
     pub(crate) fn new(filesystem: &'a Ext4) -> Self {
-        Self { filesystem, groups: BTreeMap::new() }
+        Self { filesystem, groups: BTreeMap::new(), extent_ranges: BTreeMap::new(),
+            validated_inodes: BTreeSet::new(), invalid: false }
+    }
+
+    /// Extent data and tree blocks have exactly one claim, including within
+    /// one inode. Hard links are handled by validating each inode only once.
+    pub(crate) fn claim_extent_range(&mut self, start: u64, count: u32,
+        inode: crate::inode::InodeIndex) -> Result<(), Ext4Error> {
+        let end = start.checked_add(u64::from(count)).ok_or(CorruptKind::ExtentBlock(inode))?;
+        if self.extent_ranges.len() >= 65_536 { return Err(Ext4Error::FileTooLarge); }
+        if self.invalid || count == 0
+            || self.extent_ranges.range(..end).next_back().is_some_and(|(_, previous_end)| *previous_end > start)
+        {
+            return Err(CorruptKind::ExtentBlock(inode).into());
+        }
+        self.extent_ranges.insert(start, end);
+        Ok(())
     }
 
     /// Require every block in a nonempty physical range to be allocated.
@@ -60,14 +79,24 @@ impl<'a> BlockAllocationSnapshot<'a> {
         Ok(true)
     }
 
-    /// Validate extent-node and data allocation, including unwritten extents
-    /// beyond EOF. Cross-inode ownership remains a separate check.
+    /// Validate allocation and exclusive extent-node/data ownership among the
+    /// inodes in this pass. Discard this snapshot after any error or mutation.
+    /// Xattr, fixed metadata and non-extent mappings have separate validators.
     #[maybe_async::maybe_async]
     pub async fn validate_inode_extents(&mut self, inode: &crate::inode::Inode) -> Result<(), Ext4Error> {
+        if self.invalid { return Err(CorruptKind::ExtentBlock(inode.index).into()); }
+        if self.validated_inodes.contains(&inode.index) { return Ok(()); }
         if inode.flags().contains(crate::inode::InodeFlags::EXTENTS) {
-            crate::iters::extents::Extents::new(self.filesystem.clone(), inode)?
-                .validate_allocation(self).await?;
+            let result = match crate::iters::extents::Extents::new(self.filesystem.clone(), inode) {
+                Ok(extents) => extents.validate_allocation(self).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                self.invalid = true;
+                return Err(error);
+            }
         }
+        self.validated_inodes.insert(inode.index);
         Ok(())
     }
 }

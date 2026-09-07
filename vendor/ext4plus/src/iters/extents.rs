@@ -257,6 +257,7 @@ impl Extents {
                 if !allocations.range_is_allocated(extent.start_block, u32::from(extent.num_blocks)).await? {
                     return Err(CorruptKind::ExtentBlock(self.inode).into());
                 }
+                allocations.claim_extent_range(extent.start_block, u32::from(extent.num_blocks), self.inode)?;
             }
             return Ok(Some(extent));
         } else {
@@ -269,6 +270,7 @@ impl Extents {
                 if !allocations.range_is_allocated(child_block, 1).await? {
                     return Err(CorruptKind::ExtentBlock(self.inode).into());
                 }
+                allocations.claim_extent_range(child_block, 1, self.inode)?;
             }
 
             // Read just the header of the child node. This is needed to

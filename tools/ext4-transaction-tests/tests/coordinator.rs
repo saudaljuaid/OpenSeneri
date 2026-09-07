@@ -1241,16 +1241,29 @@ fn duplicate_extent_release_refuses_and_rolls_back_bitmap_and_namespace() {
     }
     corrupt[start + 0x7c..start + 0x7e].copy_from_slice(&crc.to_le_bytes()[..2]);
     corrupt[start + 0x82..start + 0x84].copy_from_slice(&crc.to_le_bytes()[2..]);
+    DEVICE.with_borrow_mut(|device| *device = Device { bytes: corrupt.clone(), ..Device::default() });
+    assert!(ext4::mount(1, corrupt.len() as u64).is_err());
+    DEVICE.with_borrow(|device| assert!(device.events.is_empty()));
+    // Admission now refuses duplicate ownership. Retain the upstream release
+    // regression too: even without admission its partial free must roll back.
     for unlink in [false, true] {
-        let mut mounted = mount_bytes(corrupt.clone());
-        let before = ext4::stat(&mounted, name).unwrap();
-        let result = if unlink { ext4::unlink_file_probe(&mut mounted, name) }
-            else { ext4::truncate_probe(&mut mounted, name, 0) };
-        assert_eq!(result, Err(Status::Invalid), "unlink: {unlink}");
-        assert_eq!(ext4::stat(&mounted, name), Ok(before));
-        ext4::sync(&mut mounted).unwrap();
+        let stage = std::rc::Rc::new(ext4plus::JournalMutationStage::new(
+            Box::new(corrupt.clone()), corrupt.len() as u64).unwrap());
+        let raw = ext4plus::Ext4::load_with_writer(Box::new(stage.clone()), Some(Box::new(stage.clone()))).unwrap();
+        if unlink {
+            let parent = raw.path_to_inode(ext4plus::path::Path::try_from("/system").unwrap(),
+                ext4plus::FollowSymlinks::All).unwrap();
+            let mut directory = ext4plus::dir::Dir::open_inode(&raw, parent).unwrap();
+            let name = ext4plus::DirEntryName::try_from("duplicate-extents").unwrap();
+            let inode = directory.get_entry(name).unwrap();
+            assert!(directory.unlink(name, inode).is_err());
+        } else { assert!(raw.open("/system/duplicate-extents").unwrap().truncate(0).is_err()); }
+        drop(raw);
+        stage.rollback();
+        assert!(stage.is_empty());
+        let restored = ext4plus::Ext4::load(Box::new(stage.clone())).unwrap();
+        assert_eq!(restored.metadata("/system/duplicate-extents").unwrap().size_in_bytes, 8198);
         DEVICE.with_borrow(|device| assert!(device.bytes == corrupt, "partial free escaped rollback"));
-        ext4::unmount(&mounted).unwrap();
     }
     // Valid allocation/free still restores a Linux-clean image.
     let mut mounted = mount_bytes(pristine);
@@ -1258,6 +1271,80 @@ fn duplicate_extent_release_refuses_and_rolls_back_bitmap_and_namespace() {
     ext4::sync(&mut mounted).unwrap();
     ext4::unmount(&mounted).unwrap();
     fsck(&path, "coordinator-duplicate-valid-free");
+}
+
+#[test]
+fn extent_data_and_nodes_cannot_be_shared_between_live_or_orphan_inodes() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    ext4::create_file_probe(&mut mounted, b"system/extent-owner", 0o600).unwrap();
+    ext4::transaction_probe(&mut mounted, b"system/extent-owner", 0, &vec![0x38; 12288]).unwrap();
+    for block in 0..5 { ext4::transaction_probe(&mut mounted, b"system/extent-owner", (4 + block * 2) * 4096, b"fragment").unwrap(); }
+    ext4::link_file_probe(&mut mounted, b"system/extent-owner", b"system/extent-owner-link").unwrap();
+    ext4::create_directory_probe(&mut mounted, b"system/directory-owner").unwrap();
+    ext4::create_file_probe(&mut mounted, b"system/extent-thief", 0o600).unwrap();
+    ext4::transaction_probe(&mut mounted, b"system/extent-thief", 0, b"mine").unwrap();
+    let owner_number = ext4::stat(&mounted, b"system/extent-owner").unwrap().inode as u32;
+    let thief_number = ext4::stat(&mounted, b"system/extent-thief").unwrap().inode;
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-exclusive-extents-before");
+    drop(mounted);
+    let pristine = DEVICE.with_borrow(|device| device.bytes.clone());
+    let raw = ext4plus::Ext4::load(Box::new(pristine.clone())).unwrap();
+    let owner = raw.open("/system/extent-owner").unwrap();
+    let data_block = owner.filesystem_block_at_offset(4096).unwrap().unwrap();
+    let directory_inode = raw.path_to_inode(ext4plus::path::Path::try_from("/system/directory-owner").unwrap(),
+        ext4plus::FollowSymlinks::All).unwrap();
+    let directory = ext4plus::file::File::open_inode(&raw, directory_inode).unwrap();
+    let directory_block = directory.filesystem_block_at_offset(0).unwrap().unwrap();
+    let ipg = u32::from_le_bytes(pristine[1064..1068].try_into().unwrap());
+    let descriptor = 4096 + ((owner_number - 1) / ipg) as usize * 64;
+    let table = u32::from_le_bytes(pristine[descriptor + 8..descriptor + 12].try_into().unwrap());
+    let inode_start = table as usize * 4096 + ((owner_number - 1) % ipg) as usize * 256;
+    assert_eq!(u16::from_le_bytes(pristine[inode_start + 0x2e..inode_start + 0x30].try_into().unwrap()), 1);
+    let leaf = u64::from(u32::from_le_bytes(pristine[inode_start + 0x38..inode_start + 0x3c].try_into().unwrap()));
+    let image = path.with_extension("coordinator-shared-extent.img");
+    for target in [data_block, directory_block, leaf] {
+        for zero_size in [false, true] {
+            for orphan in [false, true] {
+                std::fs::write(&image, &pristine).unwrap();
+                debugfs(&image, &format!("set_inode_field <{thief_number}> block[5] {target}"));
+                if zero_size { debugfs(&image, &format!("set_inode_field <{thief_number}> size 0")); }
+                if orphan {
+                    debugfs(&image, &format!("set_inode_field <{thief_number}> links_count 0"));
+                    debugfs(&image, "unlink /system/extent-thief");
+                    debugfs(&image, &format!("set_super_value last_orphan {thief_number}"));
+                    debugfs(&image, "feature needs_recovery");
+                }
+                let hostile = std::fs::read(&image).unwrap();
+                let raw = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
+                let owner_path = if target == directory_block { "/system/directory-owner" } else { "/system/extent-owner" };
+                let owner = raw.path_to_inode(ext4plus::path::Path::try_from(owner_path).unwrap(), ext4plus::FollowSymlinks::All).unwrap();
+                let thief = ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(thief_number as u32).unwrap()).unwrap();
+                for reverse in [false, true] {
+                    let mut claims = raw.block_allocation_snapshot();
+                    let (first, second) = if reverse { (&thief, &owner) } else { (&owner, &thief) };
+                    claims.validate_inode_extents(first).unwrap();
+                    claims.validate_inode_extents(first).unwrap(); // hard-link identity
+                    assert!(claims.validate_inode_extents(second).is_err());
+                    assert!(claims.validate_inode_extents(first).is_err()); // poisoned partial pass
+                }
+                DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+                assert!(ext4::mount(1, hostile.len() as u64).is_err());
+                DEVICE.with_borrow(|device| {
+                    assert!(device.events.is_empty());
+                    assert_eq!(device.bytes, hostile);
+                });
+            }
+        }
+    }
+    let mut mounted = mount_bytes(pristine);
+    ext4::transaction_probe(&mut mounted, b"system/extent-owner-link", 4093, b"valid-owner").unwrap();
+    ext4::unlink_file_probe(&mut mounted, b"system/extent-thief").unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-exclusive-extents-valid");
 }
 
 #[test]
