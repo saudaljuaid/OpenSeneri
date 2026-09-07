@@ -1121,10 +1121,12 @@ fn allocation_bitmap_corruption_is_not_rechecksummed_into_a_transaction() {
     let group_seed = crc32c(seed, &0u32.to_le_bytes());
     let checksum = crc32c(group_seed, &full[4096..4160]).to_le_bytes();
     full[4096 + 0x1e..4096 + 0x20].copy_from_slice(&checksum[..2]);
-    let mut mounted = mount_bytes(full.clone());
-    assert_eq!(ext4::create_file_probe(&mut mounted, b"system/count-mismatch", 0o600), Err(Status::Invalid));
-    ext4::sync(&mut mounted).unwrap();
-    DEVICE.with_borrow(|device| assert!(device.bytes == full));
+    DEVICE.with_borrow_mut(|device| *device = Device { bytes: full.clone(), ..Device::default() });
+    assert!(ext4::mount(1, full.len() as u64).is_err());
+    DEVICE.with_borrow(|device| {
+        assert!(device.events.is_empty());
+        assert_eq!(device.bytes, full);
+    });
 }
 
 #[test]
@@ -1183,6 +1185,47 @@ fn inode_geometry_reserved_allocations_and_free_counter_overflow_are_refused() {
     ext4::sync(&mut mounted).unwrap();
     DEVICE.with_borrow(|device| assert!(device.bytes == hostile));
     ext4::unmount(&mounted).unwrap();
+}
+
+#[test]
+fn allocated_inodes_missing_from_namespace_and_orphan_chain_refuse_admission() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    ext4::create_file_probe(&mut mounted, b"system/unreachable", 0o600).unwrap();
+    ext4::transaction_probe(&mut mounted, b"system/unreachable", 0, b"still allocated").unwrap();
+    let inode = ext4::stat(&mounted, b"system/unreachable").unwrap().inode;
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-reachable-inode-before");
+    drop(mounted);
+    let pristine = DEVICE.with_borrow(|device| device.bytes.clone());
+    let image = path.with_extension("coordinator-unreachable-inode.img");
+    for linked in [false, true] {
+        for dirty in [false, true] {
+            std::fs::write(&image, &pristine).unwrap();
+            debugfs(&image, "unlink /system/unreachable");
+            debugfs(&image, &format!("set_inode_field <{inode}> links_count {}", u8::from(linked)));
+            if dirty { debugfs(&image, "feature needs_recovery"); }
+            let hostile = std::fs::read(&image).unwrap();
+            DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+            assert!(ext4::mount(1, hostile.len() as u64).is_err());
+            DEVICE.with_borrow(|device| {
+                assert!(device.events.is_empty());
+                assert_eq!(device.bytes, hostile);
+            });
+        }
+    }
+    // A real open-unlinked inode remains accounted for by its orphan record.
+    let mut mounted = mount_bytes(pristine);
+    ext4::unlink_file_guarded(&mut mounted, b"system/unreachable", &[inode]).unwrap();
+    ext4::sync_with_open_inodes(&mut mounted, &[inode]).unwrap();
+    assert_eq!(ext4::stat_inode(&mounted, inode).unwrap().links, 0);
+    let dirty = DEVICE.with_borrow(|device| device.bytes.clone());
+    drop(mounted);
+    let recovered = mount_bytes(dirty);
+    assert_eq!(ext4::stat_inode(&recovered, inode), Err(Status::NotFound));
+    ext4::unmount(&recovered).unwrap();
+    fsck(&path, "coordinator-reachable-orphan-recovery");
 }
 
 #[test]

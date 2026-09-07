@@ -168,8 +168,10 @@ impl<'a> BlockAllocationSnapshot<'a> {
 
     /// Finish a complete reachable/orphan ownership pass. A stored xattr
     /// count must equal its distinct inode references before any release.
-    pub fn finish(self) -> Result<(), Ext4Error> {
+    #[maybe_async::maybe_async]
+    pub async fn finish(self, inodes: &mut InodeAllocationSnapshot<'_>) -> Result<(), Ext4Error> {
         if self.invalid { return Err(Ext4Error::Readonly); }
+        inodes.validate_known_allocations(&self.validated_inodes).await?;
         for (_, (expected, seen, inode)) in self.xattr_references {
             if expected != seen { return Err(CorruptKind::Xattr(inode).into()); }
         }
@@ -262,6 +264,48 @@ impl<'a> InodeAllocationSnapshot<'a> {
         let byte = self.groups.get(&group).and_then(|bytes| bytes.get((offset / 8) as usize))
             .ok_or(CorruptKind::BlockGroupDescriptor(group))?;
         Ok(byte & (1 << (offset % 8)) != 0)
+    }
+
+    /// Every allocated non-reserved inode must have participated in the
+    /// namespace/orphan ownership pass. Otherwise an unreachable inode could
+    /// hide a conflicting block claim or an unaccounted xattr reference.
+    #[maybe_async::maybe_async]
+    async fn validate_known_allocations(&mut self, known: &BTreeSet<crate::inode::InodeIndex>) -> Result<(), Ext4Error> {
+        let fs = self.filesystem;
+        let sb = fs.superblock();
+        let per_group = sb.inodes_per_block_group().get();
+        for group in 0..sb.num_block_groups() {
+            let descriptor = fs.0.block_group_descriptors.get(group as usize)
+                .ok_or(CorruptKind::BlockGroupDescriptor(group))?;
+            if descriptor.flags() & 1 != 0 {
+                // A lazy inode group is logically empty; do not initialize it
+                // or interpret stale bitmap bytes as real allocations.
+                if descriptor.free_inodes_count() != per_group || descriptor.used_dirs_count() != 0
+                    || descriptor.unused_inodes_count() != per_group {
+                    return Err(CorruptKind::BlockGroupDescriptor(group).into());
+                }
+                continue;
+            }
+            let cached = self.groups.contains_key(&group);
+            if !cached {
+                let bitmap = BitmapHandle::new(descriptor.inode_bitmap_block(), true);
+                self.groups.insert(group, bitmap.read_validated(fs, group).await?);
+            }
+            let bytes = self.groups.get(&group).ok_or(CorruptKind::BlockGroupDescriptor(group))?;
+            for offset in 0..per_group {
+                let number = u64::from(group) * u64::from(per_group) + u64::from(offset) + 1;
+                if number < u64::from(sb.first_allocatable_inode()) || number > u64::from(sb.inodes_count()) { continue; }
+                let byte = bytes.get((offset / 8) as usize).ok_or(CorruptKind::BlockGroupDescriptor(group))?;
+                if byte & (1 << (offset % 8)) != 0 {
+                    let index = crate::inode::InodeIndex::new(number as u32).unwrap();
+                    if !known.contains(&index) { return Err(CorruptKind::OrphanInode(index.get()).into()); }
+                }
+            }
+            // Keep only bitmaps already needed by the namespace walk. The
+            // complete census otherwise needs one extra group buffer at a time.
+            if !cached { self.groups.remove(&group); }
+        }
+        Ok(())
     }
 }
 
