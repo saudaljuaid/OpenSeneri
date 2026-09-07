@@ -230,8 +230,8 @@ cached clipped drawing and damage tracking; `screen.c` implements text cells.
 interactive compositor; it snapshots pixels already owned by Phipia and does
 not introduce floating-point work into the kernel.
 
-Phipia is a bounded eight-application workspace with a menu bar,
-native 3D Dock, movable overlapping windows, Settings, Store, Camera, Canvas,
+Phipia New Generation is a bounded eight-application workspace with a menu bar,
+native Phipia Dock, movable overlapping windows, Settings, Store, Camera, Canvas,
 Files, Notes, Terminal, and Media Editor. Native processes may additionally own
 bounded xRGB content surfaces while Phipia retains chrome, focus, stacking,
 movement, close, maximize, minimize controls, and composition. Its design and
@@ -254,7 +254,7 @@ capture contract are in
 | `userspace/busybox/` | Pinned configurations, traces, licenses, and source inputs |
 | `tools/` | Deterministic asset, fixture, and BusyBox builders |
 | `.github/workflows/` | Required build and measured-profile evidence |
-| `assets/` | Canonical logo, font license/source, captures, and boot video |
+| `assets/` | Canonical logo, font license/source, and desktop captures |
 
 For current behavior, read a subsystem header, its self-test, and then its
 implementation. Use `git log -- <path>` for historical reasoning instead of

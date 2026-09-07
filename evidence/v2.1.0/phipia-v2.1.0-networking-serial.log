@@ -78,9 +78,9 @@ Phipia: shell output verified on screen
 Phipia: shell established
 Phipia: day one passed
 Phipia: memory foundation passed
-Phipia: First Light font verified
+Phipia: New Generation font verified
 Phipia: PS/2 pointer available
-Phipia: First Light layout validated
+Phipia: New Generation layout validated
 Phipia: I/O APIC level route id 0 GSI 2 vector 48 active high acknowledgement broadcast
 Phipia: I/O APIC level deliveries 8 remote IRR 8 directed EOI 0 in 75171565 ns
 Phipia: PM timer counted 35796 ticks in 10000153 ns
@@ -163,9 +163,9 @@ Phipia: keyboard passed
 Phipia: never triple fault milestone passed
 Phipia: network controls 35 passed; entropy degraded
 Phipia: virtio-net0 initialized
-Phipia: First Light desktop constructed
-Phipia: First Light desktop activated
-Phipia: First Light installed proof passed
+Phipia: New Generation desktop constructed
+Phipia: New Generation desktop activated
+Phipia: New Generation installed proof passed
 Phipia: Boot Ledger installed proof passed
 Phipia: FAT32 store controls 6/6 passed
 

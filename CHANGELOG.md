@@ -6,7 +6,7 @@
 
 - Replaced the former shell presentation with the Phipia desktop and the
   canonical Phipia identity.
-- Added the six-application 3D Dock with magnification, reflections, tooltips,
+- Added the six-application Phipia Dock with magnification, reflections, tooltips,
   launch feedback, and light and dark shelf colours.
 - Added overlapping movable windows with focus, stacking, close controls, and
   spring opening animation.
@@ -18,7 +18,7 @@
   persistence, and BMP export.
 - Updated the vendored Media Editor source to commit
   `034ba9336f6dee3cd5a524a42b740b41013ca852`.
-- Added high-resolution screenshots and a 25-second QEMU demonstration.
+- Added high-resolution desktop captures.
 
 ## 2.2.0
 

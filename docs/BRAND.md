@@ -27,9 +27,10 @@ decodes and verifies the displayed pixels.
 
 ## Product copy
 
-The current development version is `Phipia 2.2.0`. Public copy uses short,
-direct descriptions. Proof terms such as `PASS`, `READY`, and `ONLINE` belong
-in diagnostics rather than desktop chrome.
+The current development version is `Phipia 2.2.0`; its graphical shell is
+`Phipia New Generation`. Public copy uses short, direct descriptions. Proof
+terms such as `PASS`, `READY`, and `ONLINE` belong in diagnostics rather than
+desktop chrome.
 
 ## Verification
 

@@ -124,7 +124,7 @@ only to regenerate that source sprite, never by the ordinary build.
 `tools/verify-ui-assets.py` pins every selected SVG, the license, and the
 committed raster resources by SHA-256.
 
-## 3d-dock
+## Phipia Dock
 
 Phipia's Dock interaction and glass-shelf geometry are a native fixed-point
 port of [`saudaljuaid/3d-dock`](https://github.com/saudaljuaid/3d-dock) at

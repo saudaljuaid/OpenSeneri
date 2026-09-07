@@ -1,18 +1,18 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 
-# Phipia
+# Phipia New Generation
 
-Phipia is Phipia's graphical environment. It starts after the kernel has
+Phipia New Generation is Phipia's graphical environment. It starts after the kernel has
 installed the framebuffer, input, timer, storage, and desktop services.
 
-## Desktop and Dock
+## Desktop and Phipia Dock
 
 The desktop offers fourteen photographic scenes at 1024×768. Sources are
 converted into a compact album during the build and validated before display.
 Wallpaper restoration uses cached row copies so pointer and window movement do
 not repaint the complete screen.
 
-The 3D Dock contains Files, Terminal, Notes, Media Editor, Camera, Canvas, Store,
+The Phipia Dock contains Files, Terminal, Notes, Media Editor, Camera, Canvas, Store,
 and Settings.
 It uses fixed-point arithmetic for icon magnification, neighbor movement,
 reflections, tooltips, press feedback, and launch bounce. Dark appearance

@@ -2,7 +2,7 @@
   <img src="assets/phipia/logo.png" alt="Phipia logo" width="170">
 </p>
 
-<h1 align="center">Phipia</h1>
+<h1 align="center">Phipia New Generation</h1>
 
 <p align="center"><strong>An x86_64 operating system built from first principles.</strong></p>
 
@@ -22,8 +22,8 @@ Our mission is to provide a stable and truthful operating system to the modern w
 
 ## About
 
-Phipia is an operating system built from scratch. The current development
-release is Phipia 2.2.0.
+Phipia is an operating system built from scratch. The current graphical shell
+is Phipia New Generation, based on the Phipia 2.2.0 development release.
 
 ## Highlights
 
@@ -61,7 +61,7 @@ what order, so nothing boots blind.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Phipia desktop](docs/PHIPIA.md)
+- [Phipia New Generation UI](docs/PHIPIA.md)
 - [Persistent FAT32](docs/FAT32.md)
 - [Networking](docs/NETWORKING.md)
 - [Processes](docs/MULTIPROCESS.md)

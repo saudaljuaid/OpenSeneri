@@ -995,7 +995,7 @@ static void command_version(void)
 {
     const struct screen_state screen = screen_get_state();
 
-    console_write("Phipia 2.2.0 dev, a proof-driven x86_64 operating system.\n");
+    console_write("Phipia New Generation 2.2.0 dev, a proof-driven x86_64 operating system.\n");
     console_write("console ");
     console_write_u64(screen.columns);
     console_putc('x');
@@ -1031,7 +1031,7 @@ static void command_fetch(void)
     }
     console_write("\n");
     console_write("  Phipia\n");
-    console_write("  kernel      Phipia 2.2.0 dev / x86_64\n");
+    console_write("  kernel      Phipia New Generation 2.2.0 dev / x86_64\n");
     console_write("  terminal    ");
     console_write_u64(screen.columns);
     console_putc('x');

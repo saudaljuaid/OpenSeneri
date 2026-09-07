@@ -8,9 +8,9 @@
 #define DOCK3D_ITEM_COUNT 8U
 #define DOCK3D_ONE 65536
 
-/* Native fixed-point port of saudaljuaid/3d-dock.  The upstream project uses
- * Cairo doubles; Phipia keeps the same raised-cosine layout and time constants
- * in Q16.16 so the freestanding kernel never enables floating-point state. */
+/* Native fixed-point Phipia Dock model.  Its raised-cosine layout and time
+ * constants stay in Q16.16 so the freestanding kernel never enables floating
+ * point state. */
 struct dock3d_item_state {
     int32_t scale;
     int32_t target;

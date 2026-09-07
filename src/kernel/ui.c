@@ -930,7 +930,7 @@ enum ui_status ui_layout_validate(const struct ui_layout *layout)
         }
         seen[item->id] = true;
         /*
-         * A magnified 3D Dock icon deliberately grows beyond its stable hit
+         * A magnified Phipia Dock icon deliberately grows beyond its stable hit
          * lane.  Both rectangles must remain inside the Dock envelope, but
          * the artwork is not required to remain inside the (non-overlapping)
          * input lane.  Requiring that containment made the installed proof
@@ -4812,10 +4812,10 @@ static enum ui_status draw_settings_control_page(
     }
     if (page == 11U) {
         status = draw_settings_row(0U, damage, "Kernel",
-            "Phipia 2.2.0 dev", false, false);
+            "Phipia New Generation 2.2.0 dev", false, false);
         if (status == UI_STATUS_OK) {
             status = draw_settings_row(1U, damage, "Interface",
-                "Phipia Desktop", false, false);
+                "Phipia New Generation", false, false);
         }
         if (status == UI_STATUS_OK) {
             status = draw_settings_row(2U, damage, "Rendering",
@@ -5151,7 +5151,7 @@ static enum ui_status draw_settings_app(struct ui_rect damage)
         }
         if (status == UI_STATUS_OK) {
             status = draw_text(client, damage, client.x + 56U,
-                client.y + 330U, "Appearance changes the 3D dock colour only.",
+                client.y + 330U, "Appearance changes the Phipia Dock colour only.",
                 state.theme.ink);
         }
         if (status == UI_STATUS_OK) {
@@ -7476,7 +7476,7 @@ static enum ui_status draw_dock_shelf(struct ui_rect damage)
 
     /* Snapshot the real composited desktop before laying down glass.  A
      * compact nine-tap blur sampled from this cache is the freestanding
-     * counterpart of upstream 3d-dock's three-pass Cairo frost surface. */
+     * counterpart of the upstream Dock's three-pass Cairo frost surface. */
     for (uint32_t row = 0U; row < panel_height; ++row) {
         const uint32_t source_y = panel_y + row < surface_height ?
             panel_y + row : surface_height - 1U;
