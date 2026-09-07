@@ -131,7 +131,7 @@ fn admitted_fixture_has_complete_storage_and_namespace_census() {
     let mut known = std::collections::BTreeMap::new();
     let mut references = std::collections::BTreeMap::<u32, u32>::new();
     while let Some(path) = pending.pop() {
-        let node = raw.path_to_inode(ext4plus::Path::try_from(path.as_str()).unwrap(),
+        let node = raw.path_to_inode(ext4plus::path::Path::try_from(path.as_str()).unwrap(),
             ext4plus::FollowSymlinks::ExcludeFinalComponent).unwrap();
         if known.contains_key(&node.index.get()) { continue; }
         blocks.validate_inode_extents(&node).unwrap_or_else(|error|
@@ -3332,7 +3332,7 @@ fn indexed_directory_compaction_preserves_names_links_and_replays_every_boundary
             // removing leaves; debugfs updates allocation/inode checksums.
             let input = std::fs::read(&image).unwrap();
             let raw = ext4plus::Ext4::load(Box::new(input.clone())).unwrap();
-            let node = raw.path_to_inode(ext4plus::Path::try_from("/indexed").unwrap(), ext4plus::FollowSymlinks::All).unwrap();
+            let node = raw.path_to_inode(ext4plus::path::Path::try_from("/indexed").unwrap(), ext4plus::FollowSymlinks::All).unwrap();
             let number = node.index.get();
             let blocks = node.size_in_bytes() / 4096;
             let file = ext4plus::file::File::open_inode(&raw, node).unwrap();
@@ -3341,7 +3341,7 @@ fn indexed_directory_compaction_preserves_names_links_and_replays_every_boundary
             debugfs(&image, &format!("set_inode_field /indexed size {}", (blocks + 1) * 4096));
             let mut bytes = std::fs::read(&image).unwrap();
             let raw = ext4plus::Ext4::load(Box::new(bytes.clone())).unwrap();
-            let node = raw.path_to_inode(ext4plus::Path::try_from("/indexed").unwrap(), ext4plus::FollowSymlinks::All).unwrap();
+            let node = raw.path_to_inode(ext4plus::path::Path::try_from("/indexed").unwrap(), ext4plus::FollowSymlinks::All).unwrap();
             let file = ext4plus::file::File::open_inode(&raw, node).unwrap();
             let internal = file.filesystem_block_at_offset(blocks * 4096).unwrap().unwrap() as usize * 4096;
             let count = u16::from_le_bytes(bytes[root + 0x22..root + 0x24].try_into().unwrap()) as usize;
