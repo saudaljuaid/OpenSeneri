@@ -404,22 +404,29 @@ static enum phipfs_status begin_operation(
 {
     enum nvme_status status;
 
-    if (mount == NULL || (!mount->active && !mount->mounting)) {
+    if (mount == NULL) return PHIPFS_STATUS_NOT_MOUNTED;
+    bool expected_idle = false;
+    if (!__atomic_compare_exchange_n(&mount->operation_active, &expected_idle,
+            true, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        return PHIPFS_STATUS_BUSY;
+    }
+    if (!mount->active && !mount->mounting) {
+        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
         return PHIPFS_STATUS_NOT_MOUNTED;
     }
     if (mount->active && (!mount->healthy || mount->close_failed)) {
+        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
         return PHIPFS_STATUS_IO;
     }
-    if (mount->operation_active) {
-        return PHIPFS_STATUS_BUSY;
-    }
+    /* Reserve the coordinator before opening storage: controller setup can
+     * invoke callbacks, and must not admit a second user of this session. */
     status = nvme_volume_open(&mount->session, mount->controller_index,
         writable);
     if (status != NVME_STATUS_OK) {
         if (mount->session.active) mount->close_failed = true;
+        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
         return PHIPFS_STATUS_IO;
     }
-    mount->operation_active = true;
     if (mount->session.logical_block_bytes == 0U ||
         mount->session.namespace_blocks >
             UINT64_MAX / mount->session.logical_block_bytes) {
@@ -434,7 +441,6 @@ static enum phipfs_status begin_operation(
         (void)end_operation(mount, NULL);
         return PHIPFS_STATUS_IO;
     }
-    mount->operation_active = true;
     return PHIPFS_STATUS_OK;
 }
 
@@ -456,17 +462,18 @@ static enum phipfs_status end_operation(
         diagnostic->nvme_resource_mismatches =
             mount->session.close_resource_mismatches;
     }
-    mount->operation_active = false;
     if (status != NVME_STATUS_OK) {
         // Keep the generation/ownership cookie for explicit teardown retry.
         // Freeze new operations: the filesystem mutation may already be durable,
         // so automatically repeating an append here could apply it twice.
         mount->close_failed = true;
+        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
         return PHIPFS_STATUS_IO;
     }
     zero_bytes(&mount->session, sizeof(mount->session));
     mount->close_failed = false;
     ++mount->completion_count;
+    __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
     return PHIPFS_STATUS_OK;
 }
 

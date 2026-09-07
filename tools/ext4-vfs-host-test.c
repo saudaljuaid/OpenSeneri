@@ -27,6 +27,8 @@ static size_t last_sync_open_count;
 static bool expected_remove_directory;
 static bool expect_registered_before_close;
 static bool close_reports_failure;
+static bool reenter_on_open;
+static bool open_reports_failure;
 static unsigned live_mounts = 1U;
 static uint32_t logical_block_bytes = 4096U;
 
@@ -152,6 +154,11 @@ enum nvme_status nvme_volume_open(struct nvme_volume_session *session,
     uint32_t controller_index, bool writable)
 {
     assert(!session->active);
+    if (reenter_on_open) {
+        reenter_on_open = false;
+        assert(ext4_backend_sync(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_BUSY);
+    }
+    if (open_reports_failure) return NVME_STATUS_TEARDOWN_FAILURE;
     memset(session, 0, sizeof(*session));
     session->namespace_blocks = 32768U;
     session->logical_block_bytes = logical_block_bytes;
@@ -348,6 +355,13 @@ int main(void)
     ext4_mounts[PHIPFS_VOLUME_DATA].healthy = true;
     ext4_mounts[PHIPFS_VOLUME_DATA].generation = 1U;
     ext4_mounts[PHIPFS_VOLUME_DATA].rust_mount = 1U;
+    reenter_on_open = true;
+    open_reports_failure = true;
+    assert(ext4_backend_sync(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_IO);
+    assert(!reenter_on_open && !ext4_mounts[PHIPFS_VOLUME_DATA].operation_active);
+    assert(opens == 0U && closes == 0U);
+    open_reports_failure = false;
+    reenter_on_open = true;
     assert(allocate_handle(PHIPFS_VOLUME_DATA, "file", 42U, disk_size,
         PHIPFS_ACCESS_READ, false, 0U, &first) == PHIPFS_STATUS_OK);
     assert(allocate_handle(PHIPFS_VOLUME_DATA, "file", 42U, disk_size,
@@ -360,6 +374,7 @@ int main(void)
     }
     assert(ext4_backend_truncate(PHIPFS_VOLUME_DATA, "file", 101U) == PHIPFS_STATUS_OK);
     assert(truncates == 3U && stats == 1U);
+    assert(!reenter_on_open);
     assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->size == 101U);
     assert(handle_state(second, &state) == PHIPFS_STATUS_OK && state->size == 101U);
     permanent_status = PHIPIA_EXT4_STATUS_FULL;
