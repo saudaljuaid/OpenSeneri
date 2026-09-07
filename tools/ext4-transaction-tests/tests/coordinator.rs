@@ -25,6 +25,7 @@ struct Device {
     failed_reads: usize,
     watched_read_block: Option<u64>,
     watched_reads: usize,
+    fail_watched_read: Option<usize>,
 }
 
 thread_local! {
@@ -46,6 +47,7 @@ mod abi {
         DEVICE.with_borrow_mut(|device| {
             if device.watched_read_block.is_some_and(|block| start / 4096 == block) {
                 device.watched_reads += 1;
+                if device.fail_watched_read == Some(device.watched_reads) { return false; }
             }
             if device.fail_superblock_read && start == 1024 && output.len() == 1024 {
                 device.failed_reads += 1;
@@ -3157,6 +3159,54 @@ fn linear_directory_shrink_reclaims_previously_emptied_suffix_with_retries() {
             ext4::unmount(&recovered).unwrap();
             fsck(&path, &format!("coordinator-directory-suffix-cut-{failure}-{accepted}"));
         }
+    }
+}
+
+#[test]
+fn indexed_lookup_io_failure_discards_new_inode_data_and_link_reservations() {
+    let Some(path) = fixture() else { return };
+    for operation in 0..4 {
+        let mut mounted = mount_fixture(&path);
+        // Establish the durable recovery marker before injecting the lookup
+        // fault, so any following storage write would belong to the mutation.
+        ext4::create_file_probe(&mut mounted, b"system/read-fault-anchor", 0o600).unwrap();
+        let source = ext4::stat(&mounted, b"system/README.TXT").unwrap();
+        let parent = ext4::stat(&mounted, b"indexed").unwrap();
+        let free = ext4::free_bytes(&mounted).unwrap();
+        let before = DEVICE.with_borrow(|device| device.bytes.clone());
+        let raw = ext4plus::Ext4::load(Box::new(before.clone())).unwrap();
+        let node = ext4plus::inode::Inode::read(&raw,
+            std::num::NonZeroU32::new(parent.inode as u32).unwrap()).unwrap();
+        let file = ext4plus::file::File::open_inode(&raw, node).unwrap();
+        let root = file.filesystem_block_at_offset(0).unwrap().unwrap();
+        DEVICE.with_borrow_mut(|device| {
+            device.events.clear();
+            device.watched_read_block = Some(root);
+            device.watched_reads = 0;
+            device.fail_watched_read = Some(1);
+        });
+        let perform = |mounted: &mut ext4::Mounted| match operation {
+            0 => ext4::create_file_probe(mounted, b"indexed/io-target", 0o600),
+            1 => ext4::create_directory_probe(mounted, b"indexed/io-target"),
+            2 => ext4::symlink_probe(mounted, b"indexed/io-target", &[b'x'; 96]),
+            _ => ext4::link_file_probe(mounted, b"system/README.TXT", b"indexed/io-target"),
+        };
+        assert_eq!(perform(&mut mounted), Err(Status::Io), "operation {operation}");
+        DEVICE.with_borrow_mut(|device| {
+            assert!(device.watched_reads >= 1);
+            assert!(device.events.is_empty(), "lookup failure must not publish any staged allocation");
+            assert_eq!(device.bytes, before);
+            device.watched_read_block = None;
+            device.fail_watched_read = None;
+        });
+        assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
+        assert_eq!(ext4::stat(&mounted, b"indexed").unwrap(), parent);
+        assert_eq!(ext4::stat(&mounted, b"system/README.TXT").unwrap(), source);
+        assert_eq!(ext4::stat(&mounted, b"indexed/io-target"), Err(Status::NotFound));
+        perform(&mut mounted).unwrap();
+        ext4::sync(&mut mounted).unwrap();
+        ext4::unmount(&mounted).unwrap();
+        fsck(&path, &format!("coordinator-indexed-lookup-io-{operation}"));
     }
 }
 

@@ -1313,11 +1313,10 @@ pub(crate) async fn add_dir_entry_htree(
     }
 
     // Fail if name already exists.
-    if get_dir_entry_inode_by_name(fs, dir_inode, name)
-        .await
-        .is_ok()
-    {
-        return Err(Ext4Error::AlreadyExists);
+    match get_dir_entry_inode_by_name(fs, dir_inode, name).await {
+        Ok(_) => return Err(Ext4Error::AlreadyExists),
+        Err(Ext4Error::NotFound) => {},
+        Err(error) => return Err(error),
     }
 
     let block_size = fs.0.superblock.block_size().to_usize();
