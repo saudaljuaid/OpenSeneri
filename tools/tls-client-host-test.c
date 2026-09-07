@@ -58,7 +58,9 @@ long phipia_stream_shutdown(phipia_handle_t stream, uint32_t flags,
 long phipia_network_cancel(phipia_handle_t handle);
 
 static uint16_t peer_port;
+#if defined(_WIN32)
 static bool host_sockets_ready;
+#endif
 
 static uint64_t host_now_ns(void)
 {
