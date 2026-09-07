@@ -1970,6 +1970,42 @@ fn checksummed_malformed_extent_trees_are_refused_before_traversal_or_mutation()
 }
 
 #[test]
+fn inode_checksums_follow_declared_extra_size_and_preserve_undeclared_bytes() {
+    let Some(path) = fixture() else { return };
+    let pristine = std::fs::read(&path).unwrap();
+    let table = u32::from_le_bytes(pristine[4104..4108].try_into().unwrap()) as usize * 4096;
+    let root = table + 256;
+    for extra in [0u16, 4, 32] {
+        let image = path.with_extension(format!("coordinator-checksum-width-{extra}.img"));
+        write_sparse_fixture(&image, &pristine).unwrap();
+        // debugfs recalculates the inode checksum with the Linux has_hi rule.
+        // For extra=0, the old bytes at0x82 are covered as ordinary data.
+        debugfs(&image, &format!("set_inode_field <2> extra_isize {extra}"));
+        let input = std::fs::read(&image).unwrap();
+        assert_eq!(u16::from_le_bytes(input[root + 0x80..root + 0x82].try_into().unwrap()), extra);
+        let raw = ext4plus::Ext4::load(Box::new(input.clone())).unwrap();
+        ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(2).unwrap()).unwrap();
+        let mut mounted = mount_bytes(input.clone());
+        fsck(&path, &format!("coordinator-checksum-width-before-{extra}"));
+        ext4::create_file_probe(&mut mounted, b"checksum-width-file", 0o600).unwrap();
+        ext4::transaction_probe(&mut mounted, b"checksum-width-file", 4093, b"checksum width").unwrap();
+        ext4::sync(&mut mounted).unwrap();
+        ext4::unmount(&mounted).unwrap();
+        let output = DEVICE.with_borrow(|device| device.bytes.clone());
+        if extra == 0 {
+            assert_eq!(&output[root + 0x82..root + 256], &input[root + 0x82..root + 256]);
+        }
+        fsck(&path, &format!("coordinator-checksum-width-after-{extra}"));
+        drop(mounted);
+        let mut hostile = output;
+        hostile[root + 0x82] ^= 1;
+        DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+        assert!(ext4::mount(1, hostile.len() as u64).is_err());
+        DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+    }
+}
+
+#[test]
 fn inode_block_count_uses_48_bits_without_overwriting_xattr_address() {
     use ext4plus::Ext4Read;
     let Some(path) = fixture() else { return };

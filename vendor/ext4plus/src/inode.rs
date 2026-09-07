@@ -200,18 +200,13 @@ impl Inode {
         // mke2fs leaves unused reserved slots entirely zero. A populated
         // inactive inode body must carry its normal metadata checksum.
         if ext4.has_metadata_checksums() && data.iter().any(|byte| *byte != 0) {
-            if data.len() < Self::I_CHECKSUM_HI_OFFSET + 2 {
-                return Err(CorruptKind::InodeChecksum(index).into());
-            }
-            let expected = u32_from_hilo(read_u16le(&data, Self::I_CHECKSUM_HI_OFFSET),
-                read_u16le(&data, Self::L_I_CHECKSUM_LO_OFFSET));
+            let expected = Self::stored_checksum(&data);
             let mut checksum = Checksum::with_seed(ext4.superblock().checksum_seed());
             checksum.update_u32_le(index.get());
             checksum.update_u32_le(read_u32le(&data, 0x64));
-            write_u16le(&mut data, Self::L_I_CHECKSUM_LO_OFFSET, 0);
-            write_u16le(&mut data, Self::I_CHECKSUM_HI_OFFSET, 0);
-            checksum.update(&data);
-            if checksum.finalize() != expected { return Err(CorruptKind::InodeChecksum(index).into()); }
+            if Self::checksum_bytes(&checksum, &data) != expected {
+                return Err(CorruptKind::InodeChecksum(index).into());
+            }
         }
         Ok(())
     }
@@ -232,6 +227,33 @@ impl Inode {
     const L_I_CHECKSUM_LO_OFFSET: usize = 0x74 + 0x8;
     const I_CHECKSUM_HI_OFFSET: usize = 0x82;
 
+    fn has_checksum_hi(data: &[u8]) -> bool {
+        data.len() >= Self::I_CHECKSUM_HI_OFFSET + 2 && read_u16le(data, 0x80) >= 4
+    }
+
+    fn stored_checksum(data: &[u8]) -> u32 {
+        u32_from_hilo(if Self::has_checksum_hi(data) {
+            read_u16le(data, Self::I_CHECKSUM_HI_OFFSET)
+        } else { 0 }, read_u16le(data, Self::L_I_CHECKSUM_LO_OFFSET))
+    }
+
+    fn checksum_bytes(base: &Checksum, data: &[u8]) -> u32 {
+        let mut checksum = base.clone();
+        checksum.update(&data[..Self::L_I_CHECKSUM_LO_OFFSET]);
+        checksum.update_u16_le(0);
+        if Self::has_checksum_hi(data) {
+            checksum.update(&data[Self::L_I_CHECKSUM_LO_OFFSET + 2..Self::I_CHECKSUM_HI_OFFSET]);
+            checksum.update_u16_le(0);
+            checksum.update(&data[Self::I_CHECKSUM_HI_OFFSET + 2..]);
+            checksum.finalize()
+        } else {
+            // With i_extra_isize < 4, offset0x82 is ordinary checksummed data,
+            // not a high checksum field. Linux compares only the low16 bits.
+            checksum.update(&data[Self::L_I_CHECKSUM_LO_OFFSET + 2..]);
+            checksum.finalize() & 0xffff
+        }
+    }
+
     /// Load an inode from `bytes`.
     ///
     /// If successful, returns a tuple containing the inode and its
@@ -250,33 +272,9 @@ impl Inode {
             .into());
         }
 
-        // If metadata checksums are enabled, the inode must be big
-        // enough to include the checksum fields.
-        if ext4.has_metadata_checksums()
-            && data.len() < (Self::I_CHECKSUM_HI_OFFSET + 2)
-        {
-            return Err(CorruptKind::InodeTruncated {
-                inode: index,
-                size: data.len(),
-            }
-            .into());
-        }
-
         let i_mode = read_u16le(data, 0x0);
         let i_generation = read_u32le(data, 0x64);
-        let (l_i_checksum_lo, i_checksum_hi) = if ext4.has_metadata_checksums()
-        {
-            (
-                read_u16le(data, Self::L_I_CHECKSUM_LO_OFFSET),
-                read_u16le(data, Self::I_CHECKSUM_HI_OFFSET),
-            )
-        } else {
-            // If metadata checksums aren't enabled then these values
-            // aren't used; arbitrarily set to zero.
-            (0, 0)
-        };
-
-        let checksum = u32_from_hilo(i_checksum_hi, l_i_checksum_lo);
+        let checksum = if ext4.has_metadata_checksums() { Self::stored_checksum(data) } else { 0 };
         let mode = InodeMode::from_bits_retain(i_mode);
 
         let mut checksum_base =
@@ -369,30 +367,7 @@ impl Inode {
 
         // Verify the inode checksum.
         if ext4.has_metadata_checksums() {
-            let mut checksum = inode.checksum_base.clone();
-
-            // Hash all the inode data, but treat the two checksum
-            // fields as zeroes.
-
-            // Up to the l_i_checksum_lo field.
-            checksum.update(&data[..Self::L_I_CHECKSUM_LO_OFFSET]);
-
-            // Zero'd field.
-            checksum.update_u16_le(0);
-
-            // Up to the i_checksum_hi field.
-            checksum.update(
-                &data[Self::L_I_CHECKSUM_LO_OFFSET + 2
-                    ..Self::I_CHECKSUM_HI_OFFSET],
-            );
-
-            // Zero'd field.
-            checksum.update_u16_le(0);
-
-            // Rest of the inode.
-            checksum.update(&data[Self::I_CHECKSUM_HI_OFFSET + 2..]);
-
-            let actual_checksum = checksum.finalize();
+            let actual_checksum = Self::checksum_bytes(&inode.checksum_base, &data);
             if actual_checksum != expected_checksum {
                 return Err(CorruptKind::InodeChecksum(inode.index).into());
             }
@@ -403,28 +378,16 @@ impl Inode {
 
     pub(crate) fn update_inode_data(&mut self, ext4: &Ext4) {
         if ext4.has_metadata_checksums() {
-            let mut checksum = self.checksum_base.clone();
-            // Up to the l_i_checksum_lo field.
-            checksum.update(&self.inode_data[..Self::L_I_CHECKSUM_LO_OFFSET]);
-            // Zero'd field.
-            checksum.update_u16_le(0);
-            // Up to the i_checksum_hi field.
-            checksum.update(
-                &self.inode_data[Self::L_I_CHECKSUM_LO_OFFSET + 2
-                    ..Self::I_CHECKSUM_HI_OFFSET],
-            );
-            // Zero'd field.
-            checksum.update_u16_le(0);
-            // Rest of the inode.
-            checksum.update(&self.inode_data[Self::I_CHECKSUM_HI_OFFSET + 2..]);
-            let final_checksum = checksum.finalize();
+            let final_checksum = Self::checksum_bytes(&self.checksum_base, &self.inode_data);
             let (checksum_hi, checksum_lo) = u32_to_hilo(final_checksum);
             self.inode_data[Self::L_I_CHECKSUM_LO_OFFSET
                 ..Self::L_I_CHECKSUM_LO_OFFSET + 2]
                 .copy_from_slice(&checksum_lo.to_le_bytes());
-            self.inode_data
-                [Self::I_CHECKSUM_HI_OFFSET..Self::I_CHECKSUM_HI_OFFSET + 2]
-                .copy_from_slice(&checksum_hi.to_le_bytes());
+            if Self::has_checksum_hi(&self.inode_data) {
+                self.inode_data
+                    [Self::I_CHECKSUM_HI_OFFSET..Self::I_CHECKSUM_HI_OFFSET + 2]
+                    .copy_from_slice(&checksum_hi.to_le_bytes());
+            }
         }
     }
 
