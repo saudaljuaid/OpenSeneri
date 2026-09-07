@@ -25,10 +25,17 @@ struct descriptor_record {
 static struct descriptor_record descriptors[DESCRIPTOR_MAX];
 static volatile uint32_t descriptor_lock;
 
-static struct descriptor_record *descriptor(int number)
+static int descriptor_snapshot(int number, struct descriptor_record *record, int retire)
 {
-    return number >= 3 && number < DESCRIPTOR_MAX &&
-        descriptors[number].active == 1 ? &descriptors[number] : NULL;
+    int found = 0;
+    phipia_runtime_lock(&descriptor_lock);
+    if (number >= 3 && number < DESCRIPTOR_MAX && descriptors[number].active == 1) {
+        *record = descriptors[number];
+        if (retire) (void)memset(&descriptors[number], 0, sizeof(descriptors[number]));
+        found = 1;
+    }
+    phipia_runtime_unlock(&descriptor_lock);
+    return found;
 }
 
 int open(const char *path, int flags, ...)
@@ -80,24 +87,24 @@ int open(const char *path, int flags, ...)
 
 ssize_t read(int number, void *buffer, size_t length)
 {
-    struct descriptor_record *record = descriptor(number);
+    struct descriptor_record record;
     long result;
     if (number == STDIN_FILENO) { errno = EAGAIN; return -1; }
-    if (record == NULL || buffer == NULL) { errno = EBADF; return -1; }
-    result = phipia_file_read(record->handle, buffer, length);
+    if (!descriptor_snapshot(number, &record, 0) || buffer == NULL) { errno = EBADF; return -1; }
+    result = phipia_file_read(record.handle, buffer, length);
     if (result < 0) { errno = (int)-result; return -1; }
     return (ssize_t)result;
 }
 
 ssize_t write(int number, const void *buffer, size_t length)
 {
-    struct descriptor_record *record = descriptor(number);
+    struct descriptor_record record;
     long result;
     if ((number == STDOUT_FILENO || number == STDERR_FILENO) && buffer != NULL) {
         result = phipia_syscall2(PHIPIA_SYS_CONSOLE_WRITE,
             (uint64_t)(uintptr_t)buffer, length);
-    } else if (record != NULL && buffer != NULL) {
-        result = phipia_file_write(record->handle, buffer, length);
+    } else if (buffer != NULL && descriptor_snapshot(number, &record, 0)) {
+        result = phipia_file_write(record.handle, buffer, length);
     } else { errno = EBADF; return -1; }
     if (result < 0) { errno = (int)-result; return -1; }
     return (ssize_t)result;
@@ -105,23 +112,22 @@ ssize_t write(int number, const void *buffer, size_t length)
 
 off_t lseek(int number, off_t offset, int origin)
 {
-    struct descriptor_record *record = descriptor(number);
+    struct descriptor_record record;
     long result;
-    if (record == NULL || origin < SEEK_SET || origin > SEEK_END) { errno = EBADF; return -1; }
-    result = phipia_file_seek(record->handle, offset, (uint32_t)origin);
+    if (!descriptor_snapshot(number, &record, 0) || origin < SEEK_SET || origin > SEEK_END) { errno = EBADF; return -1; }
+    result = phipia_file_seek(record.handle, offset, (uint32_t)origin);
     if (result < 0) { errno = (int)-result; return -1; }
     return (off_t)result;
 }
 
 int close(int number)
 {
-    struct descriptor_record *record = descriptor(number);
+    struct descriptor_record record;
     long result;
-    if (record == NULL) { errno = EBADF; return -1; }
-    result = phipia_handle_close(record->handle);
-    phipia_runtime_lock(&descriptor_lock);
-    (void)memset(record, 0, sizeof(*record));
-    phipia_runtime_unlock(&descriptor_lock);
+    // Retire before entering native teardown: a nested/concurrent open may
+    // reuse the number, and this close must never erase that replacement.
+    if (!descriptor_snapshot(number, &record, 1)) { errno = EBADF; return -1; }
+    result = phipia_handle_close(record.handle);
     return phipia_result(result);
 }
 
@@ -204,16 +210,16 @@ int mkdir(const char *path, mode_t mode)
 }
 int ftruncate(int number, int64_t length)
 {
-    struct descriptor_record *record = descriptor(number);
-    if (record == NULL) { errno = EBADF; return -1; }
+    struct descriptor_record record;
+    if (!descriptor_snapshot(number, &record, 0)) { errno = EBADF; return -1; }
     if (length < 0) { errno = EINVAL; return -1; }
-    return phipia_result(phipia_file_truncate(record->handle, (uint64_t)length));
+    return phipia_result(phipia_file_truncate(record.handle, (uint64_t)length));
 }
 int fsync(int number)
 {
-    struct descriptor_record *record = descriptor(number);
-    if (record == NULL) { errno = EBADF; return -1; }
-    return phipia_result(phipia_syscall1(PHIPIA_SYS_VOLUME_SYNC, record->volume));
+    struct descriptor_record record;
+    if (!descriptor_snapshot(number, &record, 0)) { errno = EBADF; return -1; }
+    return phipia_result(phipia_syscall1(PHIPIA_SYS_VOLUME_SYNC, record.volume));
 }
 unsigned int sleep(unsigned int seconds)
 {

@@ -19,6 +19,9 @@ static uint32_t expected_metadata_flags;
 static struct phipia_path_metadata returned_metadata;
 static int reenter_open;
 static int nested_descriptor = -1;
+static int reenter_close;
+static int closing_descriptor;
+static long close_result;
 
 long phipia_syscall1(uint64_t number, uint64_t address)
 {
@@ -26,7 +29,12 @@ long phipia_syscall1(uint64_t number, uint64_t address)
     if (number == PHIPIA_SYS_HANDLE_CLOSE) {
         if (address != 42U) invalid_request = 1;
         ++close_calls;
-        return 0;
+        if (reenter_close) {
+            reenter_close = 0;
+            if (close(closing_descriptor) != -1 || errno != EBADF) invalid_request = 1;
+            nested_descriptor = open("nested", O_RDONLY);
+        }
+        return close_result;
     }
     if (number != PHIPIA_SYS_FILE_OPEN) { invalid_request = 1; return -PHIPIA_EINVAL; }
     const struct phipia_file_open_request *request = (const struct phipia_file_open_request *)(uintptr_t)address;
@@ -156,5 +164,17 @@ int main(void)
         open_calls != before_full) return 27;
     for (unsigned index = 0U; index < 29U; ++index) if (close(held[index]) != 0) return 28;
     if (open_calls != 43U || close_calls != 38U || invalid_request) return 29;
+    closing_descriptor = open("nested", O_RDONLY);
+    reenter_close = 1;
+    if (closing_descriptor != 3 || close(closing_descriptor) != 0 || nested_descriptor != closing_descriptor) return 30;
+    if (close(nested_descriptor) != 0) return 31; // outer close did not erase the new descriptor
+    descriptor = open("nested", O_RDONLY);
+    close_result = -PHIPIA_EIO;
+    if (close(descriptor) != -1 || errno != EIO) return 32;
+    if (close(descriptor) != -1 || errno != EBADF) return 33;
+    close_result = 0;
+    descriptor = open("nested", O_RDONLY);
+    if (descriptor != 3 || close(descriptor) != 0) return 34;
+    if (open_calls != 47U || close_calls != 42U || invalid_request) return 35;
     return 0;
 }
