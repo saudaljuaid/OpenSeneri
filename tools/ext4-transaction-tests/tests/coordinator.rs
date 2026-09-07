@@ -1976,7 +1976,13 @@ fn split_truncate_of_open_unlinked_inode_retains_handle_until_final_close() {
         ext4::truncate_inode(&mut mounted, inode, 17).unwrap();
         ext4::truncate_inode(&mut mounted, inode, 8192).unwrap();
         let mut content = [0xa5; 8192];
-        assert_eq!(ext4::pread_inode(&mounted, inode, 0, &mut content), Ok(8192));
+        let mut read = 0;
+        while read < content.len() {
+            let count = ext4::pread_inode(&mounted, inode, read as u64, &mut content[read..]).unwrap();
+            assert!(count > 0, "unexpected orphan EOF at {read}");
+            read += count;
+        }
+        assert_eq!(ext4::pread_inode(&mounted, inode, 8192, &mut [0; 1]), Ok(0));
         assert_eq!(&content[..17], &[0x53; 17]);
         assert!(content[17..].iter().all(|byte| *byte == 0));
         ext4::sync_with_open_inodes(&mut mounted, &[inode]).unwrap();
