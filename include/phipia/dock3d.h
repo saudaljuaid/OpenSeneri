@@ -8,7 +8,7 @@
 #define DOCK3D_ITEM_COUNT 8U
 #define DOCK3D_ONE 65536
 
-/* Native fixed-point Phipia Dock model.  Its raised-cosine layout and time
+/* Native fixed-point Phipia Taskbar model.  Its raised-cosine layout and time
  * constants stay in Q16.16 so the freestanding kernel never enables floating
  * point state. */
 struct dock3d_item_state {

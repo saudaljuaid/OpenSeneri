@@ -1,5 +1,5 @@
 /*
- * Phipia's native Dock model and animation engine use no hosted renderer or
+ * Phipia's native Taskbar model and animation engine use no hosted renderer or
  * floating-point state.  The freestanding kernel keeps
  * the same raised-cosine curve, resting-grid measurement, eased-width layout,
  * pointer anchoring, 1.95x magnification, time constants, press squash and
@@ -16,7 +16,7 @@
 #define DOCK3D_MAGNIFICATION 127795
 #define DOCK3D_BOUNCE_FRAMES 70
 
-static const char *self_test_failure = "Phipia Dock self-test passed";
+static const char *self_test_failure = "Phipia Taskbar self-test passed";
 
 static const int32_t cosine_kernel[65U] = {
     65536, 65497, 65378, 65181, 64906, 64554, 64125, 63621,
@@ -367,7 +367,7 @@ bool dock3d_self_test(void)
 {
     struct dock3d_state dock;
 
-    self_test_failure = "Phipia Dock self-test passed";
+    self_test_failure = "Phipia Taskbar self-test passed";
     dock3d_initialize(&dock, 58U, 1024U, 768U);
     const int32_t rest_width = dock.panel_width;
     const int32_t target_x = (int32_t)dock3d_round_pixel(
@@ -379,7 +379,7 @@ bool dock3d_self_test(void)
             dock.panel_x < 0 ||
             dock.panel_x + dock.panel_width >
                 (int32_t)(1024U * DOCK3D_ONE)) {
-        self_test_failure = "Phipia Dock rest geometry is invalid";
+        self_test_failure = "Phipia Taskbar rest geometry is invalid";
         return false;
     }
     dock3d_set_pointer(&dock, target_x, target_y, true, true);
@@ -388,12 +388,12 @@ bool dock3d_self_test(void)
     }
     if (dock.hot != 2 || dock.items[2U].scale < 124000 ||
             dock.panel_width <= rest_width) {
-        self_test_failure = "Phipia Dock raised-cosine hover did not magnify";
+        self_test_failure = "Phipia Taskbar raised-cosine hover did not magnify";
         return false;
     }
     for (size_t index = 1U; index < DOCK3D_ITEM_COUNT; ++index) {
         if (dock.items[index - 1U].center_x >= dock.items[index].center_x) {
-            self_test_failure = "Phipia Dock eased widths overlap or reverse";
+            self_test_failure = "Phipia Taskbar eased widths overlap or reverse";
             return false;
         }
     }
@@ -401,7 +401,7 @@ bool dock3d_self_test(void)
     dock3d_advance(&dock, 2U, true);
     if (dock.items[2U].press <= 0 ||
             dock3d_bounce_offset(&dock, 2U) >= 0) {
-        self_test_failure = "Phipia Dock launch press or bounce is invalid";
+        self_test_failure = "Phipia Taskbar launch press or bounce is invalid";
         return false;
     }
     dock3d_set_pointer(&dock, 20, 20, true, false);
@@ -411,7 +411,7 @@ bool dock3d_self_test(void)
     for (size_t index = 0U; index < DOCK3D_ITEM_COUNT; ++index) {
         const int32_t difference = dock.items[index].scale - DOCK3D_ONE;
         if (difference < -32 || difference > 32) {
-            self_test_failure = "Phipia Dock magnification did not settle at rest";
+            self_test_failure = "Phipia Taskbar magnification did not settle at rest";
             return false;
         }
     }

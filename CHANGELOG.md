@@ -6,7 +6,7 @@
 
 - Replaced the former shell presentation with the Phipia desktop and the
   canonical Phipia identity.
-- Added the six-application Phipia Dock with magnification, reflections, tooltips,
+- Added the six-application Phipia Taskbar with magnification, reflections, tooltips,
   launch feedback, and light and dark shelf colours.
 - Added overlapping movable windows with focus, stacking, close controls, and
   spring opening animation.

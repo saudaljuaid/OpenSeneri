@@ -124,9 +124,9 @@ only to regenerate that source sprite, never by the ordinary build.
 `tools/verify-ui-assets.py` pins every selected SVG, the license, and the
 committed raster resources by SHA-256.
 
-## Phipia Dock
+## Phipia Taskbar
 
-Phipia's Dock interaction and glass-shelf geometry are a native fixed-point
+Phipia's Taskbar interaction and glass-shelf geometry are a native fixed-point
 port of [`saudaljuaid/3d-dock`](https://github.com/saudaljuaid/3d-dock) at
 commit `8ab14d0c372ab797475e49b8a658d54f30f706bc`. The original implementation is
 written in C with Cairo and X11. Phipia preserves its raised-cosine hover

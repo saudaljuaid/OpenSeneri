@@ -5,14 +5,14 @@
 Phipia New Generation is Phipia's graphical environment. It starts after the kernel has
 installed the framebuffer, input, timer, storage, and desktop services.
 
-## Desktop and Phipia Dock
+## Desktop and Phipia Taskbar
 
 The desktop offers fourteen photographic scenes at 1024×768. Sources are
 converted into a compact album during the build and validated before display.
 Wallpaper restoration uses cached row copies so pointer and window movement do
 not repaint the complete screen.
 
-The Phipia Dock contains Files, Terminal, Notes, Media Editor, Camera, Canvas, Store,
+The Phipia Taskbar contains Files, Terminal, Notes, Media Editor, Camera, Canvas, Store,
 and Settings.
 It uses fixed-point arithmetic for icon magnification, neighbor movement,
 reflections, tooltips, press feedback, and launch bounce. Dark appearance
@@ -20,11 +20,11 @@ changes the shelf colour without changing its geometry or behavior.
 
 ## Windows
 
-All eight Dock applications can remain open. Clicking a window raises it;
+All eight Taskbar applications can remain open. Clicking a window raises it;
 dragging the title bar moves it within the screen. The red control closes, the
 violet control toggles maximized geometry, and the white/grey control minimizes
-the window to its live Dock item.
-Windows open from their Dock icon with a 16.16 fixed-point genie warp and
+the window to its live Taskbar item.
+Windows open from their Taskbar icon with a 16.16 fixed-point genie warp and
 return along the same path when closed or minimized. The finished window is
 captured once; each animation row is bounded, resampled, and driven by
 monotonic time rather than frame count. Other open windows remain composed
@@ -50,7 +50,7 @@ Saving replaces the target through a synchronized temporary file.
 
 ### Settings
 
-Settings provides Appearance, Desktop, Dock, Displays, Keyboard, Pointer,
+Settings provides Appearance, Desktop, Taskbar, Displays, Keyboard, Pointer,
 Performance, Network, Storage, Camera, Windows, and About pages. Desktop and
 Appearance are interactive. Hardware pages report the current configuration
 and mark unavailable facilities clearly.
@@ -101,7 +101,7 @@ Phipia's integrated workspace exposes the BMP workflow described above.
 
 `make capture-phipia` boots the production ISO with separate system and data
 volumes. QMP sends pointer and keyboard input to the guest while the capture
-opens applications, changes the Dock appearance and wallpaper, edits a note,
+opens applications, changes the Taskbar appearance and wallpaper, edits a note,
 and uses Media Editor. Camera remains closed because the QEMU machine has no
 camera source.
 

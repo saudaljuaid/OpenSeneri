@@ -231,7 +231,7 @@ interactive compositor; it snapshots pixels already owned by Phipia and does
 not introduce floating-point work into the kernel.
 
 Phipia New Generation is a bounded eight-application workspace with a menu bar,
-native Phipia Dock, movable overlapping windows, Settings, Store, Camera, Canvas,
+native Phipia Taskbar, movable overlapping windows, Settings, Store, Camera, Canvas,
 Files, Notes, Terminal, and Media Editor. Native processes may additionally own
 bounded xRGB content surfaces while Phipia retains chrome, focus, stacking,
 movement, close, maximize, minimize controls, and composition. Its design and

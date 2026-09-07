@@ -930,8 +930,8 @@ enum ui_status ui_layout_validate(const struct ui_layout *layout)
         }
         seen[item->id] = true;
         /*
-         * A magnified Phipia Dock icon deliberately grows beyond its stable hit
-         * lane.  Both rectangles must remain inside the Dock envelope, but
+         * A magnified Phipia Taskbar icon deliberately grows beyond its stable hit
+         * lane.  Both rectangles must remain inside the Taskbar envelope, but
          * the artwork is not required to remain inside the (non-overlapping)
          * input lane.  Requiring that containment made the installed proof
          * reject every legitimate live hover frame.
@@ -4684,7 +4684,7 @@ static enum ui_status draw_settings_control_page(
         return status;
     }
     if (page == 4U) {
-        status = draw_settings_row(0U, damage, "Dock focus wrapping",
+        status = draw_settings_row(0U, damage, "Taskbar focus wrapping",
             keyboard_focus_wrap ? "On" : "Off", true,
             keyboard_focus_wrap);
         if (status == UI_STATUS_OK) {
@@ -5092,7 +5092,7 @@ static enum ui_status draw_settings_wallpaper_choice(
 static enum ui_status draw_settings_app(struct ui_rect damage)
 {
     static const char *const categories[UI_SETTINGS_CATEGORY_COUNT] = {
-        "Appearance", "Desktop", "Dock", "Displays",
+        "Appearance", "Desktop", "Taskbar", "Displays",
         "Keyboard", "Pointer", "Performance", "Network",
         "Storage", "Camera", "Windows", "About"
     };
@@ -5151,7 +5151,7 @@ static enum ui_status draw_settings_app(struct ui_rect damage)
         }
         if (status == UI_STATUS_OK) {
             status = draw_text(client, damage, client.x + 56U,
-                client.y + 330U, "Appearance changes the Phipia Dock colour only.",
+                client.y + 330U, "Appearance changes the Phipia Taskbar colour only.",
                 state.theme.ink);
         }
         if (status == UI_STATUS_OK) {
@@ -6499,7 +6499,7 @@ static enum ui_status draw_store_app(struct ui_rect damage)
     if (store_section == 1U) {
         return draw_store_empty(content, damage,
             "No Store applications installed",
-            "System applications remain available in the Dock.");
+            "System applications remain available in the Taskbar.");
     }
     if (store_section == 2U) {
         return draw_store_empty(content, damage,
@@ -7476,7 +7476,7 @@ static enum ui_status draw_dock_shelf(struct ui_rect damage)
 
     /* Snapshot the real composited desktop before laying down glass.  A
      * compact nine-tap blur sampled from this cache is the freestanding
-     * counterpart of the upstream Dock's three-pass Cairo frost surface. */
+     * counterpart of the upstream Taskbar's three-pass Cairo frost surface. */
     for (uint32_t row = 0U; row < panel_height; ++row) {
         const uint32_t source_y = panel_y + row < surface_height ?
             panel_y + row : surface_height - 1U;
@@ -9039,7 +9039,7 @@ static enum ui_element_id active_hit(struct ui_point point)
         return UI_ELEMENT_NONE;
     }
     /* The Windows-style taskbar is the Phipia shell's only launcher.  The
-     * older menu and magnified Dock remain available to the legacy shell,
+     * older menu and magnified Taskbar remain available to the legacy shell,
      * but must not leave invisible hotspots over Phipia applications or the
      * desktop. */
     if (!phipia_shell_ready) {
@@ -10240,7 +10240,7 @@ enum ui_status ui_process_events(void)
         }
     }
     /* Pointer input does not advance the genie warp.  Keep ordinary pointer
-     * and Dock damage local; ui_flush() owns time-based animation frames. */
+     * and Taskbar damage local; ui_flush() owns time-based animation frames. */
     if (damage.width == 0U || damage.height == 0U) {
         return UI_STATUS_OK;
     }
@@ -10919,7 +10919,7 @@ enum ui_status ui_verify_installed(struct ui_proof *proof)
     }
     if (ui_layout_validate(&state.layout) != UI_STATUS_OK) {
         installed_proof_failure =
-            "Phipia live Dock layout is invalid";
+            "Phipia live Taskbar layout is invalid";
         return UI_STATUS_INSTALLED_PROOF_FAILURE;
     }
     if (state.pointer_present) {
@@ -10956,7 +10956,7 @@ enum ui_status ui_verify_installed(struct ui_proof *proof)
             state.layout.dock_items[index].action != actions[index] ||
             state.layout.dock_items[index].panel != panels[index]) {
             installed_proof_failure =
-                "Phipia Dock action metadata is invalid";
+                "Phipia Taskbar action metadata is invalid";
             return UI_STATUS_INSTALLED_PROOF_FAILURE;
         }
     }
@@ -10989,7 +10989,7 @@ enum ui_status ui_verify_installed(struct ui_proof *proof)
         .damage_rectangles = state.renders.damage_rectangles,
         /* The Phipia taskbar owns its font and therefore its glyph counter.
          * Folding that measured work into the compositor proof keeps the
-         * receipt meaningful when the legacy Dock is not the active shell. */
+         * receipt meaningful when the legacy Taskbar is not the active shell. */
         .glyphs = state.renders.glyphs +
             (phipia_shell_ready ? taskbar_render.glyphs : 0U),
         .ledger_fingerprint = ledger == NULL ? 0U : ledger->fingerprint,
