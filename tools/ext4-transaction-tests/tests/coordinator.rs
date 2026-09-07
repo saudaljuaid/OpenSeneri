@@ -705,6 +705,101 @@ fn mode_and_inline_xattrs_survive_remount_and_rollback_enospc() {
 }
 
 #[test]
+fn linux_acl_entries_survive_user_xattr_mutation_and_guard_chmod() {
+    let Some(path) = fixture() else { return };
+    let name = b"system/acl-preserve";
+    let mut mounted = mount_fixture(&path);
+    ext4::create_file_probe(&mut mounted, name, 0o640).unwrap();
+    ext4::transaction_probe(&mut mounted, name, 0, b"access ACL").unwrap();
+    let number = ext4::stat(&mounted, name).unwrap().inode as u32;
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    drop(mounted);
+    let image = path.with_extension("coordinator-acl-input.img");
+    write_sparse_fixture(&image, &DEVICE.with_borrow(|device| device.bytes.clone())).unwrap();
+    let mut posix = Vec::from(2u32.to_le_bytes());
+    let mut disk_acl = Vec::from(1u32.to_le_bytes());
+    for (tag, permissions, id) in [(1u16, 6u16, u32::MAX), (2, 4, 1000),
+        (4, 4, u32::MAX), (16, 4, u32::MAX), (32, 0, u32::MAX)] {
+        posix.extend_from_slice(&tag.to_le_bytes());
+        posix.extend_from_slice(&permissions.to_le_bytes());
+        posix.extend_from_slice(&id.to_le_bytes());
+        disk_acl.extend_from_slice(&tag.to_le_bytes());
+        disk_acl.extend_from_slice(&permissions.to_le_bytes());
+        if tag == 2 { disk_acl.extend_from_slice(&id.to_le_bytes()); }
+    }
+    let acl_file = path.with_extension("coordinator-posix-acl.bin");
+    std::fs::write(&acl_file, &posix).unwrap();
+    debugfs(&image, &format!("ea_set -f {} /system/acl-preserve system.posix_acl_access", acl_file.display()));
+    debugfs(&image, "ea_set /system/acl-preserve user.note first");
+    let baseline = std::fs::read(&image).unwrap();
+    let check_acl = |bytes: Vec<u8>| {
+        let raw = ext4plus::Ext4::load(Box::new(bytes)).unwrap();
+        let inode = ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(number).unwrap()).unwrap();
+        assert_eq!(inode.get_xattr(&raw, b"system.posix_acl_access").unwrap().as_ref(), Some(&disk_acl));
+        assert!(inode.list_xattrs(&raw).unwrap().contains(&b"system.posix_acl_access".to_vec()));
+    };
+    check_acl(baseline.clone());
+    let mut mounted = mount_bytes(baseline.clone());
+    fsck(&path, "coordinator-acl-import");
+    ext4::set_xattr(&mut mounted, name, b"user.note", Some(b"second")).unwrap();
+    let before = DEVICE.with_borrow_mut(|device| { device.events.clear(); device.bytes.clone() });
+    assert_eq!(ext4::chmod(&mut mounted, name, 0o777), Err(Status::ReadOnly));
+    DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, before); });
+    assert_eq!(ext4::stat(&mounted, name).unwrap().mode & 0o777, 0o640);
+    ext4::transaction_probe(&mut mounted, name, 0, b"preserved").unwrap();
+    ext4::set_xattr(&mut mounted, name, b"user.note", None).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    let output = DEVICE.with_borrow(|device| device.bytes.clone());
+    check_acl(output.clone());
+    fsck(&path, "coordinator-acl-preserved");
+    write_sparse_fixture(&image, &output).unwrap();
+    let exported = path.with_extension("coordinator-posix-acl-export.bin");
+    debugfs(&image, &format!("ea_get -f {} /system/acl-preserve system.posix_acl_access", exported.display()));
+    assert_eq!(std::fs::read(exported).unwrap(), posix);
+    drop(mounted);
+
+    let ipg = u32::from_le_bytes(baseline[1064..1068].try_into().unwrap());
+    let descriptor = 4096 + ((number - 1) / ipg) as usize * 64;
+    let table = u32::from_le_bytes(baseline[descriptor + 8..descriptor + 12].try_into().unwrap()) as usize * 4096;
+    let inode_start = table + ((number - 1) % ipg) as usize * 256;
+    let extra = u16::from_le_bytes(baseline[inode_start + 128..inode_start + 130].try_into().unwrap()) as usize;
+    let body = inode_start + 128 + extra;
+    assert_eq!(&baseline[body..body + 4], &0xea02_0000u32.to_le_bytes());
+    // Locate the non-ACL entry; inode-body entries need not be sorted.
+    let mut entry = body + 4;
+    while baseline[entry + 1] != 1 {
+        assert_ne!(&baseline[entry..entry + 4], &[0; 4]);
+        entry += (16 + baseline[entry] as usize + 3) & !3;
+    }
+    assert_eq!(&baseline[entry + 16..entry + 20], b"note");
+    let generation = u32::from_le_bytes(baseline[inode_start + 0x64..inode_start + 0x68].try_into().unwrap());
+    for case in 0..5 {
+        for dirty in [false, true] {
+            let mut hostile = baseline.clone();
+            match case {
+                0 => hostile[entry] = 0, // only ACL indices admit an empty name
+                1 => hostile[entry + 16] = 0,
+                2 => hostile[entry + 2..entry + 4].fill(0), // value over names
+                3 => hostile[entry + 2..entry + 4].copy_from_slice(&((256 - 128 - extra - 5) as u16).to_le_bytes()),
+                _ => hostile[entry + 8..entry + 12].copy_from_slice(&u32::MAX.to_le_bytes()),
+            }
+            write_sparse_fixture(&image, &hostile).unwrap();
+            debugfs(&image, &format!("set_inode_field <{number}> generation {generation}"));
+            if dirty { debugfs(&image, "feature needs_recovery"); }
+            let hostile = std::fs::read(&image).unwrap();
+            let raw = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
+            let inode = ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(number).unwrap()).unwrap();
+            assert!(inode.list_xattrs(&raw).is_err(), "case={case}");
+            DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+            assert!(ext4::mount(1, hostile.len() as u64).is_err());
+            DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+        }
+    }
+}
+
+#[test]
 fn partial_truncate_zeroes_retained_tail_and_keeps_holes_sparse() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);

@@ -131,12 +131,16 @@ fn parse_xattr_entries(
 ) -> Result<Vec<XattrEntry>, Ext4Error> {
     let mut entries = Vec::new();
     let mut entry_offset = entries_start;
+    let mut first_value = storage.len();
 
     loop {
         let sentinel = storage
             .get(entry_offset..entry_offset.checked_add(4).unwrap())
             .ok_or_else(|| Ext4Error::from(CorruptKind::Xattr(inode.index)))?;
         if sentinel == [0, 0, 0, 0] {
+            if entry_offset + 4 > first_value {
+                return Err(CorruptKind::Xattr(inode.index).into());
+            }
             break;
         }
 
@@ -149,8 +153,8 @@ fn parse_xattr_entries(
             )
             .ok_or_else(|| Ext4Error::from(CorruptKind::Xattr(inode.index)))?;
         let name_len = usize::from(entry[0]);
-        if name_len == 0 {
-            break;
+        if name_len == 0 && !matches!(entry[1], EXT4_XATTR_POSIX_ACL_ACCESS | EXT4_XATTR_POSIX_ACL_DEFAULT) {
+            return Err(CorruptKind::Xattr(inode.index).into());
         }
 
         let record_len =
@@ -178,10 +182,17 @@ fn parse_xattr_entries(
         let name = entry
             [EXT4_XATTR_ENTRY_BASE_SIZE..EXT4_XATTR_ENTRY_BASE_SIZE + name_len]
             .to_vec();
-        let value = storage
-            .get(value_start..value_end)
-            .ok_or_else(|| Ext4Error::from(CorruptKind::Xattr(inode.index)))?
-            .to_vec();
+        if name.contains(&0) { return Err(CorruptKind::Xattr(inode.index).into()); }
+        let value = if value_size == 0 { Vec::new() } else {
+            let padded_end = value_start.checked_add(align_4(value_size))
+                .ok_or(CorruptKind::Xattr(inode.index))?;
+            if value_offs % 4 != 0 || padded_end > storage.len() {
+                return Err(CorruptKind::Xattr(inode.index).into());
+            }
+            first_value = first_value.min(value_start);
+            storage.get(value_start..value_end)
+                .ok_or_else(|| Ext4Error::from(CorruptKind::Xattr(inode.index)))?.to_vec()
+        };
 
         entries.push(XattrEntry {
             name_index: entry[1],
