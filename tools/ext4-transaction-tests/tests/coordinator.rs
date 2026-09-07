@@ -2809,6 +2809,71 @@ fn short_directory_entries_grow_without_consuming_checksum_tails() {
 }
 
 #[test]
+fn linear_directory_shrink_reclaims_previously_emptied_suffix_with_retries() {
+    let Some(path) = fixture() else { return };
+    let directory = b"system/suffix-dir";
+    let names: Vec<String> = (0..33).map(|index| format!("system/suffix-dir/{index:03}{}", "x".repeat(252))).collect();
+    let mut mounted = mount_fixture(&path);
+    ext4::create_directory_probe(&mut mounted, directory).unwrap();
+    for name in &names { ext4::create_file_probe(&mut mounted, name.as_bytes(), 0o600).unwrap(); }
+    ext4::transaction_probe(&mut mounted, names[0].as_bytes(), 0, b"retained").unwrap();
+    assert_eq!(ext4::stat(&mounted, directory).unwrap().size, 3 * 4096);
+    let snapshot = ext4::directory_snapshot(&mounted, directory).unwrap();
+    // Empty the middle block before the final block becomes empty. Deleting
+    // just the last block used to leave an unnecessary empty suffix behind.
+    for name in &names[1..32] { ext4::unlink_file_probe(&mut mounted, name.as_bytes()).unwrap(); }
+    assert_eq!(ext4::stat(&mounted, directory).unwrap().size, 3 * 4096);
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    let baseline = DEVICE.with_borrow(|device| device.bytes.clone());
+    drop(mounted);
+    let mut mounted = mount_bytes(baseline.clone());
+    let free = ext4::free_bytes(&mounted).unwrap();
+    ext4::unlink_file_probe(&mut mounted, names[32].as_bytes()).unwrap();
+    let operations = DEVICE.with_borrow(|device| device.events.clone());
+    assert_eq!(ext4::stat(&mounted, directory).unwrap().size, 4096);
+    assert_eq!(ext4::free_bytes(&mounted).unwrap(), free + 8192);
+    // The already-open snapshot keeps all its names despite reclaimed blocks.
+    for index in 0..33 { assert!(snapshot.entry(index).is_some()); }
+    assert!(snapshot.entry(33).is_none());
+    drop(snapshot);
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    let final_bytes = DEVICE.with_borrow(|device| device.bytes.clone());
+    fsck(&path, "coordinator-directory-suffix-final");
+    drop(mounted);
+    for failure in 0..operations.len() {
+        for accepted in [false, true] {
+            let mut mounted = mount_bytes(baseline.clone());
+            DEVICE.with_borrow_mut(|device| {
+                device.fail_event = Some(failure);
+                device.accept_failed_write = accepted;
+            });
+            assert_eq!(ext4::unlink_file_probe(&mut mounted, names[32].as_bytes()), Err(Status::Io));
+            let crash = DEVICE.with_borrow(|device| {
+                assert_eq!(&device.events, &operations[..=failure]);
+                device.bytes.clone()
+            });
+            DEVICE.with_borrow_mut(|device| device.fail_event = None);
+            ext4::unlink_file_probe(&mut mounted, names[32].as_bytes()).unwrap();
+            assert_eq!(ext4::stat(&mounted, directory).unwrap().size, 4096);
+            ext4::sync(&mut mounted).unwrap();
+            ext4::unmount(&mounted).unwrap();
+            DEVICE.with_borrow(|device| assert_eq!(device.bytes, final_bytes));
+            drop(mounted);
+            let recovered = mount_bytes(crash);
+            let removed = ext4::stat(&recovered, names[32].as_bytes()) == Err(Status::NotFound);
+            assert_eq!(ext4::stat(&recovered, directory).unwrap().size, if removed { 4096 } else { 3 * 4096 });
+            let mut content = [0; 8];
+            read_exact(&recovered, names[0].as_bytes(), &mut content);
+            assert_eq!(&content, b"retained");
+            ext4::unmount(&recovered).unwrap();
+            fsck(&path, &format!("coordinator-directory-suffix-cut-{failure}-{accepted}"));
+        }
+    }
+}
+
+#[test]
 fn indexed_directory_untracked_link_counts_survive_namespace_mutations() {
     let Some(path) = fixture() else { return };
     let image = path.with_extension("dir-nlink.img");

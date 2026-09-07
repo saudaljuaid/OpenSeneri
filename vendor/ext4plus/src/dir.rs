@@ -375,13 +375,18 @@ async fn remove_dir_entry_inner(
 
     let mut is_first = true;
     let mut logical_block_index = 0u64;
+    let mut last_nonempty_block = 0u64; // always retain the dot/dotdot block
 
     while let Some(block_index_res) = file_blocks.next().await {
         let block_index = block_index_res?;
-        fs.read_from_block(block_index, 0, &mut block_buf).await?;
+        DirBlock {
+            fs, block_index, is_first, dir_inode: dir_inode.index,
+            has_htree: false, checksum_base: dir_inode.checksum_base().clone(),
+        }.read(&mut block_buf).await?;
 
         let mut off = 0usize;
         let mut prev_off: Option<usize> = None;
+        let mut block_has_entries = false;
 
         while off < block_size_usize {
             let inode_field = read_u32le(&block_buf, off);
@@ -391,11 +396,12 @@ async fn remove_dir_entry_inner(
             let rec_end =
                 checked_add_usize(off, rec_len_usize, dir_inode.index)?;
 
-            if rec_len_usize < 8 || rec_end > block_size_usize {
+            if rec_len_usize < 8 || rec_len_usize % 4 != 0 || rec_end > block_size_usize {
                 return Err(dir_entry_error(dir_inode.index));
             }
 
             if inode_field != 0 {
+                block_has_entries = true;
                 let name_len_offset =
                     checked_add_usize(off, 6, dir_inode.index)?;
                 let name_len = usize::from(block_buf[name_len_offset]);
@@ -447,12 +453,12 @@ async fn remove_dir_entry_inner(
                         let rec_len =
                             read_u16le(&block_buf, verify_rec_len_offset);
                         let rec_len_usize = usize::from(rec_len);
-                        if rec_len_usize == 0 {
-                            break;
+                        if rec_len_usize < 8 || rec_len_usize % 4 != 0
+                            || rec_len_usize > block_size_usize - verify_off {
+                            return Err(dir_entry_error(dir_inode.index));
                         }
                         if inode_field != 0 {
                             all_empty = false;
-                            break;
                         }
                         verify_off = checked_add_usize(
                             verify_off,
@@ -471,12 +477,15 @@ async fn remove_dir_entry_inner(
                         && logical_block_index == last_file_block_index
                         && logical_block_index > 0
                     {
-                        // Truncate the file to remove the last empty block.
+                        // Remove the complete empty suffix, including blocks
+                        // emptied by earlier deletions. Those earlier blocks
+                        // were already read and checksum-checked during lookup.
+                        // Do not stage a directory image that is being freed.
                         truncate(
                             fs,
                             dir_inode,
                             checked_mul_u64(
-                                logical_block_index,
+                                checked_add_u64(last_nonempty_block, 1, dir_inode.index)?,
                                 block_size.to_u64(),
                                 dir_inode.index,
                             )?,
@@ -505,6 +514,7 @@ async fn remove_dir_entry_inner(
             off = rec_end;
         }
 
+        if block_has_entries { last_nonempty_block = logical_block_index; }
         is_first = false;
         logical_block_index =
             checked_add_u64(logical_block_index, 1, dir_inode.index)?;
