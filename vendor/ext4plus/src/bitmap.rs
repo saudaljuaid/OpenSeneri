@@ -27,12 +27,57 @@ pub struct BlockAllocationSnapshot<'a> {
     validated_inodes: BTreeSet<crate::inode::InodeIndex>,
     xattr_references: BTreeMap<u64, (u32, u32, crate::inode::InodeIndex)>,
     invalid: bool,
+    fixed_reserved: bool,
 }
 
 impl<'a> BlockAllocationSnapshot<'a> {
     pub(crate) fn new(filesystem: &'a Ext4) -> Self {
         Self { filesystem, groups: BTreeMap::new(), extent_ranges: BTreeMap::new(),
-            validated_inodes: BTreeSet::new(), xattr_references: BTreeMap::new(), invalid: false }
+            validated_inodes: BTreeSet::new(), xattr_references: BTreeMap::new(),
+            invalid: false, fixed_reserved: false }
+    }
+
+    /// Reserve primary/backup superblocks and descriptor tables, block/inode
+    /// bitmaps and inode tables in the admitted non-flex, non-resize profile.
+    /// This validates geometry only; it does not initialize lazy bitmaps.
+    pub fn reserve_fixed_metadata(&mut self) -> Result<(), Ext4Error> {
+        if self.invalid { return Err(Ext4Error::Readonly); }
+        if self.fixed_reserved { return Ok(()); }
+        let result = (|| {
+            let fs = self.filesystem;
+            let sb = fs.superblock();
+            if sb.incompatible_features().intersects(IncompatibleFeatures::META_BLOCK_GROUPS | IncompatibleFeatures::FLEXIBLE_BLOCK_GROUPS)
+                || sb.compatible_features().contains(CompatibleFeatures::RESIZE_INODE)
+                || sb.compatible_features().bits() & 0x200 != 0 { return Err(Ext4Error::Readonly); }
+            let descriptor_blocks = (u64::from(sb.num_block_groups()) * u64::from(sb.block_group_descriptor_size()))
+                .div_ceil(sb.block_size().to_u64());
+            let table_blocks = (u64::from(sb.inodes_per_block_group().get()) * u64::from(sb.inode_size()))
+                .div_ceil(sb.block_size().to_u64());
+            let power = |mut value: u32, base: u32| {
+                while value > 1 && value % base == 0 { value /= base; }
+                value == 1
+            };
+            let mut reserve = |start: u64, count: u64, group: u32| -> Result<(), Ext4Error> {
+                if start.checked_add(count).is_none_or(|end| end > sb.blocks_count()) {
+                    return Err(CorruptKind::BlockGroupDescriptor(group).into());
+                }
+                let count = u32::try_from(count).map_err(|_| Ext4Error::FileTooLarge)?;
+                self.claim_extent_range(start, count, crate::inode::InodeIndex::new(2).unwrap())
+            };
+            for (group, descriptor) in fs.0.block_group_descriptors.iter().enumerate() {
+                let group = u32::try_from(group).map_err(|_| Ext4Error::FileTooLarge)?;
+                let group_start = u64::from(sb.first_data_block()) + u64::from(group) * u64::from(sb.blocks_per_group().get());
+                let has_super = !sb.read_only_compatible_features().contains(ReadOnlyCompatibleFeatures::SPARSE_SUPERBLOCKS)
+                    || group == 0 || group == 1 || power(group, 3) || power(group, 5) || power(group, 7);
+                if has_super { reserve(group_start, 1 + descriptor_blocks, group)?; }
+                reserve(descriptor.block_bitmap_block(), 1, group)?;
+                reserve(descriptor.inode_bitmap_block(), 1, group)?;
+                reserve(descriptor.inode_table_first_block(), table_blocks, group)?;
+            }
+            Ok(())
+        })();
+        if result.is_err() { self.invalid = true; } else { self.fixed_reserved = true; }
+        result
     }
 
     /// Data and tree blocks have exactly one claim. Shared xattr blocks enter

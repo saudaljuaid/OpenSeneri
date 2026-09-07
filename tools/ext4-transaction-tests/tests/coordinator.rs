@@ -1551,6 +1551,12 @@ fn file_extents_cannot_overwrite_or_free_fixed_metadata() {
     let inode_bitmap = u32::from_le_bytes(pristine[4100..4104].try_into().unwrap());
     let inode_table = u32::from_le_bytes(pristine[4104..4108].try_into().unwrap());
     let image = path.with_extension("coordinator-metadata-alias-input.img");
+    let mut reference = mount_bytes(pristine.clone());
+    ext4::transaction_probe(&mut reference, name, 0, b"original").unwrap();
+    ext4::sync(&mut reference).unwrap();
+    ext4::unmount(&reference).unwrap();
+    let expected_clean = DEVICE.with_borrow(|device| device.bytes.clone());
+    drop(reference);
     for target in [1, block_bitmap, inode_bitmap, inode_table, 8192, 8193] {
         std::fs::write(&image, &pristine).unwrap();
         // i_block[5] is ee_start_lo in this one-extent inline root. debugfs
@@ -1558,40 +1564,46 @@ fn file_extents_cannot_overwrite_or_free_fixed_metadata() {
         // incorrect ordered-data classification of fixed filesystem metadata.
         debugfs(&image, &format!("set_inode_field <{inode}> block[5] {target}"));
         let hostile = std::fs::read(&image).unwrap();
-        let mut mounted = mount_bytes(hostile.clone());
-        let metadata = ext4::stat(&mounted, name).unwrap();
-        let mut before = [0; 8];
-        read_exact(&mounted, name, &mut before);
-        assert_eq!(ext4::transaction_probe(&mut mounted, name, 0, b"new-data"), Err(Status::Invalid), "block {target}");
-        assert_eq!(ext4::stat(&mounted, name).unwrap(), metadata);
-        let mut after = [0; 8];
-        read_exact(&mounted, name, &mut after);
-        assert_eq!(after, before);
+        DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+        assert!(ext4::mount(1, hostile.len() as u64).is_err());
         DEVICE.with_borrow(|device| {
-            assert_eq!(device.events.len(), 2, "classification escaped rollback for {target}");
-            assert!(matches!(&device.events[0], Event::Write(1024, data) if data.len() == 1024));
-            assert_eq!(device.events[1], Event::Flush(0));
+            assert!(device.events.is_empty());
+            assert_eq!(device.bytes, hostile);
         });
-        ext4::sync(&mut mounted).unwrap();
-        ext4::unmount(&mounted).unwrap();
-        DEVICE.with_borrow(|device| assert_eq!(device.bytes, hostile));
-        for operation in 0..3 {
-            let mut mounted = mount_bytes(hostile.clone());
+        // Also retain mutation-boundary coverage: inject a checksummed inode
+        // fault after admission, without changing the allocator or namespace.
+        let ipg = u32::from_le_bytes(pristine[1064..1068].try_into().unwrap());
+        let descriptor = 4096 + ((inode as u32 - 1) / ipg) as usize * 64;
+        let table = u32::from_le_bytes(pristine[descriptor + 8..descriptor + 12].try_into().unwrap());
+        let inode_start = table as usize * 4096 + ((inode as u32 - 1) % ipg) as usize * 256;
+        for operation in 0..4 {
+            let mut mounted = mount_bytes(pristine.clone());
+            // Arm the marker on a valid view first, so its mandatory reload
+            // cannot hide the later ordered-data/revoke/tail classification.
+            ext4::transaction_probe(&mut mounted, name, 0, b"original").unwrap();
+            let baseline = DEVICE.with_borrow(|device| device.bytes.clone());
+            let metadata = ext4::stat(&mounted, name).unwrap();
+            DEVICE.with_borrow_mut(|device| {
+                device.bytes[inode_start..inode_start + 256].copy_from_slice(&hostile[inode_start..inode_start + 256]);
+                device.events.clear();
+            });
             let result = match operation {
-                0 => ext4::truncate_probe(&mut mounted, name, 0),
-                1 => ext4::truncate_probe(&mut mounted, name, 1),
+                0 => ext4::transaction_probe(&mut mounted, name, 0, b"new-data").map(|_| ()),
+                1 => ext4::truncate_probe(&mut mounted, name, 0),
+                2 => ext4::truncate_probe(&mut mounted, name, 1),
                 _ => ext4::unlink_file_probe(&mut mounted, name),
             };
             assert_eq!(result, Err(Status::Invalid), "fixed block {target}, operation={operation}");
-            assert_eq!(ext4::stat(&mounted, name).unwrap(), metadata);
-            DEVICE.with_borrow(|device| {
-                assert_eq!(device.events.len(), 2);
-                assert!(matches!(&device.events[0], Event::Write(1024, data) if data.len() == 1024));
-                assert_eq!(device.events[1], Event::Flush(0));
+            assert_public_reads_refused(&mounted);
+            DEVICE.with_borrow_mut(|device| {
+                assert!(device.events.is_empty(), "classification emitted storage writes");
+                device.bytes[inode_start..inode_start + 256].copy_from_slice(&baseline[inode_start..inode_start + 256]);
+                assert_eq!(device.bytes, baseline);
             });
             ext4::sync(&mut mounted).unwrap();
+            assert_eq!(ext4::stat(&mounted, name), Ok(metadata));
             ext4::unmount(&mounted).unwrap();
-            DEVICE.with_borrow(|device| assert_eq!(device.bytes, hostile));
+            DEVICE.with_borrow(|device| assert_eq!(device.bytes, expected_clean));
         }
         // The input deliberately contains an invalid ownership alias; do not
         // present it as a clean-fsck result. Refusal preserves it byte-for-byte.
