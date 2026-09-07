@@ -627,6 +627,7 @@ fn validate_inode_storage(filesystem: &Ext4, path: &[u8],
 fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
     let mut linked_orphans = Vec::new();
     let mut blocks = filesystem.block_allocation_snapshot();
+    blocks.validate_internal_journal().map_err(map_error)?;
     for index in filesystem.orphan_inodes().map_err(map_error)? {
         let inode = Inode::read(filesystem, index).map_err(map_error)?;
         blocks.validate_inode_extents(&inode).map_err(map_error)?;

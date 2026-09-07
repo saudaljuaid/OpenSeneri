@@ -49,6 +49,41 @@ impl<'a> BlockAllocationSnapshot<'a> {
         Ok(())
     }
 
+    /// Reserve the internal journal's data mapping in this ownership pass.
+    /// Extent-based journals also validate and claim their tree nodes.
+    #[maybe_async::maybe_async]
+    pub async fn validate_internal_journal(&mut self) -> Result<(), Ext4Error> {
+        let result = self.validate_internal_journal_inner().await;
+        if result.is_err() { self.invalid = true; }
+        result
+    }
+
+    #[maybe_async::maybe_async]
+    async fn validate_internal_journal_inner(&mut self) -> Result<(), Ext4Error> {
+        #[cfg(not(feature = "sync"))]
+        use crate::iters::AsyncIterator;
+        if self.invalid { return Err(Ext4Error::Readonly); }
+        let Some(index) = self.filesystem.superblock().journal_inode() else { return Ok(()) };
+        if self.validated_inodes.contains(&index) { return Ok(()); }
+        if !self.filesystem.inode_is_allocated(index).await? {
+            return Err(CorruptKind::ExtentBlock(index).into());
+        }
+        let inode = crate::inode::Inode::read(self.filesystem, index).await?;
+        if inode.flags().contains(crate::inode::InodeFlags::EXTENTS) {
+            return self.validate_inode_extents(&inode).await;
+        }
+        let mut blocks = crate::iters::file_blocks::FileBlocks::new(self.filesystem.clone(), &inode)?;
+        while let Some(block) = blocks.next().await {
+            let block = block?;
+            if !self.range_is_allocated(block, 1).await? {
+                return Err(CorruptKind::ExtentBlock(index).into());
+            }
+            self.claim_extent_range(block, 1, index)?;
+        }
+        self.validated_inodes.insert(index);
+        Ok(())
+    }
+
     /// Require every block in a nonempty physical range to be allocated.
     /// Allocation alone does not establish which inode owns the range.
     #[maybe_async::maybe_async]

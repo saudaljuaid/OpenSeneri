@@ -1305,7 +1305,8 @@ fn extent_data_and_nodes_cannot_be_shared_between_live_or_orphan_inodes() {
     assert_eq!(u16::from_le_bytes(pristine[inode_start + 0x2e..inode_start + 0x30].try_into().unwrap()), 1);
     let leaf = u64::from(u32::from_le_bytes(pristine[inode_start + 0x38..inode_start + 0x3c].try_into().unwrap()));
     let image = path.with_extension("coordinator-shared-extent.img");
-    for target in [data_block, directory_block, leaf] {
+    let journal_block = ext4plus::load_journal_inode_map(&raw).unwrap().physical_blocks()[1];
+    for target in [data_block, directory_block, leaf, journal_block] {
         for zero_size in [false, true] {
             for orphan in [false, true] {
                 std::fs::write(&image, &pristine).unwrap();
@@ -1324,6 +1325,18 @@ fn extent_data_and_nodes_cannot_be_shared_between_live_or_orphan_inodes() {
                 let thief = ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(thief_number as u32).unwrap()).unwrap();
                 for reverse in [false, true] {
                     let mut claims = raw.block_allocation_snapshot();
+                    if target == journal_block {
+                        if reverse {
+                            claims.validate_inode_extents(&thief).unwrap();
+                            assert!(claims.validate_internal_journal().is_err());
+                        } else {
+                            claims.validate_internal_journal().unwrap();
+                            claims.validate_internal_journal().unwrap();
+                            assert!(claims.validate_inode_extents(&thief).is_err());
+                        }
+                        assert!(claims.validate_inode_extents(&thief).is_err());
+                        continue;
+                    }
                     let (first, second) = if reverse { (&thief, &owner) } else { (&owner, &thief) };
                     claims.validate_inode_extents(first).unwrap();
                     claims.validate_inode_extents(first).unwrap(); // hard-link identity
