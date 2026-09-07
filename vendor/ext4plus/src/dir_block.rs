@@ -60,10 +60,13 @@ impl DirBlock<'_> {
         self.fs.read_from_block(self.block_index, 0, block).await?;
 
         if !self.fs.has_metadata_checksums() {
-            return Ok(());
+            return if self.get_block_type(block) == DirBlockType::Leaf {
+                self.validate_leaf_records(block)
+            } else { Ok(()) };
         }
 
         let block_type = self.get_block_type(block);
+        let is_leaf = block_type == DirBlockType::Leaf;
 
         let (actual_checksum, offset) = if block_type == DirBlockType::Leaf {
             (self.calc_leaf_checksum(block)?, block.len() - 4)
@@ -73,7 +76,7 @@ impl DirBlock<'_> {
         let expected_checksum = read_u32le(block, offset);
 
         if actual_checksum.finalize() == expected_checksum {
-            Ok(())
+            if is_leaf { self.validate_leaf_records(block) } else { Ok(()) }
         } else {
             Err(CorruptKind::DirBlockChecksum(self.dir_inode).into())
         }
@@ -90,6 +93,10 @@ impl DirBlock<'_> {
         let block_size = self.fs.0.superblock.block_size();
         assert_eq!(block.len(), block_size);
 
+        if self.get_block_type(block) == DirBlockType::Leaf {
+            self.validate_leaf_records(block)?;
+        }
+
         if !self.fs.has_metadata_checksums() {
             return Ok(());
         }
@@ -104,6 +111,28 @@ impl DirBlock<'_> {
 
         write_u32le(block, offset, checksum.finalize());
 
+        Ok(())
+    }
+
+    /// Records must end exactly before the checksum tail. A valid CRC alone
+    /// does not prevent a final live/unused record from consuming that tail.
+    fn validate_leaf_records(&self, block: &[u8]) -> Result<(), Ext4Error> {
+        let end = block.len() - if self.fs.has_metadata_checksums() { 12 } else { 0 };
+        let mut offset = 0;
+        while offset < end {
+            if end - offset < 8 { return Err(CorruptKind::DirEntry(self.dir_inode).into()); }
+            let length = usize::from(read_u16le(block, offset + 4));
+            if length < 8 || length % 4 != 0 || length > end - offset {
+                return Err(CorruptKind::DirEntry(self.dir_inode).into());
+            }
+            if read_u32le(block, offset) != 0 {
+                let name_length = usize::from(block[offset + 6]);
+                if name_length == 0 || 8 + name_length > length {
+                    return Err(CorruptKind::DirEntry(self.dir_inode).into());
+                }
+            }
+            offset += length;
+        }
         Ok(())
     }
 

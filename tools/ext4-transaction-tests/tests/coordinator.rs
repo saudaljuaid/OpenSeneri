@@ -2179,7 +2179,7 @@ fn namespace_counts_parents_types_and_unique_names_are_checked_before_mutation()
     let first_offset = entry_offset(b"first");
     let alias_offset = entry_offset(b"alias");
     let image = path.with_extension("coordinator-namespace-count-input.img");
-    for case in 0..18 {
+    for case in 0..20 {
         for dirty in [false, true] {
             write_sparse_fixture(&image, &pristine).unwrap();
             match case {
@@ -2202,10 +2202,11 @@ fn namespace_counts_parents_types_and_unique_names_are_checked_before_mutation()
                         13 => hostile[first_offset + 4..first_offset + 6].copy_from_slice(&65532u16.to_le_bytes()),
                         14 => hostile[first_offset + 4..first_offset + 6].copy_from_slice(&8u16.to_le_bytes()),
                         _ => {
-                            hostile[first_offset..first_offset + 4].fill(0);
+                            if case != 19 { hostile[first_offset..first_offset + 4].fill(0); }
                             let length = match case {
                                 15 => 65532,
                                 16 => (block + 4092 - first_offset) as u16,
+                                18 | 19 => (block + 4096 - first_offset) as u16,
                                 _ => 9,
                             };
                             hostile[first_offset + 4..first_offset + 6].copy_from_slice(&length.to_le_bytes());
@@ -3260,6 +3261,16 @@ fn indexed_directory_compaction_preserves_names_links_and_replays_every_boundary
         // The compact tree remains writable and can split again. Child mkdir,
         // cross-parent rename and rmdir retain the sentinel where applicable.
         let mut mounted = mount_bytes(final_bytes);
+        // One short name consumes the remaining 16 bytes; the next must split
+        // the leaf instead of trying to use its 12-byte checksum tail.
+        assert_eq!((4096 - 12) % record_bytes, 16);
+        ext4::create_file_probe(&mut mounted, b"indexed/a", 0o600).unwrap();
+        assert_eq!(ext4::stat(&mounted, b"indexed").unwrap().size, 8192);
+        ext4::create_file_probe(&mut mounted, b"indexed/b", 0o600).unwrap();
+        assert!(ext4::stat(&mounted, b"indexed").unwrap().size > 8192);
+        ext4::unlink_file_probe(&mut mounted, b"indexed/a").unwrap();
+        ext4::unlink_file_probe(&mut mounted, b"indexed/b").unwrap();
+        check(&mounted, true);
         ext4::create_directory_probe(&mut mounted, b"indexed/child").unwrap();
         ext4::rename_probe(&mut mounted, b"indexed/child", b"system/child").unwrap();
         ext4::rename_probe(&mut mounted, b"system/child", b"indexed/child").unwrap();

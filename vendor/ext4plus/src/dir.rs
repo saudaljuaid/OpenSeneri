@@ -1333,16 +1333,17 @@ pub(crate) async fn add_dir_entry_htree(
     let need = dir_entry_min_size(name.as_ref().len(), dir_inode.index)?;
 
     let mut off = 0usize;
+    let usable_size = htree_leaf_usable_bytes(fs, dir_inode.index)?;
 
-    while off < block_size {
-        if block_size - off < 8 { return Err(dir_entry_error(dir_inode.index)); }
+    while off < usable_size {
+        if usable_size - off < 8 { return Err(dir_entry_error(dir_inode.index)); }
         let inode_field = read_u32le(&block_buf, off);
         let rec_len_offset = checked_add_usize(off, 4, dir_inode.index)?;
         let rec_len = read_u16le(&block_buf, rec_len_offset);
         let rec_len_usize = usize::from(rec_len);
         let rec_end = checked_add_usize(off, rec_len_usize, dir_inode.index)?;
 
-        if rec_len_usize < 8 || rec_len_usize % 4 != 0 || rec_end > block_size {
+        if rec_len_usize < 8 || rec_len_usize % 4 != 0 || rec_end > usable_size {
             return Err(dir_entry_error(dir_inode.index));
         }
 
