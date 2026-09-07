@@ -24,6 +24,7 @@ pub struct BlockAllocationSnapshot<'a> {
     filesystem: &'a Ext4,
     groups: BTreeMap<u32, Vec<u8>>,
     extent_ranges: BTreeMap<u64, u64>,
+    claimed_blocks: u64,
     validated_inodes: BTreeSet<crate::inode::InodeIndex>,
     xattr_references: BTreeMap<u64, (u32, u32, crate::inode::InodeIndex)>,
     invalid: bool,
@@ -32,7 +33,7 @@ pub struct BlockAllocationSnapshot<'a> {
 
 impl<'a> BlockAllocationSnapshot<'a> {
     pub(crate) fn new(filesystem: &'a Ext4) -> Self {
-        Self { filesystem, groups: BTreeMap::new(), extent_ranges: BTreeMap::new(),
+        Self { filesystem, groups: BTreeMap::new(), extent_ranges: BTreeMap::new(), claimed_blocks: 0,
             validated_inodes: BTreeSet::new(), xattr_references: BTreeMap::new(),
             invalid: false, fixed_reserved: false }
     }
@@ -91,6 +92,8 @@ impl<'a> BlockAllocationSnapshot<'a> {
         {
             return Err(CorruptKind::ExtentBlock(inode).into());
         }
+        self.claimed_blocks = self.claimed_blocks.checked_add(u64::from(count))
+            .ok_or(CorruptKind::TooManyBlocksInFile)?;
         self.extent_ranges.insert(start, end);
         Ok(())
     }
@@ -149,8 +152,8 @@ impl<'a> BlockAllocationSnapshot<'a> {
     }
 
     #[maybe_async::maybe_async]
-    async fn validate_xattr_reference(&mut self, inode: &crate::inode::Inode) -> Result<(), Ext4Error> {
-        let Some((block, expected)) = inode.external_xattr_reference(self.filesystem).await? else { return Ok(()) };
+    async fn validate_xattr_reference(&mut self, inode: &crate::inode::Inode) -> Result<bool, Ext4Error> {
+        let Some((block, expected)) = inode.external_xattr_reference(self.filesystem).await? else { return Ok(false) };
         if let Some((previous_expected, seen, _)) = self.xattr_references.get_mut(&block) {
             if *previous_expected != expected || *seen >= expected {
                 return Err(CorruptKind::Xattr(inode.index).into());
@@ -162,6 +165,17 @@ impl<'a> BlockAllocationSnapshot<'a> {
                 return Err(CorruptKind::Xattr(inode.index).into());
             }
             self.xattr_references.insert(block, (expected, 1, inode.index));
+        }
+        Ok(true)
+    }
+
+    #[maybe_async::maybe_async]
+    async fn validate_inode_accounting(&mut self, inode: &crate::inode::Inode, mapped_blocks: u64) -> Result<(), Ext4Error> {
+        let external = self.validate_xattr_reference(inode).await?;
+        let expected = mapped_blocks.checked_add(u64::from(external))
+            .ok_or(CorruptKind::TooManyBlocksInFile)?;
+        if inode.fs_blocks(self.filesystem)? != expected {
+            return Err(CorruptKind::TooManyBlocksInFile.into());
         }
         Ok(())
     }
@@ -221,6 +235,7 @@ impl<'a> BlockAllocationSnapshot<'a> {
             self.invalid = true;
             return Err(Ext4Error::Readonly);
         }
+        let before_mapping = self.claimed_blocks;
         if inode.flags().contains(crate::inode::InodeFlags::EXTENTS) {
             let result = match crate::iters::extents::Extents::new(self.filesystem.clone(), inode) {
                 Ok(extents) => extents.validate_allocation(self).await,
@@ -234,7 +249,11 @@ impl<'a> BlockAllocationSnapshot<'a> {
             self.invalid = true;
             return Err(error);
         }
-        if let Err(error) = self.validate_xattr_reference(inode).await {
+        // Count mapping nodes and data, including unwritten/beyond-EOF
+        // extents, then charge each referencing inode for its external xattr
+        // block even when that physical block is legitimately shared.
+        let mapped_blocks = self.claimed_blocks - before_mapping;
+        if let Err(error) = self.validate_inode_accounting(inode, mapped_blocks).await {
             self.invalid = true;
             return Err(error);
         }

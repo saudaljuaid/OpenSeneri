@@ -1743,6 +1743,76 @@ fn inode_block_count_uses_48_bits_without_overwriting_xattr_address() {
 }
 
 #[test]
+fn inode_counts_must_match_all_mapping_and_xattr_blocks_before_admission() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let name = b"system/count-file";
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    for block in 0..6 { ext4::transaction_probe(&mut mounted, name, block * 8192, b"allocated").unwrap(); }
+    ext4::create_file_probe(&mut mounted, b"system/count-empty", 0o600).unwrap();
+    ext4::symlink_probe(&mut mounted, b"system/count-short", b"missing").unwrap();
+    ext4::symlink_probe(&mut mounted, b"system/count-long", &[b'x'; 80]).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    drop(mounted);
+    let image = path.with_extension("coordinator-inode-count-input.img");
+    DEVICE.with_borrow(|device| write_sparse_fixture(&image, &device.bytes).unwrap());
+    debugfs(&image, &format!("ea_set /system/count-file user.large {}", "q".repeat(300)));
+    let pristine = std::fs::read(&image).unwrap();
+    let raw = ext4plus::Ext4::load(Box::new(pristine.clone())).unwrap();
+    let mut mounted = mount_bytes(pristine.clone());
+    fsck(&path, "coordinator-inode-count-valid");
+    let number = ext4::stat(&mounted, name).unwrap().inode as u32;
+    let inode = ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(number).unwrap()).unwrap();
+    assert_eq!(inode.fs_blocks(&raw).unwrap(), 8, "six data blocks, one extent node, one xattr");
+    ext4::unmount(&mounted).unwrap();
+    drop(mounted);
+    for entry in ["/system/count-file", "/system/count-empty", "/system/count-short", "/system/count-long", "<2>", "<8>"] {
+        // Read debugfs's independent on-disk sector count, including legacy
+        // journal mapping blocks and both inline and external symlinks.
+        let stat = std::process::Command::new("debugfs").args(["-R", &format!("stat {entry}")])
+            .arg(&image).output().unwrap();
+        assert!(stat.status.success());
+        let output = String::from_utf8(stat.stdout).unwrap();
+        let sectors: u64 = output.split("Blockcount:").nth(1).unwrap()
+            .split_whitespace().next().unwrap().parse().unwrap();
+        for count in [sectors + 1, sectors + 8, sectors.saturating_sub(8)] {
+            if count == sectors { continue; }
+            for orphan in [false, true] {
+                if orphan && entry != "/system/count-file" { continue; }
+                write_sparse_fixture(&image, &pristine).unwrap();
+                debugfs(&image, &format!("set_inode_field {entry} blocks {count}"));
+                if orphan {
+                    debugfs(&image, &format!("set_inode_field <{number}> size 0"));
+                    debugfs(&image, &format!("set_inode_field <{number}> links_count 0"));
+                    debugfs(&image, "unlink /system/count-file");
+                    debugfs(&image, &format!("set_super_value last_orphan {number}"));
+                    debugfs(&image, "feature needs_recovery");
+                }
+                let hostile = std::fs::read(&image).unwrap();
+                DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+                assert!(ext4::mount(1, hostile.len() as u64).is_err(), "accepted {entry}, blocks={count}, orphan={orphan}");
+                DEVICE.with_borrow(|device| {
+                    assert!(device.events.is_empty());
+                    assert_eq!(device.bytes, hostile);
+                });
+            }
+        }
+        write_sparse_fixture(&image, &pristine).unwrap();
+    }
+    // Truncating a tree with an external xattr must leave its charge intact;
+    // the subsequent unlink releases that final block with its inode.
+    mounted = mount_bytes(pristine);
+    ext4::truncate_probe(&mut mounted, name, 0).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    fsck(&path, "coordinator-inode-count-truncated");
+    ext4::unlink_file_probe(&mut mounted, name).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-inode-count-freed");
+}
+
+#[test]
 fn file_extents_cannot_overwrite_or_free_fixed_metadata() {
     let Some(path) = fixture() else { return };
     let name = b"system/metadata-alias";
