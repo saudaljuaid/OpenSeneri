@@ -2579,9 +2579,69 @@ static void files_create(bool directory)
     set_app_status(directory ? "new folder" : "new file", status);
 }
 
+struct data_publication {
+    phipfs_handle handle;
+    uint64_t inode;
+    const char *destination;
+    char temporary[PHIPFS_MAX_PATH + 1U];
+};
+
+static enum phipfs_status data_publication_begin(struct data_publication *save,
+    const char *destination, const char *scratch_template);
+static enum phipfs_status data_publication_finish(struct data_publication *save,
+    uint64_t length, enum phipfs_status status);
+
 static enum phipfs_status explorer_copy_file(const char *source,
     const char *destination)
 {
+    if (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) {
+        struct phipfs_stat source_stat;
+        struct data_publication save;
+        phipfs_handle input = 0U;
+        uint64_t copied = 0U;
+        enum phipfs_status ext4_status = phipfs_stat_path(
+            PHIPFS_VOLUME_DATA, source, &source_stat);
+
+        if (ext4_status == PHIPFS_STATUS_OK && source_stat.directory) {
+            ext4_status = PHIPFS_STATUS_IS_DIRECTORY;
+        }
+        if (ext4_status == PHIPFS_STATUS_OK) {
+            ext4_status = data_publication_begin(&save, destination,
+                "CPYTMP0.TMP");
+        }
+        if (ext4_status == PHIPFS_STATUS_OK) {
+            ext4_status = phipfs_open(PHIPFS_VOLUME_DATA, source,
+                PHIPFS_ACCESS_READ, &input);
+        }
+        while (ext4_status == PHIPFS_STATUS_OK) {
+            size_t read_bytes = 0U;
+            size_t written_bytes = 0U;
+
+            ext4_status = phipfs_read(input, explorer_copy_buffer,
+                sizeof(explorer_copy_buffer), &read_bytes);
+            if (ext4_status != PHIPFS_STATUS_OK || read_bytes == 0U) break;
+            if (copied > UINT64_MAX - read_bytes) {
+                ext4_status = PHIPFS_STATUS_RANGE;
+                break;
+            }
+            ext4_status = phipfs_write(save.handle, explorer_copy_buffer,
+                read_bytes, &written_bytes);
+            if (ext4_status == PHIPFS_STATUS_OK && written_bytes != read_bytes) {
+                ext4_status = PHIPFS_STATUS_WRITEBACK;
+            }
+            if (ext4_status == PHIPFS_STATUS_OK) copied += read_bytes;
+        }
+        if (input != 0U) {
+            const enum phipfs_status close_status = phipfs_close(input);
+            if (ext4_status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK)
+                ext4_status = close_status;
+        }
+        if (ext4_status == PHIPFS_STATUS_OK && copied != source_stat.size)
+            ext4_status = PHIPFS_STATUS_WRITEBACK;
+        if (save.handle != 0U)
+            ext4_status = data_publication_finish(&save, copied, ext4_status);
+        return ext4_status;
+    }
     phipfs_handle input = 0U;
     phipfs_handle output = 0U;
     enum phipfs_status status = phipfs_create(PHIPFS_VOLUME_DATA, destination);
@@ -2941,13 +3001,6 @@ static enum phipfs_status note_restore_original(
     }
     return status;
 }
-
-struct data_publication {
-    phipfs_handle handle;
-    uint64_t inode;
-    const char *destination;
-    char temporary[PHIPFS_MAX_PATH + 1U];
-};
 
 static enum phipfs_status data_publication_begin(struct data_publication *save,
     const char *destination, const char *scratch_template)
