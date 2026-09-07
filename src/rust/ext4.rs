@@ -521,6 +521,7 @@ fn map_error(error: Ext4Error) -> Status {
         Ext4Error::NotADirectory => Status::NotDirectory,
         Ext4Error::IsADirectory => Status::IsDirectory,
         Ext4Error::PathTooLong | Ext4Error::FileTooLarge => Status::Range,
+        Ext4Error::InvalidTimestamp => Status::Range,
         Ext4Error::IsASpecialFile => Status::Special,
         _ => Status::Invalid,
     }
@@ -1546,11 +1547,8 @@ pub(crate) fn set_times(mounted: &mut Mounted, path: &[u8], atime_seconds: u64,
     input.extend_from_slice(&mtime_seconds.to_le_bytes());
     input.extend_from_slice(&mtime_nanos.to_le_bytes());
     mutate_inode(mounted, path, PendingMutationKind::SetTimes, input, |filesystem, inode| {
-        // Phipia admits the modern inode extra fields; do not silently truncate
-        // epochs or nanoseconds on an older short-extra inode.
-        if inode.metadata().crtime.is_none() { return Err(Ext4Error::Readonly); }
-        inode.set_atime(Duration::new(atime_seconds, atime_nanos));
-        inode.set_mtime(Duration::new(mtime_seconds, mtime_nanos));
+        inode.set_times(Duration::new(atime_seconds, atime_nanos),
+            Duration::new(mtime_seconds, mtime_nanos))?;
         inode.write(filesystem)
     })
 }

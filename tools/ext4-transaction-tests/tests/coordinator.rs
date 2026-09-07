@@ -1989,7 +1989,7 @@ fn inode_checksums_follow_declared_extra_size_and_preserve_undeclared_bytes() {
         assert!(ext4::mount(1, hostile.len() as u64).is_err());
         DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
     }
-    for extra in [0u16, 4, 32] {
+    for extra in [0u16, 4, 16, 32] {
         let image = path.with_extension(format!("coordinator-checksum-width-{extra}.img"));
         write_sparse_fixture(&image, &pristine).unwrap();
         // debugfs recalculates the inode checksum with the Linux has_hi rule.
@@ -2003,9 +2003,24 @@ fn inode_checksums_follow_declared_extra_size_and_preserve_undeclared_bytes() {
         fsck(&path, &format!("coordinator-checksum-width-before-{extra}"));
         ext4::create_file_probe(&mut mounted, b"checksum-width-file", 0o600).unwrap();
         ext4::transaction_probe(&mut mounted, b"checksum-width-file", 4093, b"checksum width").unwrap();
+        ext4::set_times(&mut mounted, b".", 1_780_000_001, 0, 1_780_000_002, 0).unwrap();
+        if extra < 16 {
+            let before = DEVICE.with_borrow(|device| device.bytes.clone());
+            for (seconds, nanos) in [(0x8000_0000, 0), (1_780_000_003, 1)] {
+                assert_eq!(ext4::set_times(&mut mounted, b".", 1_780_000_001, 0, seconds, nanos), Err(Status::Range));
+                DEVICE.with_borrow(|device| assert_eq!(device.bytes, before));
+            }
+        } else {
+            // atime/mtime extras fit at16 bytes even though crtime does not.
+            ext4::set_times(&mut mounted, b".", 0x8000_0000, 123, 0xffff_ffff, 456).unwrap();
+        }
         ext4::sync(&mut mounted).unwrap();
         ext4::unmount(&mounted).unwrap();
         let output = DEVICE.with_borrow(|device| device.bytes.clone());
+        let raw = ext4plus::Ext4::load(Box::new(output.clone())).unwrap();
+        let node = ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(2).unwrap()).unwrap();
+        assert_eq!(node.atime(), std::time::Duration::new(if extra < 16 { 1_780_000_001 } else { 0x8000_0000 }, if extra < 16 { 0 } else { 123 }));
+        assert_eq!(node.mtime(), std::time::Duration::new(if extra < 16 { 1_780_000_002 } else { 0xffff_ffff }, if extra < 16 { 0 } else { 456 }));
         if extra == 0 {
             assert_eq!(&output[root + 0x82..root + 256], &input[root + 0x82..root + 256]);
         }

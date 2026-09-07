@@ -669,6 +669,21 @@ impl Inode {
         Ok(real_blocks)
     }
 
+    /// Set access and modification times without discarding unrepresentable
+    /// epoch bits or nanoseconds on an inode with short extra fields.
+    pub fn set_times(&mut self, atime: Duration, mtime: Duration) -> Result<(), Ext4Error> {
+        for (time, extra_end) in [(atime, 0x90), (mtime, 0x8c)] {
+            if time.as_secs() > 0x3_7fff_ffff
+                || (self.entry_size().get() < extra_end
+                    && (time.as_secs() > i32::MAX as u64 || time.subsec_nanos() != 0)) {
+                return Err(Ext4Error::InvalidTimestamp);
+            }
+        }
+        self.set_atime(atime);
+        self.set_mtime(mtime);
+        Ok(())
+    }
+
     /// Get the inode's access time.
     #[must_use]
     pub fn atime(&self) -> Duration {
