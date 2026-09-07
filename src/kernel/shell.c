@@ -614,7 +614,9 @@ static enum phipfs_status shell_create_file(const char *path)
         PHIPFS_ACCESS_READ_WRITE, PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE,
         0644U, &handle);
     if (status == PHIPFS_STATUS_OK) status = phipfs_fsync(handle);
-    if (status == PHIPFS_STATUS_OK) status = phipfs_close(handle);
+    const enum phipfs_status close_status = phipfs_close(handle);
+    if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK)
+        status = close_status;
     return status;
 }
 
