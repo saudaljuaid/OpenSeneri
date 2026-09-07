@@ -961,8 +961,20 @@ pub(crate) unsafe extern "C" fn phipia_ext4_create_directory_probe(
     path: *const u8,
     path_length: usize,
 ) -> i32 {
-    // SAFETY: this entry point has the same input contract as the mode variant.
-    unsafe { phipia_ext4_create_directory_mode(mounted, path, path_length, 0o755) }
+    if mounted == 0 || path.is_null() {
+        return ext4::Status::NullArgument as i32;
+    }
+    // SAFETY: the mount and readable path range are the caller's contract.
+    let (mounted, path) = unsafe {
+        (
+            &mut *(mounted as *mut ext4::Mounted),
+            core::slice::from_raw_parts(path, path_length),
+        )
+    };
+    match ext4::create_directory_probe(mounted, path) {
+        Ok(()) => ext4::Status::Ok as i32,
+        Err(status) => status as i32,
+    }
 }
 
 /// Create a directory with requested permissions in the namespace transaction.
