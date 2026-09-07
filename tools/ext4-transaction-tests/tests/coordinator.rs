@@ -1029,10 +1029,18 @@ fn allocation_bitmap_corruption_is_not_rechecksummed_into_a_transaction() {
             ext4::transaction_probe(&mut mounted, b"system/bitmap-write", 0, b"new").map(|_| ())
         };
         assert_eq!(result, Err(Status::Invalid), "inode bitmap: {inode_bitmap}");
-        assert_eq!(ext4::stat(&mounted, b"system/bitmap-new"), Err(Status::NotFound));
-        assert_eq!(ext4::stat(&mounted, b"system/bitmap-write").unwrap().size, 0);
+        if inode_bitmap {
+            // Reload also checks reachable allocations; keep the view absent
+            // until the corrupted bitmap is restored and sync retries reload.
+            assert_public_reads_refused(&mounted);
+        } else {
+            assert_eq!(ext4::stat(&mounted, b"system/bitmap-new"), Err(Status::NotFound));
+            assert_eq!(ext4::stat(&mounted, b"system/bitmap-write").unwrap().size, 0);
+        }
         DEVICE.with_borrow_mut(|device| device.bytes[start] ^= 1);
         ext4::sync(&mut mounted).unwrap();
+        assert_eq!(ext4::stat(&mounted, b"system/bitmap-new"), Err(Status::NotFound));
+        assert_eq!(ext4::stat(&mounted, b"system/bitmap-write").unwrap().size, 0);
         DEVICE.with_borrow(|device| assert!(device.bytes == initial));
     }
     ext4::unmount(&mounted).unwrap();

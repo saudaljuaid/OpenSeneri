@@ -7,7 +7,40 @@ use crate::{Ext4, Ext4Error};
 
 use crate::util::usize_from_u32;
 use alloc::vec;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use core::ops::RangeBounds;
+
+/// Allocation view for one read-only validation pass. Discard before mutations;
+/// each encountered group is read once rather than once per directory entry.
+pub struct InodeAllocationSnapshot<'a> {
+    filesystem: &'a Ext4,
+    groups: BTreeMap<u32, Vec<u8>>,
+}
+
+impl<'a> InodeAllocationSnapshot<'a> {
+    pub(crate) fn new(filesystem: &'a Ext4) -> Self {
+        Self { filesystem, groups: BTreeMap::new() }
+    }
+
+    /// Check a bounded inode number against its validated allocation bitmap.
+    #[maybe_async::maybe_async]
+    pub async fn is_allocated(&mut self, index: crate::inode::InodeIndex) -> Result<bool, Ext4Error> {
+        let fs = self.filesystem;
+        if index.get() > fs.0.superblock.inodes_count() { return Ok(false); }
+        let (group, offset) = crate::inode::get_inode_block_group_location(&fs.0.superblock, index)?;
+        if !self.groups.contains_key(&group) {
+            let descriptor = fs.0.block_group_descriptors.get(group as usize)
+                .ok_or(CorruptKind::BlockGroupDescriptor(group))?;
+            let bitmap = BitmapHandle::new(descriptor.inode_bitmap_block(), true);
+            let bytes = bitmap.read_validated(fs, group).await?;
+            self.groups.insert(group, bytes);
+        }
+        let byte = self.groups.get(&group).and_then(|bytes| bytes.get((offset / 8) as usize))
+            .ok_or(CorruptKind::BlockGroupDescriptor(group))?;
+        Ok(byte & (1 << (offset % 8)) != 0)
+    }
+}
 
 fn calc_index(byte_index: u32, bit_index: u32) -> u32 {
     byte_index
@@ -88,14 +121,21 @@ impl BitmapHandle {
 
     #[maybe_async::maybe_async]
     pub(crate) async fn validate(&self, ext4: &Ext4, group: u32) -> Result<(), Ext4Error> {
+        self.read_validated(ext4, group).await.map(|_| ())
+    }
+
+    #[maybe_async::maybe_async]
+    async fn read_validated(&self, ext4: &Ext4, group: u32) -> Result<Vec<u8>, Ext4Error> {
         let descriptor = ext4.get_block_group_descriptor(group);
         // Lazy bitmap initialization is a separate mutation: never interpret
         // uninitialized bytes as allocation state or repair their checksum.
         let uninitialized = if self.is_inode_bitmap { 1 } else { 2 };
         if descriptor.flags() & uninitialized != 0 { return Err(Ext4Error::Readonly); }
+        let mut bytes = vec![0; ext4.0.superblock.block_size().to_usize()];
+        ext4.read_from_block(self.block, 0, &mut bytes).await?;
         if !ext4.0.superblock.read_only_compatible_features()
-            .contains(ReadOnlyCompatibleFeatures::METADATA_CHECKSUMS) { return Ok(()); }
-        let actual = self.calc_checksum(ext4, group).await?;
+            .contains(ReadOnlyCompatibleFeatures::METADATA_CHECKSUMS) { return Ok(bytes); }
+        let actual = self.checksum_bytes(ext4, group, &bytes)?;
         let expected = if self.is_inode_bitmap { descriptor.inode_bitmap_checksum() }
             else { descriptor.block_bitmap_checksum() };
         let matches = match expected {
@@ -103,7 +143,7 @@ impl BitmapHandle {
             TruncatedChecksum::Truncated(value) => actual & 0xffff == u32::from(value),
         };
         if !matches { return Err(CorruptKind::BlockGroupDescriptorChecksum(group).into()); }
-        Ok(())
+        Ok(bytes)
     }
 
     pub(crate) fn new(block: FsBlockIndex, is_inode_bitmap: bool) -> Self {
@@ -244,6 +284,10 @@ impl BitmapHandle {
     ) -> Result<u32, Ext4Error> {
         let mut dst = vec![0; ext4.0.superblock.block_size().to_usize()];
         ext4.read_from_block(self.block, 0, &mut dst).await?;
+        self.checksum_bytes(ext4, block_group_index, &dst)
+    }
+
+    fn checksum_bytes(&self, ext4: &Ext4, block_group_index: u32, dst: &[u8]) -> Result<u32, Ext4Error> {
         let mut checksum =
             Checksum::with_seed(ext4.0.superblock.checksum_seed());
 

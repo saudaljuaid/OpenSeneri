@@ -588,7 +588,8 @@ fn validate_xattrs(filesystem: &Ext4, path: &[u8]) -> Result<(), Status> {
 }
 
 fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
-    if !filesystem.inode_is_allocated(core::num::NonZeroU32::new(2).unwrap()).map_err(map_error)? {
+    let mut allocations = filesystem.inode_allocation_snapshot();
+    if !allocations.is_allocated(core::num::NonZeroU32::new(2).unwrap()).map_err(map_error)? {
         return Err(Status::Invalid);
     }
     let mut pending = Vec::new();
@@ -606,7 +607,7 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
             // Validate before metadata() computes an inode-table location.
             // A checksummed directory can still point outside the inode table
             // or at a freed inode whose old body remains checksummed.
-            if !filesystem.inode_is_allocated(entry.inode).map_err(map_error)? {
+            if !allocations.is_allocated(entry.inode).map_err(map_error)? {
                 return Err(Status::Invalid);
             }
             let name = entry.file_name();

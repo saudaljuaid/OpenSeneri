@@ -155,6 +155,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitmap::BitmapHandle;
+pub use bitmap::InodeAllocationSnapshot;
 use block_group::{BlockGroupDescriptor, BlockGroupIndex};
 use block_index::FsBlockIndex;
 use core::fmt::{self, Debug, Formatter};
@@ -379,13 +380,13 @@ impl Ext4 {
     /// valid checksum after Linux frees it. This never initializes lazy bitmaps.
     #[maybe_async::maybe_async]
     pub async fn inode_is_allocated(&self, index: InodeIndex) -> Result<bool, Ext4Error> {
-        if index.get() > self.0.superblock.inodes_count() { return Ok(false); }
-        let (group, offset) = get_inode_block_group_location(&self.0.superblock, index)?;
-        let descriptor = self.0.block_group_descriptors.get(group as usize)
-            .ok_or(CorruptKind::BlockGroupDescriptor(group))?;
-        let bitmap = BitmapHandle::new(descriptor.inode_bitmap_block(), true);
-        bitmap.validate(self, group).await?;
-        bitmap.query(offset, self).await
+        self.inode_allocation_snapshot().is_allocated(index).await
+    }
+
+    /// Cache encountered inode bitmaps for one namespace validation pass.
+    /// Callers must discard the snapshot before changing the filesystem.
+    pub fn inode_allocation_snapshot(&self) -> InodeAllocationSnapshot<'_> {
+        InodeAllocationSnapshot::new(self)
     }
 
     /// Read the inode of the root `/` directory.
