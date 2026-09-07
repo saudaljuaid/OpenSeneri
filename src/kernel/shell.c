@@ -599,6 +599,19 @@ static void command_mkdir(const char *arguments)
     }
 }
 
+static enum phipfs_status shell_create_file(const char *path)
+{
+    if (!phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) {
+        return phipfs_create(PHIPFS_VOLUME_DATA, path);
+    }
+    phipfs_handle handle = 0U;
+    enum phipfs_status status = phipfs_open_options(PHIPFS_VOLUME_DATA, path,
+        PHIPFS_ACCESS_READ_WRITE, PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE,
+        0644U, &handle);
+    if (status == PHIPFS_STATUS_OK) status = phipfs_close(handle);
+    return status;
+}
+
 static void command_touch(const char *arguments)
 {
     char path[PHIPFS_MAX_PATH + 1U];
@@ -620,7 +633,7 @@ static void command_touch(const char *arguments)
         filesystem_error("touch", status);
         return;
     }
-    status = phipfs_create(PHIPFS_VOLUME_DATA, path);
+    status = shell_create_file(path);
     if (status != PHIPFS_STATUS_OK) {
         filesystem_error("touch", status);
     }
@@ -700,6 +713,9 @@ static void command_write_line(const char *arguments, bool append)
     if (status == PHIPFS_STATUS_OK) {
         status = phipfs_write(handle, content, content_bytes, &written);
     }
+    if (opened && status == PHIPFS_STATUS_OK) {
+        status = phipfs_fsync(handle);
+    }
     if (opened && phipfs_close(handle) != PHIPFS_STATUS_OK &&
         status == PHIPFS_STATUS_OK) {
         status = PHIPFS_STATUS_STALE_HANDLE;
@@ -743,6 +759,9 @@ static void command_write_at(const char *arguments)
     }
     if (status == PHIPFS_STATUS_OK) {
         status = phipfs_write(handle, content, content_bytes, &written);
+    }
+    if (opened && status == PHIPFS_STATUS_OK) {
+        status = phipfs_fsync(handle);
     }
     if (opened && phipfs_close(handle) != PHIPFS_STATUS_OK &&
         status == PHIPFS_STATUS_OK) {
