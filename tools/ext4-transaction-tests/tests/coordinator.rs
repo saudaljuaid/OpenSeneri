@@ -1250,6 +1250,17 @@ fn freed_checksummed_inode_bodies_do_not_authorize_inode_io() {
     DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert!(device.bytes == before); });
     ext4::unmount(&mounted).unwrap();
     fsck(&path, "coordinator-freed-inode-after");
+    drop(mounted);
+    // Even plausible link counts and valid directory/inode checksums must
+    // not make a dangling name acceptable at mount.
+    debugfs(&image, &format!("set_inode_field <{inode}> links_count 1"));
+    debugfs(&image, &format!("set_inode_field <{inode}> dtime 0"));
+    debugfs(&image, &format!("link <{inode}> /system/stale-name"));
+    let hostile = std::fs::read(&image).unwrap();
+    let size = hostile.len() as u64;
+    DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+    assert!(ext4::mount(1, size).is_err());
+    DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert!(device.bytes == hostile); });
 }
 
 #[test]
