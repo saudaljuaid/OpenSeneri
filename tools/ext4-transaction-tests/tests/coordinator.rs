@@ -3373,6 +3373,8 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
     ext4::create_file_probe(&mut mounted, target, 0o644).unwrap();
     ext4::transaction_probe(&mut mounted, source, 0, b"new-from-phipia").unwrap();
     ext4::transaction_probe(&mut mounted, target, 0, b"old-from-phipia").unwrap();
+    ext4::set_xattr(&mut mounted, source, b"user.state", Some(&[b'n'; 601])).unwrap();
+    ext4::set_xattr(&mut mounted, target, b"user.state", Some(&[b'o'; 601])).unwrap();
     let source_inode = ext4::stat(&mounted, source).unwrap().inode;
     let target_inode = ext4::stat(&mounted, target).unwrap().inode;
     ext4::sync(&mut mounted).unwrap();
@@ -3390,6 +3392,8 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
                 let kernel = LoopMount::mount(&image, &directory);
                 let output = linux(&["cat", directory.join("data/user/kernel-target").to_str().unwrap()]);
                 assert_eq!(&output.stdout, if committed { b"new-from-phipia" } else { b"old-from-phipia" });
+                linux(&["python3", "-c", "import os,sys; assert os.getxattr(sys.argv[1], 'user.state') == sys.argv[2].encode()*601",
+                    directory.join("data/user/kernel-target").to_str().unwrap(), if committed { "n" } else { "o" }]);
                 assert_eq!(directory.join("system/kernel-source").exists(), !committed);
                 kernel.unmount();
                 let recovered = mount_fixture(&image);
@@ -3407,11 +3411,18 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
     let kernel_file = directory.join("system/from-linux");
     linux(&["cp", payload.to_str().unwrap(), kernel_file.to_str().unwrap()]);
     linux(&["ln", kernel_file.to_str().unwrap(), directory.join("system/linux-alias").to_str().unwrap()]);
+    linux(&["python3", "-c", "import os,sys; os.setxattr(sys.argv[1], 'user.kernel', b'k'*701); os.setxattr(sys.argv[1], 'user.small', b'inline')",
+        kernel_file.to_str().unwrap()]);
     kernel.unmount();
     let mut mounted = mount_fixture(&image);
     let mut data = [0; 16];
     read_exact(&mounted, b"system/from-linux", &mut data);
     assert_eq!(&data, b"written-by-linux");
+    let mut attribute = [0; 701];
+    assert_eq!(ext4::get_xattr(&mounted, b"system/linux-alias", b"user.kernel", &mut attribute), Ok(701));
+    assert_eq!(attribute, [b'k'; 701]);
+    ext4::set_xattr(&mut mounted, b"system/linux-alias", b"user.kernel", Some(&[b'p'; 3011])).unwrap();
+    ext4::set_xattr(&mut mounted, b"system/from-linux", b"user.z", Some(&[b'z'; 701])).unwrap();
     ext4::append_probe(&mut mounted, b"system/linux-alias", b"+phipia", 16384).unwrap();
     ext4::sync(&mut mounted).unwrap();
     ext4::unmount(&mounted).unwrap();
@@ -3420,7 +3431,18 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
     let kernel = LoopMount::mount(&image, &directory);
     let output = linux(&["cat", kernel_file.to_str().unwrap()]);
     assert_eq!(&output.stdout, b"written-by-linux+phipia");
+    linux(&["python3", "-c", "import os,sys; p=sys.argv[1]; assert os.getxattr(p, 'user.kernel') == b'p'*3011; assert os.getxattr(p, 'user.z') == b'z'*701; assert os.getxattr(p, 'user.small') == b'inline'; os.setxattr(p, 'user.kernel', b'l'*903)",
+        kernel_file.to_str().unwrap()]);
     kernel.unmount();
+    let mut mounted = mount_fixture(&image);
+    let mut updated = [0; 903];
+    assert_eq!(ext4::get_xattr(&mounted, b"system/from-linux", b"user.kernel", &mut updated), Ok(903));
+    assert_eq!(updated, [b'l'; 903]);
+    ext4::set_xattr(&mut mounted, b"system/from-linux", b"user.kernel", None).unwrap();
+    ext4::set_xattr(&mut mounted, b"system/from-linux", b"user.z", None).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-kernel-xattr-roundtrip");
 
     for replace in [false, true] {
         let mut mounted = mount_fixture(&path);
