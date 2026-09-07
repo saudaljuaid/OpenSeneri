@@ -633,7 +633,7 @@ fn validate_inode_storage(filesystem: &Ext4, path: &[u8],
 
 fn untracked_directory_links(filesystem: &Ext4, inode: &Inode) -> bool {
     inode.file_type().is_dir() && inode.flags().contains(InodeFlags::DIRECTORY_HTREE)
-        && filesystem.superblock().read_only_compatible_features().bits() & 0x20 != 0
+        && filesystem.superblock().features().read_only_compatible().bits() & 0x20 != 0
         && inode.links_count() == 1
 }
 
