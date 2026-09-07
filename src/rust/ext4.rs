@@ -209,7 +209,7 @@ struct PhipiaJournalStorage {
     context: usize,
 }
 
-/// Read-only post-replay view used to validate orphan cleanup before any home
+/// Read-only post-replay view used to validate recovered metadata before any home
 /// write. Clearing recovery here only disables upstream's second replay; this
 /// image is never sent to the platform executor.
 struct RecoveryValidationReader {
@@ -560,14 +560,13 @@ fn recover_dirty_journal(
         JournalCommitOperation::WriteFilesystemSuperblock { image, .. } => Some(image),
         _ => None,
     }).ok_or(Status::Invalid)?;
-    if journal.filesystem_superblock().last_orphan() != 0 || checkpointed.last_orphan() != 0 {
-        let projected = Ext4::load(Box::new(RecoveryValidationReader {
-            context, images: recovery.replay_images().to_vec(),
-            superblock: checkpointed.with_recovery_state(false),
-        })).map_err(map_error)?;
-        projected.orphan_inodes().map_err(map_error)?;
-        validate_namespace(&projected)?;
-    }
+    let projected = Ext4::load(Box::new(RecoveryValidationReader {
+        context, images: recovery.replay_images().to_vec(),
+        superblock: checkpointed.with_recovery_state(false),
+    })).map_err(map_error)?;
+    projected.orphan_inodes().map_err(map_error)?;
+    validate_namespace(&projected)?;
+    drop(projected);
     execute_storage_plan(context, &operations)?;
     Ok(report)
 }

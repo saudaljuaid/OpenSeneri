@@ -1269,6 +1269,13 @@ fn freed_checksummed_inode_bodies_do_not_authorize_inode_io() {
     DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
     assert!(ext4::mount(1, size).is_err());
     DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert!(device.bytes == hostile); });
+    // Dirty mounts must validate the projected namespace before checkpointing
+    // or clearing the recovery marker, even with an empty orphan chain.
+    debugfs(&image, "set_super_value feature_incompat 0x20c6");
+    let hostile = std::fs::read(&image).unwrap();
+    DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+    assert!(ext4::mount(1, size).is_err());
+    DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert!(device.bytes == hostile); });
 }
 
 #[test]
