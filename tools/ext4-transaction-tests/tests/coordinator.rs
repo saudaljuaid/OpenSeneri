@@ -3843,6 +3843,18 @@ fn indexed_directory_compaction_preserves_names_links_and_replays_every_boundary
         fsck(&path, &format!("coordinator-htree-shrink-before-{sentinel}"));
         let baseline = DEVICE.with_borrow(|device| device.bytes.clone());
         drop(mounted);
+        // Appending the indirect htree node can also grow the extent mapping
+        // beyond the inode root. Compaction frees those mapping blocks too;
+        // i_size counts directory blocks only. Admission and fsck independently
+        // validate i_blocks against the complete physical allocation census.
+        let allocated = |bytes: Vec<u8>| {
+            let raw = ext4plus::Ext4::load(Box::new(bytes)).unwrap();
+            let inode = raw.path_to_inode(ext4plus::path::Path::try_from("/indexed").unwrap(),
+                ext4plus::FollowSymlinks::All).unwrap();
+            inode.fs_blocks(&raw).unwrap()
+        };
+        let old_allocation = allocated(baseline.clone());
+        assert!(old_allocation >= old_size / 4096);
         let check = |mounted: &ext4::Mounted, removed: bool| {
             assert_eq!(ext4::stat(mounted, b"indexed").unwrap().size, if removed { 8192 } else { old_size });
             assert_eq!(ext4::stat(mounted, b"indexed").unwrap().links, if sentinel { 1 } else { 2 });
@@ -3857,7 +3869,8 @@ fn indexed_directory_compaction_preserves_names_links_and_replays_every_boundary
         ext4::unlink_file_probe(&mut mounted, names[capacity].as_bytes()).unwrap();
         let operations = DEVICE.with_borrow(|device| device.events.clone());
         check(&mounted, true);
-        assert_eq!(ext4::free_bytes(&mounted).unwrap(), free + old_size - 8192);
+        assert_eq!(allocated(DEVICE.with_borrow(|device| device.bytes.clone())), 2);
+        assert_eq!(ext4::free_bytes(&mounted).unwrap(), free + (old_allocation - 2) * 4096);
         assert!(snapshot.entry(capacity as u64).is_some());
         assert!(snapshot.entry(capacity as u64 + 1).is_none());
         drop(snapshot);
