@@ -284,7 +284,18 @@ impl<'a> BlockAllocationSnapshot<'a> {
     pub async fn validate_inode_extents(&mut self, inode: &crate::inode::Inode) -> Result<(), Ext4Error> {
         if self.invalid { return Err(CorruptKind::ExtentBlock(inode.index).into()); }
         if self.validated_inodes.contains(&inode.index) { return Ok(()); }
-        if inode.flags().contains(crate::inode::InodeFlags::INLINE_DATA) {
+        // Ordered journaling cannot honor per-inode data journaling,
+        // compression, encryption, verity, inline data or future semantics.
+        // Ordinary sync/dirsync, nodump/noatime and allocation hints are safe:
+        // writes are already durable and this backend does not update atime.
+        let admitted_flags = crate::inode::InodeFlags::IMMUTABLE.bits()
+            | crate::inode::InodeFlags::APPEND_ONLY.bits()
+            | crate::inode::InodeFlags::DIRECTORY_HTREE.bits()
+            | crate::inode::InodeFlags::HUGE_FILE.bits()
+            | crate::inode::InodeFlags::EXTENTS.bits()
+            | 0x0003_00c8;
+        if inode.flags().bits() & !admitted_flags != 0
+            || (inode.flags().contains(crate::inode::InodeFlags::DIRECTORY_HTREE) && !inode.file_type().is_dir()) {
             self.invalid = true;
             return Err(Ext4Error::Readonly);
         }

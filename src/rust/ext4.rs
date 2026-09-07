@@ -399,6 +399,11 @@ fn validate_profile(context: usize, media_bytes: u64) -> Result<u64, Status> {
         || inode_size != 256
         || descriptor_size != 64
         || read_u32(&superblock, 0x14) != Some(0)
+        || read_u32(&superblock, 0x1c) != Some(log_block_size)
+        || read_u32(&superblock, 0x24) != Some(blocks_per_group)
+        || read_u32(&superblock, 0x48) != Some(0) // Linux inode osd2 layout
+        || read_u32(&superblock, 0x4c) != Some(1) // dynamic inode format
+        || superblock[0x175] != 1 // CRC32C metadata checksums
         || compat != COMPAT_FEATURES
         || incompat & !INCOMPAT_RECOVERY_FEATURE != INCOMPAT_FEATURES
         || read_only != READ_ONLY_FEATURES
@@ -409,6 +414,7 @@ fn validate_profile(context: usize, media_bytes: u64) -> Result<u64, Status> {
         || free_inodes > inodes
         || blocks_per_group == 0 || u64::from(blocks_per_group) > BLOCK_BYTES * 8
         || inodes_per_group == 0 || u64::from(inodes_per_group) > BLOCK_BYTES * 8
+        || blocks_per_group % 8 != 0 || inodes_per_group % 8 != 0
         || read_u32(&superblock, 0x54) != Some(11)
     {
         return Err(Status::Invalid);

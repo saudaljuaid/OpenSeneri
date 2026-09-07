@@ -1205,6 +1205,71 @@ fn inode_geometry_reserved_allocations_and_free_counter_overflow_are_refused() {
 }
 
 #[test]
+fn writable_profile_refuses_foreign_inode_layout_and_inconsistent_cluster_geometry() {
+    let Some(path) = fixture() else { return };
+    let pristine = std::fs::read(&path).unwrap();
+    let bpg = u32::from_le_bytes(pristine[1056..1060].try_into().unwrap());
+    let ipg = u32::from_le_bytes(pristine[1064..1068].try_into().unwrap());
+    for (offset, width, value) in [
+        (0x1c, 4, 3u32), (0x24, 4, bpg / 2), (0x48, 4, 1),
+        (0x4c, 4, 0), (0x175, 1, 0), (0x20, 4, bpg + 1), (0x28, 4, ipg + 1),
+    ] {
+        let mut hostile = pristine.clone();
+        hostile[1024 + offset..1024 + offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
+        let mut crc = u32::MAX;
+        for byte in &hostile[1024..2044] {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 { crc = (crc >> 1) ^ (0x82f6_3b78u32 & 0u32.wrapping_sub(crc & 1)); }
+        }
+        hostile[2044..2048].copy_from_slice(&crc.to_le_bytes());
+        DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+        assert!(ext4::mount(1, hostile.len() as u64).is_err(), "accepted superblock field {offset:x}={value}");
+        DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+    }
+}
+
+#[test]
+fn writable_inode_flags_refuse_unimplemented_data_and_namespace_semantics() {
+    let Some(path) = fixture() else { return };
+    let name = b"system/flag-profile";
+    let mut mounted = mount_fixture(&path);
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    let number = ext4::stat(&mounted, name).unwrap().inode;
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    drop(mounted);
+    let pristine = DEVICE.with_borrow(|device| device.bytes.clone());
+    let image = path.with_extension("coordinator-inode-flag-profile.img");
+    for flag in [1u32, 2, 4, 0x100, 0x800, 0x1000, 0x2000, 0x4000,
+        0x100000, 0x200000, 0x10000000, 0x20000000, 0x40000000, 0x80000000] {
+        for orphan in [false, true] {
+            write_sparse_fixture(&image, &pristine).unwrap();
+            debugfs(&image, &format!("set_inode_field <{number}> flags {}", 0x80000 | flag));
+            if orphan {
+                debugfs(&image, &format!("set_inode_field <{number}> links_count 0"));
+                debugfs(&image, "unlink /system/flag-profile");
+                debugfs(&image, &format!("set_super_value last_orphan {number}"));
+                debugfs(&image, "feature needs_recovery");
+            }
+            let hostile = std::fs::read(&image).unwrap();
+            let raw = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
+            let inode = ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(number as u32).unwrap()).unwrap();
+            assert_eq!(inode.flags().bits(), 0x80000 | flag);
+            DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+            assert!(ext4::mount(1, hostile.len() as u64).is_err(), "accepted inode flag {flag:x}, orphan={orphan}");
+            DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+        }
+    }
+    write_sparse_fixture(&image, &pristine).unwrap();
+    debugfs(&image, "set_inode_field /system/flag-profile flags 0x800c8");
+    let mut mounted = mount_fixture(&image);
+    ext4::transaction_probe(&mut mounted, name, 4093, b"sync-nodump-noatime").unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-inode-benign-flags-valid");
+}
+
+#[test]
 fn inode_bitmap_census_checks_group_totals_directory_counts_and_unused_tail() {
     let Some(path) = fixture() else { return };
     let pristine = std::fs::read(&path).unwrap();
