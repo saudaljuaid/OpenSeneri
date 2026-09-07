@@ -171,6 +171,7 @@ struct PendingWrite {
 struct PendingReclaim {
     kind: PendingMutationKind,
     path: Vec<u8>,
+    argument: u64,
     inode: u64,
     namespace_committed: bool,
 }
@@ -1292,6 +1293,11 @@ pub(crate) fn truncate_inode(mounted: &mut Mounted, inode: u64, size: u64) -> Re
 }
 
 fn truncate_target(mounted: &mut Mounted, absolute: Vec<u8>, size: u64) -> Result<(), Status> {
+    if let Some(pending) = &mounted.pending_reclaim {
+        if pending.kind != PendingMutationKind::Truncate || pending.path != absolute
+            || pending.argument != size { return Err(Status::Invalid); }
+        return resume_reclaim_request(mounted);
+    }
     if mounted.pending_mutation.is_some() {
         let resumed = resume_pending_mutation(
             mounted,
@@ -1344,7 +1350,23 @@ fn truncate_target(mounted: &mut Mounted, absolute: Vec<u8>, size: u64) -> Resul
         }
     }
     if let Err(error) = file.truncate(size) {
+        let capacity = mutation_capacity_error(&error);
+        let inode = file.inode().index;
+        let linked = file.inode().links_count() != 0;
+        drop(file);
         discard_uncommitted_stage(mounted, true)?;
+        if capacity && linked && size < old_size && old_size <= MAX_SPLIT_ORPHAN_BYTES {
+            arm_recovery_marker(mounted)?;
+            if let Err(error) = mounted.filesystem()?.begin_truncate_orphan(inode, size) {
+                discard_uncommitted_stage(mounted, true)?;
+                return Err(map_error(error));
+            }
+            mounted.pending_reclaim = Some(PendingReclaim {
+                kind: PendingMutationKind::Truncate, path: absolute, argument: size,
+                inode: u64::from(inode.get()), namespace_committed: false,
+            });
+            return resume_reclaim_request(mounted);
+        }
         return Err(map_error(error));
     }
     if file.inode().size_in_bytes() != size {
@@ -1723,7 +1745,7 @@ pub(crate) fn unlink_file_guarded(
             }
             mounted.pending_reclaim = Some(PendingReclaim {
                 kind: PendingMutationKind::UnlinkFile,
-                path: absolute, inode, namespace_committed: false,
+                path: absolute, argument: 0, inode, namespace_committed: false,
             });
             return resume_reclaim_request(mounted);
         }
@@ -1748,9 +1770,10 @@ fn resume_reclaim_request(mounted: &mut Mounted) -> Result<(), Status> {
     let result = (|| {
         if !request.namespace_committed {
             if mounted.pending_mutation.is_some() {
-                resume_namespace_mutation(mounted, request.kind, &request.path)?;
+                resume_pending_mutation(mounted, request.kind, &request.path, request.argument, &[])?;
             } else {
-                commit_namespace_mutation(mounted, request.kind, request.path.clone())?;
+                commit_staged_mutation(mounted, request.kind, request.path.clone(), Vec::new(),
+                    request.argument, 0, &[], None)?;
             }
             request.namespace_committed = true;
         }
@@ -2201,7 +2224,7 @@ fn rename_transaction(
             // The new name and the old target's orphan link become durable in
             // one transaction. Cleanup retries retain both pathname arguments.
             mounted.pending_reclaim = Some(PendingReclaim {
-                kind, path: pending_key, inode, namespace_committed: false,
+                kind, path: pending_key, argument: 0, inode, namespace_committed: false,
             });
             return resume_reclaim_request(mounted);
         }

@@ -176,6 +176,47 @@ impl Ext4 {
         tree.trim_orphan_suffix(&mut inode, max_blocks, max_logical_blocks, 0).await
     }
 
+    /// Publish the desired EOF and a linked orphan record before reclaiming
+    /// any allocation. Tail zeroing belongs to this same staged transaction.
+    #[maybe_async::maybe_async]
+    pub async fn begin_truncate_orphan(&self, index: InodeIndex, size: u64) -> Result<(), Ext4Error> {
+        if self.0.writer.is_none() { return Err(Ext4Error::Readonly); }
+        self.validate_extent_reclaim(index, MAX_TRUNCATE_ORPHAN_BLOCKS).await?;
+        let mut inode = Inode::read(self, index).await?;
+        if inode.links_count() == 0 || size >= inode.size_in_bytes()
+            || inode.flags().intersects(InodeFlags::IMMUTABLE | InodeFlags::APPEND_ONLY) {
+            return Err(Ext4Error::Readonly);
+        }
+        let chain = self.orphan_chain().await?;
+        if chain.len() == MAX_ORPHANS || chain.iter().any(|node| node.index == index) {
+            return Err(CorruptKind::OrphanInode(index.get()).into());
+        }
+        self.zero_orphan_tail(&inode, size).await?;
+        inode.set_size_in_bytes(size);
+        inode.set_dtime_val(self.0.superblock.last_orphan());
+        if let Some(time) = self.mutation_time() { inode.set_mtime(time); }
+        inode.write(self).await?;
+        self.0.superblock.set_last_orphan(index.get());
+        self.0.superblock.write(self).await
+    }
+
+    #[maybe_async::maybe_async]
+    async fn zero_orphan_tail(&self, inode: &Inode, size: u64) -> Result<(), Ext4Error> {
+        let block_size = self.superblock().block_size().to_u64();
+        let within = size % block_size;
+        if within != 0 {
+            let file = crate::file::File::open_inode(self, inode.clone())?;
+            if let Some(block) = file.filesystem_block_at_offset(size).await? {
+                if self.is_fixed_metadata_block(block)? {
+                    return Err(CorruptKind::OrphanInode(inode.index.get()).into());
+                }
+                self.write_to_block(block, within as u32,
+                    &alloc::vec![0; (block_size - within) as usize]).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Continue a linked orphan's truncate without freeing its inode or xattrs.
     /// False means a bounded suffix was staged; true means cleanup is complete.
     #[maybe_async::maybe_async]
@@ -197,18 +238,7 @@ impl Ext4 {
         }
         // Finish the partial block even if Linux had already published EOF.
         // This image and orphan removal share a journal transaction.
-        let size = inode.size_in_bytes();
-        let within = size % block_size;
-        if within != 0 {
-            let file = crate::file::File::open_inode(self, inode.clone())?;
-            if let Some(block) = file.filesystem_block_at_offset(size).await? {
-                if self.is_fixed_metadata_block(block)? {
-                    return Err(CorruptKind::OrphanInode(index.get()).into());
-                }
-                self.write_to_block(block, within as u32,
-                    &alloc::vec![0; (block_size - within) as usize]).await?;
-            }
-        }
+        self.zero_orphan_tail(inode, inode.size_in_bytes()).await?;
         let mut inode = self.detach_orphan(&mut chain, position).await?;
         inode.set_dtime_val(0);
         inode.write_preserving_times(self).await?;

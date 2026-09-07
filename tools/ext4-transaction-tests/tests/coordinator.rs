@@ -1525,6 +1525,139 @@ fn linked_truncate_orphan_recovery_preserves_names_inode_xattrs_and_prefix() {
 }
 
 #[test]
+fn split_linked_truncate_retries_exact_request_and_preserves_old_or_new_prefix() {
+    let Some(path) = fixture() else { return };
+    for (large, size) in [(false, 17u64), (true, 17), (true, 0)] {
+        let name = b"system/split-truncate";
+        let alias = b"data/user/split-truncate-alias";
+        let mut mounted = mount_fixture(&path);
+        ext4::create_file_probe(&mut mounted, name, 0o640).unwrap();
+        ext4::link_file_probe(&mut mounted, name, alias).unwrap();
+        let free_before_data = ext4::free_bytes(&mounted).unwrap();
+        ext4::transaction_probe(&mut mounted, name, 0, &[0x53; 8192]).unwrap();
+        let inode = ext4::stat(&mounted, name).unwrap().inode;
+        ext4::sync(&mut mounted).unwrap();
+        drop(mounted);
+        let image = path.with_extension(format!("coordinator-split-truncate-input-{large}-{size}.img"));
+        DEVICE.with_borrow(|device| std::fs::write(&image, &device.bytes).unwrap());
+        if large {
+            debugfs(&image, "fallocate /system/split-truncate 0 8193");
+            debugfs(&image, &format!("set_inode_field /system/split-truncate size {}", 8194u64 * 4096));
+        }
+        let initial = std::fs::read(&image).unwrap();
+        let prepare = || {
+            let mut mounted = mount_bytes(initial.clone());
+            if !large { ext4::set_stage_block_limit(&mut mounted, 4).unwrap(); }
+            mounted
+        };
+        let perform = |mounted: &mut ext4::Mounted| {
+            if large { ext4::truncate_inode(mounted, inode, size) }
+            else { ext4::truncate_probe(mounted, name, size) }
+        };
+        let mut reference = prepare();
+        let original_metadata = ext4::stat(&reference, name).unwrap();
+        let original_free = ext4::free_bytes(&reference).unwrap();
+        fsck(&path, &format!("coordinator-split-truncate-before-{large}-{size}"));
+        perform(&mut reference).unwrap();
+        let expected_metadata = ext4::stat(&reference, name).unwrap();
+        let trace = DEVICE.with_borrow(|device| device.events.clone());
+        assert!(trace.iter().filter(|event| **event == Event::Flush(3)).count() >= 3);
+        let check = |mounted: &ext4::Mounted| {
+            assert_eq!(ext4::stat(mounted, name), Ok(expected_metadata));
+            assert_eq!(ext4::stat(mounted, alias), Ok(expected_metadata));
+            assert_eq!((expected_metadata.inode, expected_metadata.size, expected_metadata.links), (inode, size, 2));
+            assert_eq!(ext4::free_bytes(mounted), Ok(free_before_data - size.div_ceil(4096) * 4096));
+            let mut content = vec![0; size as usize];
+            read_exact(mounted, name, &mut content);
+            assert!(content.iter().all(|byte| *byte == 0x53));
+        };
+        check(&reference);
+        ext4::sync(&mut reference).unwrap();
+        let final_bytes = DEVICE.with_borrow(|device| device.bytes.clone());
+        drop(reference);
+        for accept in [false, true] {
+            for fail in 0..trace.len() {
+                let mut mounted = prepare();
+                DEVICE.with_borrow_mut(|device| {
+                    device.fail_event = Some(fail); device.accept_failed_write = accept;
+                });
+                assert_eq!(perform(&mut mounted), Err(Status::Io), "truncate {large}/{size}/{fail}");
+                if fail >= 2 {
+                    assert_public_reads_refused(&mounted);
+                    assert!(ext4::truncate_inode(&mut mounted, inode, size + 1).is_err());
+                    assert!(ext4::unlink_file_probe(&mut mounted, name).is_err());
+                }
+                DEVICE.with_borrow_mut(|device| {
+                    assert_eq!(device.events, trace[..=fail]);
+                    device.events.clear(); device.fail_event = None;
+                });
+                let through_sync = accept && fail >= 2;
+                if through_sync { ext4::sync(&mut mounted).unwrap(); }
+                else { perform(&mut mounted).unwrap(); }
+                let start = trace[..fail].iter().rposition(|event|
+                    matches!(event, Event::Flush(0 | 4 | 5))).map_or(0, |index| index + 1);
+                DEVICE.with_borrow(|device| {
+                    if through_sync { assert!(device.events.starts_with(&trace[start..])); }
+                    else { assert_eq!(device.events, trace[start..]); }
+                });
+                check(&mounted);
+                ext4::sync(&mut mounted).unwrap();
+                ext4::unmount(&mounted).unwrap();
+                DEVICE.with_borrow(|device| assert!(device.bytes == final_bytes));
+            }
+        }
+        fsck(&path, &format!("coordinator-split-truncate-retry-{large}-{size}"));
+        let checkpoints: Vec<_> = trace.iter().enumerate().filter_map(|(index, event)|
+            (*event == Event::Flush(4)).then_some(index)).collect();
+        for fail in [checkpoints[0], *checkpoints.last().unwrap()] {
+            let mut mounted = prepare();
+            DEVICE.with_borrow_mut(|device| device.fail_event = Some(fail));
+            assert_eq!(perform(&mut mounted), Err(Status::Io));
+            DEVICE.with_borrow_mut(|device| {
+                device.fail_event = None; device.fail_superblock_read = true;
+            });
+            // The checkpoint succeeds on retry but reload refuses. Preserve
+            // both the journal Reload phase and the original truncate request.
+            assert_eq!(perform(&mut mounted), Err(Status::Io));
+            assert_public_reads_refused(&mounted);
+            DEVICE.with_borrow_mut(|device| device.fail_superblock_read = false);
+            perform(&mut mounted).unwrap();
+            check(&mounted);
+            ext4::sync(&mut mounted).unwrap();
+            ext4::unmount(&mounted).unwrap();
+            DEVICE.with_borrow(|device| assert!(device.bytes == final_bytes));
+        }
+        let mut prefix = initial;
+        for (cut, event) in trace.iter().enumerate() {
+            match event {
+                Event::Write(start, bytes) => prefix[*start as usize..*start as usize + bytes.len()].copy_from_slice(bytes),
+                Event::Flush(_) => {
+                    let recovered = mount_bytes(prefix.clone());
+                    if ext4::stat(&recovered, name) == Ok(original_metadata) {
+                        assert_eq!(ext4::stat(&recovered, alias), Ok(original_metadata));
+                        assert_eq!(ext4::free_bytes(&recovered), Ok(original_free));
+                        let mut content = [0; 8192];
+                        read_exact(&recovered, name, &mut content);
+                        assert_eq!(content, [0x53; 8192]);
+                    } else { check(&recovered); }
+                    ext4::unmount(&recovered).unwrap();
+                    fsck(&path, &format!("coordinator-split-truncate-{large}-{size}-cut-{cut}"));
+                }
+            }
+        }
+        let mut mounted = mount_bytes(final_bytes);
+        ext4::truncate_inode(&mut mounted, inode, 8192).unwrap();
+        let mut content = [0xa5; 8192];
+        read_exact(&mounted, alias, &mut content);
+        assert!(content[..size as usize].iter().all(|byte| *byte == 0x53));
+        assert!(content[size as usize..].iter().all(|byte| *byte == 0));
+        ext4::sync(&mut mounted).unwrap();
+        ext4::unmount(&mounted).unwrap();
+        fsck(&path, &format!("coordinator-split-truncate-regrow-{large}-{size}"));
+    }
+}
+
+#[test]
 fn freed_checksummed_inode_bodies_do_not_authorize_inode_io() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);
