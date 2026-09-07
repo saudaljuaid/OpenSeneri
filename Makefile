@@ -49,6 +49,17 @@ SDK_LD ?= ld.lld
 SDK_AR ?= ar
 READELF ?= readelf
 FFMPEG ?= ffmpeg
+ifeq ($(OS),Windows_NT)
+# The MSVC Rust host toolchain collides with MSYS2's `/usr/bin/link.exe`.
+# Prefer an installed GNU host toolchain so cargo build scripts and host tests
+# use the same MinGW linker as the rest of the Windows development environment.
+WINDOWS_RUST_TOOLCHAIN := $(shell rustup toolchain list 2>/dev/null | \
+	awk '$$1 == "stable-x86_64-pc-windows-gnu" { print $$1; exit }')
+ifneq ($(WINDOWS_RUST_TOOLCHAIN),)
+RUSTUP_TOOLCHAIN ?= $(WINDOWS_RUST_TOOLCHAIN)
+export RUSTUP_TOOLCHAIN
+endif
+endif
 # The kernel objects and linker must produce ELF. MinGW's default gcc/as pair
 # targets PE/COFF on Windows, so use clang's ELF target and lld there while
 # leaving the host-test compiler (`CC`) unchanged.
