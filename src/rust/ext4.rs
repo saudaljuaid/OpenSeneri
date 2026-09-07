@@ -951,10 +951,16 @@ fn inode_index(inode: u64) -> Result<core::num::NonZeroU32, Status> {
     u32::try_from(inode).ok().and_then(core::num::NonZeroU32::new).ok_or(Status::Invalid)
 }
 
+fn allocated_inode(filesystem: &Ext4, number: u64) -> Result<Inode, Status> {
+    let index = inode_index(number)?;
+    if !filesystem.inode_is_allocated(index).map_err(map_error)? { return Err(Status::NotFound); }
+    Inode::read(filesystem, index).map_err(map_error)
+}
+
 fn open_io_target(filesystem: &Ext4, key: &[u8]) -> Result<ext4plus::file::File, Status> {
     if key.first() != Some(&0) { return filesystem.open(key).map_err(map_error); }
     let number = u64::from_le_bytes(key.get(1..).ok_or(Status::Invalid)?.try_into().map_err(|_| Status::Invalid)?);
-    let inode = Inode::read(filesystem, inode_index(number)?).map_err(map_error)?;
+    let inode = allocated_inode(filesystem, number)?;
     if !inode.file_type().is_regular_file() { return Err(Status::Special); }
     ext4plus::file::File::open_inode(filesystem, inode).map_err(map_error)
 }
@@ -2046,7 +2052,7 @@ fn metadata_at(mounted: &Mounted, path: &[u8], follow: FollowSymlinks) -> Result
 
 /// Read bytes at a 64-bit offset without changing any shared cursor.
 pub(crate) fn stat_inode(mounted: &Mounted, number: u64) -> Result<Metadata, Status> {
-    let inode = Inode::read(mounted.readable_filesystem()?, inode_index(number)?).map_err(map_error)?;
+    let inode = allocated_inode(mounted.readable_filesystem()?, number)?;
     inode_metadata(&inode)
 }
 

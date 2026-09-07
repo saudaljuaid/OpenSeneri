@@ -442,8 +442,15 @@ errors and receives the complete live inode list under the volume lease; it
 preserves orphan data held by other handles and keeps the recovery marker set
 while those orphans exist. Unmount requires all handles closed, completes any
 remaining cleanup, and only then clears the marker. The new orphan coordinator,
-repeated-recovery, and final-close fault fixtures are pending Linux gate evidence;
-they do not establish the full Milestone 2 crash/concurrency profile.
+repeated-recovery, and final-close fault fixtures passed Linux verification at
+07d45ea; they do not establish the full Milestone 2 crash/concurrency profile.
+
+Inode-based access checks the checksummed allocation bitmap before reading an
+inode body. A freed inode can retain valid mode and checksum fields after Linux
+deletion; those fields alone do not authorize access. The manual filesystem
+workflow also enables disposable Linux loop-mount tests for replace-rename
+recovery and bidirectional file modification. These new fixtures require Linux
+execution before claiming kernel interoperability for that operation profile.
 
 The append backend selects the live inode's EOF under the exclusive writable
 volume lease, ignoring the handle's seek position. Retained journal retries

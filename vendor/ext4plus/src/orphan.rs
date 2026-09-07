@@ -1,9 +1,8 @@
 //! Legacy ext4 orphan-chain mutations. The caller must journal the complete
 //! operation and roll back its staged filesystem view on any error.
 
-use crate::bitmap::BitmapHandle;
 use crate::error::CorruptKind;
-use crate::inode::{Inode, InodeFlags, InodeIndex, get_inode_block_group_location};
+use crate::inode::{Inode, InodeFlags, InodeIndex};
 use crate::{Ext4, Ext4Error};
 use alloc::vec::Vec;
 
@@ -15,13 +14,7 @@ impl Ext4 {
         if index.get() < 11 || index.get() > self.0.superblock.inodes_count() {
             return Err(CorruptKind::OrphanInode(index.get()).into());
         }
-        let (group, offset) = get_inode_block_group_location(&self.0.superblock, index)?;
-        let descriptor = self.0.block_group_descriptors.get(group as usize)
-            .ok_or(CorruptKind::OrphanInode(index.get()))?;
-        let bitmap = BitmapHandle::new(descriptor.inode_bitmap_block(), true);
-        // Validation must not materialize a lazy, entirely unused bitmap.
-        bitmap.validate(self, group).await?;
-        if !bitmap.query(offset, self).await? {
+        if !self.inode_is_allocated(index).await? {
             return Err(CorruptKind::OrphanInode(index.get()).into());
         }
         Ok(())

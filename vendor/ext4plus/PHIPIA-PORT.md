@@ -279,3 +279,9 @@ records with 509 64-bit entries per full block. Slot reservation, execution,
 transaction replay and ring scanning account for every record. The metadata
 image bound remains 64. Multi-record tests cover exact counts, corrupt records,
 and large truncate/unlink with Phipia and independent e2fsprogs replay.
+
+`inode_is_allocated` validates the inode bitmap without lazy initialization.
+Phipia uses it before inode-based I/O, and orphan validation shares this check.
+Linux v6.12 fs/ext4/ialloc.c releases allocation separately from the inode body;
+a valid body checksum alone cannot identify a live inode. A real e2fsprogs
+fixture reconstructs a freed checksummed body and checks storage-free refusal.

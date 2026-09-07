@@ -1218,6 +1218,135 @@ fn unlink_open_preserves_inode_io_until_sync_observes_final_close() {
 }
 
 #[test]
+fn freed_checksummed_inode_bodies_do_not_authorize_inode_io() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let name = b"system/freed-inode";
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    let inode = ext4::stat(&mounted, name).unwrap().inode;
+    ext4::unlink_file_probe(&mut mounted, name).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    drop(mounted);
+    let image = path.with_extension("freed-inode.img");
+    DEVICE.with_borrow(|device| std::fs::write(&image, &device.bytes).unwrap());
+    // Linux can leave mode and a valid checksum in a freed inode. debugfs
+    // reconstructs that state without setting its allocation bitmap bit.
+    debugfs(&image, &format!("set_inode_field <{inode}> mode 0100600"));
+    debugfs(&image, &format!("set_inode_field <{inode}> links_count 0"));
+    debugfs(&image, &format!("set_inode_field <{inode}> dtime 1780000000"));
+    let mut mounted = mount_fixture(&image);
+    fsck(&path, "coordinator-freed-inode-before");
+    let before = DEVICE.with_borrow_mut(|device| { device.events.clear(); device.bytes.clone() });
+    for number in [inode, u64::from(u32::MAX)] {
+        assert_eq!(ext4::stat_inode(&mounted, number), Err(Status::NotFound));
+        let mut data = [0xa5; 16];
+        assert_eq!(ext4::pread_inode(&mounted, number, 0, &mut data), Err(Status::NotFound));
+        assert_eq!(data, [0xa5; 16]);
+        assert_eq!(ext4::write_inode(&mut mounted, number, 0, b"stale"), Err(Status::NotFound));
+        assert_eq!(ext4::append_inode(&mut mounted, number, b"stale", 16384), Err(Status::NotFound));
+        assert_eq!(ext4::truncate_inode(&mut mounted, number, 8192), Err(Status::NotFound));
+    }
+    DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert!(device.bytes == before); });
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-freed-inode-after");
+}
+
+#[test]
+#[cfg(unix)]
+fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
+    if std::env::var("PHIPIA_EXT4_KERNEL_INTEROP").as_deref() != Ok("1") {
+        eprintln!("Linux loop-mount interoperability not requested; no kernel interoperability gate claimed");
+        return;
+    }
+    let Some(path) = fixture() else { panic!("kernel interoperability requires the configured fixture") };
+    fn linux(args: &[&str]) -> std::process::Output {
+        let output = std::process::Command::new("sudo").arg("-n").args(args).output().unwrap();
+        assert!(output.status.success(), "sudo {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        output
+    }
+    struct LoopMount { directory: PathBuf, active: bool }
+    impl LoopMount {
+        fn mount(image: &std::path::Path, directory: &std::path::Path) -> Self {
+            let mounted = Self { directory: directory.to_path_buf(), active: true };
+            linux(&["mount", "-t", "ext4", "-o", "loop,nodev,nosuid,noexec", image.to_str().unwrap(), directory.to_str().unwrap()]);
+            mounted
+        }
+        fn unmount(mut self) {
+            linux(&["umount", self.directory.to_str().unwrap()]);
+            self.active = false;
+        }
+    }
+    impl Drop for LoopMount {
+        fn drop(&mut self) {
+            if self.active {
+                let _ = std::process::Command::new("sudo").args(["-n", "umount"])
+                    .arg(&self.directory).status();
+            }
+        }
+    }
+    println!("ext4 kernel interoperability Linux {}", std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap().trim());
+    let directory = path.with_extension("kernel-mount");
+    std::fs::create_dir_all(&directory).unwrap();
+    let image = path.with_extension("kernel-interop.img");
+    let mut mounted = mount_fixture(&path);
+    let source = b"system/kernel-source";
+    let target = b"data/user/kernel-target";
+    ext4::create_file_probe(&mut mounted, source, 0o644).unwrap();
+    ext4::create_file_probe(&mut mounted, target, 0o644).unwrap();
+    ext4::transaction_probe(&mut mounted, source, 0, b"new-from-phipia").unwrap();
+    ext4::transaction_probe(&mut mounted, target, 0, b"old-from-phipia").unwrap();
+    let source_inode = ext4::stat(&mounted, source).unwrap().inode;
+    let target_inode = ext4::stat(&mounted, target).unwrap().inode;
+    ext4::sync(&mut mounted).unwrap();
+    let mut prefix = DEVICE.with_borrow_mut(|device| { device.events.clear(); device.bytes.clone() });
+    ext4::rename_replace_guarded(&mut mounted, source, target, &[source_inode, target_inode]).unwrap();
+    let events = DEVICE.with_borrow(|device| device.events.clone());
+    drop(mounted); // Simulated process/OS loss: the kernel must clean the orphan.
+    let mut committed = false;
+    for (index, event) in events.iter().enumerate() {
+        match event {
+            Event::Write(start, data) => prefix[*start as usize..*start as usize + data.len()].copy_from_slice(data),
+            Event::Flush(boundary) => {
+                committed |= *boundary == 3;
+                std::fs::write(&image, &prefix).unwrap();
+                let kernel = LoopMount::mount(&image, &directory);
+                let output = linux(&["cat", directory.join("data/user/kernel-target").to_str().unwrap()]);
+                assert_eq!(&output.stdout, if committed { b"new-from-phipia" } else { b"old-from-phipia" });
+                assert_eq!(directory.join("system/kernel-source").exists(), !committed);
+                kernel.unmount();
+                let recovered = mount_fixture(&image);
+                assert_eq!(ext4::stat(&recovered, target).unwrap().inode, if committed { source_inode } else { target_inode });
+                if committed { assert!(ext4::stat_inode(&recovered, target_inode).is_err()); }
+                ext4::unmount(&recovered).unwrap();
+                fsck(&path, &format!("coordinator-kernel-replace-cut-{index}"));
+            }
+        }
+    }
+    // Kernel-created data must remain mutable after Phipia remounts it.
+    let payload = path.with_extension("kernel-payload");
+    std::fs::write(&payload, b"written-by-linux").unwrap();
+    let kernel = LoopMount::mount(&image, &directory);
+    let kernel_file = directory.join("system/from-linux");
+    linux(&["cp", payload.to_str().unwrap(), kernel_file.to_str().unwrap()]);
+    linux(&["ln", kernel_file.to_str().unwrap(), directory.join("system/linux-alias").to_str().unwrap()]);
+    kernel.unmount();
+    let mut mounted = mount_fixture(&image);
+    let mut data = [0; 16];
+    read_exact(&mounted, b"system/from-linux", &mut data);
+    assert_eq!(&data, b"written-by-linux");
+    ext4::append_probe(&mut mounted, b"system/linux-alias", b"+phipia", 16384).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-kernel-write-roundtrip");
+    DEVICE.with_borrow(|device| std::fs::write(&image, &device.bytes).unwrap());
+    let kernel = LoopMount::mount(&image, &directory);
+    let output = linux(&["cat", kernel_file.to_str().unwrap()]);
+    assert_eq!(&output.stdout, b"written-by-linux+phipia");
+    kernel.unmount();
+}
+
+#[test]
 fn replacing_open_files_preserves_both_inode_handles_and_delays_target_reuse() {
     let Some(path) = fixture() else { return };
     for same_parent in [true, false] {

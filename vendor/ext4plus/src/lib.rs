@@ -375,6 +375,19 @@ impl Ext4 {
         &self.0.superblock
     }
 
+    /// Check allocation independently of the inode body, which can retain a
+    /// valid checksum after Linux frees it. This never initializes lazy bitmaps.
+    #[maybe_async::maybe_async]
+    pub async fn inode_is_allocated(&self, index: InodeIndex) -> Result<bool, Ext4Error> {
+        if index.get() > self.0.superblock.inodes_count() { return Ok(false); }
+        let (group, offset) = get_inode_block_group_location(&self.0.superblock, index)?;
+        let descriptor = self.0.block_group_descriptors.get(group as usize)
+            .ok_or(CorruptKind::BlockGroupDescriptor(group))?;
+        let bitmap = BitmapHandle::new(descriptor.inode_bitmap_block(), true);
+        bitmap.validate(self, group).await?;
+        bitmap.query(offset, self).await
+    }
+
     /// Read the inode of the root `/` directory.
     #[maybe_async::maybe_async]
     pub async fn read_root_inode(&self) -> Result<Inode, Ext4Error> {

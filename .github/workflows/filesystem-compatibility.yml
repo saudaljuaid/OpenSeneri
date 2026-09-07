@@ -43,6 +43,8 @@ jobs:
                   qemu-system-x86_64 -accel help \
                       | tee evidence/filesystem/accelerator-help.txt
             - name: Verify the kernel artifact
+              env:
+                  PHIPIA_EXT4_KERNEL_INTEROP: "1"
               run: make verify
             - name: Run ten complete serial TCG sweeps
               shell: bash
