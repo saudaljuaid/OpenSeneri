@@ -790,9 +790,10 @@ enum phipfs_status phipfs_close(phipfs_handle handle)
     vnode_index = state->vnode_index;
     state->active = false;
     state->backend_handle = 0U;
-    status = backend->close(backend_handle);
+    // Retire the VFS identity before final-close cleanup can free and reuse
+    // the backend inode number during a subsequent namespace operation.
     vnode_release(vnode_index, vnode_generation);
-    return status;
+    return backend->close(backend_handle);
 }
 
 enum phipfs_status phipfs_read(
@@ -1035,6 +1036,9 @@ enum phipfs_status phipfs_directory_read(
 enum phipfs_status phipfs_directory_close(phipfs_directory_handle handle)
 {
     struct vfs_directory_state *state;
+    const struct vfs_backend_ops *backend;
+    phipfs_handle backend_handle;
+    bool streaming;
     uint64_t vnode_generation;
     uint16_t vnode_index;
     enum phipfs_status status = directory_state(handle, &state);
@@ -1044,11 +1048,13 @@ enum phipfs_status phipfs_directory_close(phipfs_directory_handle handle)
     }
     vnode_generation = state->vnode_generation;
     vnode_index = state->vnode_index;
-    if (state->streaming) {
-        status = state->backend->directory_close(state->backend_handle);
-    }
+    backend = state->backend;
+    backend_handle = state->backend_handle;
+    streaming = state->streaming;
     state->active = false;
+    state->backend_handle = 0U;
     vnode_release(vnode_index, vnode_generation);
+    if (streaming) status = backend->directory_close(backend_handle);
     return status;
 }
 

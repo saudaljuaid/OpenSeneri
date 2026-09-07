@@ -1610,17 +1610,23 @@ fn indexed_directory_moves_update_dotdot_checksum_and_refuse_hostile_counts() {
 #[test]
 fn final_orphan_release_retries_identical_bytes_without_a_live_handle() {
     let Some(path) = fixture() else { return };
+    for directory in [false, true] {
     let mut baseline = mount_fixture(&path);
     let name = b"system/close-retry";
-    ext4::create_file_probe(&mut baseline, name, 0o600).unwrap();
-    ext4::transaction_probe(&mut baseline, name, 0, &vec![0x53; 8192]).unwrap();
+    if directory {
+        ext4::create_directory_probe(&mut baseline, name).unwrap();
+    } else {
+        ext4::create_file_probe(&mut baseline, name, 0o600).unwrap();
+        ext4::transaction_probe(&mut baseline, name, 0, &vec![0x53; 8192]).unwrap();
+    }
     let inode = ext4::stat(&baseline, name).unwrap().inode;
     ext4::sync(&mut baseline).unwrap();
     let initial = DEVICE.with_borrow(|device| device.bytes.clone());
     drop(baseline);
     let prepare = || {
         let mut mounted = mount_bytes(initial.clone());
-        ext4::unlink_file_guarded(&mut mounted, name, &[inode]).unwrap();
+        if directory { ext4::remove_directory_guarded(&mut mounted, name, &[inode]).unwrap(); }
+        else { ext4::unlink_file_guarded(&mut mounted, name, &[inode]).unwrap(); }
         DEVICE.with_borrow_mut(|device| device.events.clear());
         mounted
     };
@@ -1652,7 +1658,8 @@ fn final_orphan_release_retries_identical_bytes_without_a_live_handle() {
             DEVICE.with_borrow(|device| assert!(device.bytes == final_bytes));
         }
     }
-    fsck(&path, "coordinator-orphan-close-retry");
+    fsck(&path, &format!("coordinator-orphan-close-retry-directory-{directory}"));
+    }
 }
 
 #[test]

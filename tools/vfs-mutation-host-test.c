@@ -12,6 +12,8 @@ static const char *expected_path = "parent/file";
 static bool stat_succeeds;
 static unsigned live_backend_handles;
 static bool directory_metadata;
+static phipfs_handle closing_frontend;
+static bool closing_directory;
 
 static enum phipfs_status replaced_open(enum phipfs_volume volume, const char *path,
     enum phipfs_access access, phipfs_handle *handle, struct phipfs_stat *stat)
@@ -28,6 +30,14 @@ static enum phipfs_status replaced_open(enum phipfs_volume volume, const char *p
 static enum phipfs_status replaced_close(phipfs_handle handle)
 {
     assert(handle == 77U && live_backend_handles == 1U);
+    for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) {
+        assert(!vnodes[index].active || vnodes[index].stat.object_id != 500U);
+    }
+    if (closing_frontend != 0U) {
+        const phipfs_handle retired = closing_frontend;
+        closing_frontend = 0U;
+        assert((closing_directory ? phipfs_directory_close(retired) : phipfs_close(retired)) == PHIPFS_STATUS_STALE_HANDLE);
+    }
     --live_backend_handles;
     return PHIPFS_STATUS_OK;
 }
@@ -155,7 +165,9 @@ int main(void)
     assert(open_file_state(opened, &file) == PHIPFS_STATUS_OK);
     assert(vnodes[file->vnode_index].stat.object_id == 500U);
     assert(vnodes[old_vnode].stat.object_id == 101U && vnodes[old_vnode].references == 1U);
+    closing_frontend = opened;
     assert(phipfs_close(opened) == PHIPFS_STATUS_OK && live_backend_handles == 0U);
+    assert(closing_frontend == 0U);
     /* Exhaustion after backend open must release that handle, preserving the
      * already-held old inode and every unrelated vnode reference. */
     size_t retained[VFS_MAX_VNODES - 1U];
@@ -186,7 +198,10 @@ int main(void)
     bool present;
     stat_succeeds = false; /* The old name can disappear without affecting iteration. */
     assert(phipfs_directory_read(directory, &entry, &present) == PHIPFS_STATUS_OK && !present);
+    closing_frontend = directory;
+    closing_directory = true;
     assert(phipfs_directory_close(directory) == PHIPFS_STATUS_OK && live_backend_handles == 0U);
+    assert(closing_frontend == 0U);
     vnode_release(old_vnode, vnodes[old_vnode].generation);
     assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
     for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) assert(!vnodes[index].active);
