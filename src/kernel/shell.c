@@ -707,13 +707,13 @@ static void command_write_line(const char *arguments, bool append)
     if (status == PHIPFS_STATUS_NOT_FOUND) {
         status = phipfs_create(PHIPFS_VOLUME_DATA, path);
     }
-    if (status == PHIPFS_STATUS_OK && !append) {
-        status = phipfs_truncate(PHIPFS_VOLUME_DATA, path, 0U);
-    }
     if (status == PHIPFS_STATUS_OK) {
         status = phipfs_open(PHIPFS_VOLUME_DATA, path,
             PHIPFS_ACCESS_WRITE, &handle);
         opened = status == PHIPFS_STATUS_OK;
+    }
+    if (status == PHIPFS_STATUS_OK && !append) {
+        status = phipfs_ftruncate(handle, 0U);
     }
     if (status == PHIPFS_STATUS_OK && append) {
         status = phipfs_set_append(handle, true);
