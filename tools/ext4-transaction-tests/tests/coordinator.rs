@@ -3287,6 +3287,41 @@ fn linear_directory_shrink_reclaims_previously_emptied_suffix_with_retries() {
 }
 
 #[test]
+fn live_directories_require_whole_blocks_and_initialized_extents() {
+    let Some(path) = fixture() else { return };
+    let pristine = std::fs::read(&path).unwrap();
+    let raw = ext4plus::Ext4::load(Box::new(pristine.clone())).unwrap();
+    let image = path.with_extension("coordinator-directory-map-fault.img");
+    for name in ["/", "/indexed"] {
+        let node = raw.path_to_inode(ext4plus::path::Path::try_from(name).unwrap(),
+            ext4plus::FollowSymlinks::All).unwrap();
+        let number = node.index.get();
+        let ipg = u32::from_le_bytes(pristine[1064..1068].try_into().unwrap());
+        let descriptor = 4096 + ((number - 1) / ipg) as usize * 64;
+        let table = u32::from_le_bytes(pristine[descriptor + 8..descriptor + 12].try_into().unwrap()) as usize * 4096;
+        let start = table + ((number - 1) % ipg) as usize * 256;
+        assert_eq!(u16::from_le_bytes(pristine[start + 0x2e..start + 0x30].try_into().unwrap()), 0);
+        let length_and_high = u32::from_le_bytes(pristine[start + 0x38..start + 0x3c].try_into().unwrap());
+        assert!(length_and_high & 0xffff > 0 && length_and_high & 0xffff < 0x8000);
+        for (field, value) in [("block[4]", u64::from(length_and_high | 0x8000)),
+            ("size", 0), ("size", 1), ("size", node.size_in_bytes() - 1)] {
+            for dirty in [false, true] {
+                write_sparse_fixture(&image, &pristine).unwrap();
+                debugfs(&image, &format!("set_inode_field <{number}> {field} {value}"));
+                if dirty { debugfs(&image, "feature needs_recovery"); }
+                let hostile = std::fs::read(&image).unwrap();
+                assert_ne!(&hostile[start..start + 256], &pristine[start..start + 256]);
+                let view = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
+                ext4plus::inode::Inode::read(&view, node.index).unwrap(); // valid inode CRC
+                DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+                assert!(ext4::mount(1, hostile.len() as u64).is_err(), "{name} {field}={value}, dirty={dirty}");
+                DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+            }
+        }
+    }
+}
+
+#[test]
 fn indexed_lookup_io_failure_discards_new_inode_data_and_link_reservations() {
     let Some(path) = fixture() else { return };
     for operation in 0..4 {

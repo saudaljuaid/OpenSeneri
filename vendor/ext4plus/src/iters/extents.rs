@@ -204,9 +204,13 @@ impl Extents {
     /// reside in allocated blocks, without retaining a second tree walk.
     #[maybe_async::maybe_async]
     pub(crate) async fn validate_allocation(mut self,
-        allocations: &mut crate::BlockAllocationSnapshot<'_>) -> Result<(), Ext4Error> {
+        allocations: &mut crate::BlockAllocationSnapshot<'_>, allow_unwritten: bool) -> Result<(), Ext4Error> {
         while !self.is_done {
-            self.next_checked_impl(Some(&mut *allocations)).await?;
+            if let Some(extent) = self.next_checked_impl(Some(&mut *allocations)).await? {
+                if !allow_unwritten && !extent.is_initialized {
+                    return Err(CorruptKind::ExtentBlock(self.inode).into());
+                }
+            }
         }
         Ok(())
     }

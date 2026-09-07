@@ -300,9 +300,21 @@ impl<'a> BlockAllocationSnapshot<'a> {
             return Err(Ext4Error::Readonly);
         }
         let before_mapping = self.claimed_blocks;
+        if inode.file_type().is_dir()
+            && (inode.size_in_bytes() % self.filesystem.superblock().block_size().to_u64() != 0
+                || (inode.size_in_bytes() == 0 && inode.links_count() != 0)) {
+            self.invalid = true;
+            return Err(CorruptKind::DirEntry(inode.index).into());
+        }
         if inode.flags().contains(crate::inode::InodeFlags::EXTENTS) {
+            // Unwritten regular-file allocation reads as holes. Live directory,
+            // symlink and journal contents must instead have initialized maps.
+            // Unlinked orphan maps remain reclaimable without interpreting data.
+            let allow_unwritten = inode.links_count() == 0
+                || (inode.file_type().is_regular_file()
+                    && Some(inode.index) != self.filesystem.superblock().journal_inode());
             let result = match crate::iters::extents::Extents::new(self.filesystem.clone(), inode) {
-                Ok(extents) => extents.validate_allocation(self).await,
+                Ok(extents) => extents.validate_allocation(self, allow_unwritten).await,
                 Err(error) => Err(error),
             };
             if let Err(error) = result {
