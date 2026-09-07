@@ -1601,7 +1601,12 @@ fn legacy_indirect_mapping_ownership_is_checked_before_writes_or_recovery() {
             match case {
                 0 => debugfs(&image, &format!("freeb {single}")),
                 1 => debugfs(&image, &format!("set_inode_field <{inode}> block[0] {single}")),
-                2 => debugfs(&image, &format!("set_inode_field <{inode}> block[DIND] {single}")),
+                2 => {
+                    debugfs(&image, &format!("set_inode_field <{inode}> block[DIND] {single}"));
+                    let changed = std::fs::read(&image).unwrap();
+                    assert_eq!(u32::from_le_bytes(changed[inode_start + 0x5c..inode_start + 0x60].try_into().unwrap()), single,
+                        "debugfs must replace the double-indirect root");
+                }
                 _ => {
                     // Legacy indirect records have no CRC. An allocated
                     // self-reference must be caught before recursive reads.
@@ -1619,7 +1624,7 @@ fn legacy_indirect_mapping_ownership_is_checked_before_writes_or_recovery() {
             }
             let hostile = std::fs::read(&image).unwrap();
             DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
-            assert!(ext4::mount(1, hostile.len() as u64).is_err());
+            assert!(ext4::mount(1, hostile.len() as u64).is_err(), "legacy case {case}, orphan={orphan}");
             DEVICE.with_borrow(|device| {
                 assert!(device.events.is_empty());
                 assert_eq!(device.bytes, hostile);
