@@ -1152,9 +1152,11 @@ enum phipfs_status ext4_backend_pread(phipfs_handle handle,
     if ((state->access & PHIPFS_ACCESS_READ) == 0U) {
         return PHIPFS_STATUS_ACCESS;
     }
-    if (capacity == 0U || offset >= state->size) {
+    if (capacity == 0U) {
         return PHIPFS_STATUS_OK;
     }
+    /* A retained transaction or failed EOF refresh invalidates the cached
+     * size. Let the checked inode reader decide EOF under the volume lease. */
     mount = &ext4_mounts[state->volume];
     status = begin_operation(mount, false);
     if (status != PHIPFS_STATUS_OK) {
@@ -1498,6 +1500,7 @@ enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
     enum phipfs_seek_origin origin, uint64_t *position)
 {
     struct ext4_handle_state *state;
+    struct ext4_mount_state *mount = NULL;
     uint64_t base;
     uint64_t target;
     enum phipfs_status status;
@@ -1510,27 +1513,51 @@ enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
+    if (origin == PHIPFS_SEEK_END) {
+        struct phipia_ext4_metadata metadata;
+        struct ext4_mount_state *candidate = &ext4_mounts[state->volume];
+
+        status = begin_operation(candidate, false);
+        if (status != PHIPFS_STATUS_OK) return status;
+        mount = candidate;
+        zero_bytes(&metadata, sizeof(metadata));
+        status = map_status(phipia_ext4_stat_inode(mount->rust_mount, state->inode, &metadata));
+        if (status != PHIPFS_STATUS_OK) goto done;
+        if (metadata.inode != state->inode) {
+            status = PHIPFS_STATUS_STALE_HANDLE;
+            goto done;
+        }
+        update_open_sizes(state->volume, state->inode, metadata.size);
+    }
     base = origin == PHIPFS_SEEK_START ? 0U :
         (origin == PHIPFS_SEEK_CURRENT ? state->offset :
             (origin == PHIPFS_SEEK_END ? state->size : UINT64_MAX));
     if (base == UINT64_MAX) {
-        return PHIPFS_STATUS_INVALID_ARGUMENT;
+        status = PHIPFS_STATUS_INVALID_ARGUMENT;
+        goto done;
     }
     if (offset < 0) {
         const uint64_t magnitude = (uint64_t)(-(offset + 1)) + 1U;
         if (magnitude > base) {
-            return PHIPFS_STATUS_RANGE;
+            status = PHIPFS_STATUS_RANGE;
+            goto done;
         }
         target = base - magnitude;
     } else {
         if ((uint64_t)offset > UINT64_MAX - base) {
-            return PHIPFS_STATUS_RANGE;
+            status = PHIPFS_STATUS_RANGE;
+            goto done;
         }
         target = base + (uint64_t)offset;
     }
     state->offset = target;
     *position = target;
-    return PHIPFS_STATUS_OK;
+done:
+    if (mount != NULL) {
+        const enum phipfs_status close_status = end_operation(mount, NULL);
+        if (status == PHIPFS_STATUS_OK) status = close_status;
+    }
+    return status;
 }
 
 enum phipfs_status ext4_backend_stat_path(enum phipfs_volume volume,

@@ -284,6 +284,8 @@ int32_t phipia_ext4_pread_inode(uintptr_t mounted, uint64_t inode, uint64_t offs
     uint8_t *output, size_t capacity, size_t *count)
 {
     assert(mounted == 1U && inode == 42U && !ext4_mounts[PHIPFS_VOLUME_DATA].session.writable);
+    *count = 0U;
+    if (pending) return PHIPIA_EXT4_STATUS_IO;
     *count = offset >= disk_size ? 0U : (size_t)(disk_size - offset);
     if (*count > capacity) *count = capacity;
     memset(output, 0x55, *count);
@@ -414,12 +416,19 @@ int main(void)
     for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
         assert(ext4_backend_truncate(PHIPFS_VOLUME_DATA, "file", 101U) == PHIPFS_STATUS_IO);
         assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->size == 8192U);
+        uint8_t output = 0xa5U;
+        size_t read = 99U;
+        uint64_t end_position = 99U;
+        assert(ext4_backend_pread(first, &output, 1U, 8192U, &read) == PHIPFS_STATUS_IO);
+        assert(read == 0U && output == 0xa5U);
+        assert(ext4_backend_seek(first, 0, PHIPFS_SEEK_END, &end_position) == PHIPFS_STATUS_IO);
+        assert(end_position == 0U && state->offset == 0U);
         assert(opens == closes && !ext4_mounts[PHIPFS_VOLUME_DATA].operation_active);
     }
     expect_published_size_before_close = true;
     assert(ext4_backend_truncate(PHIPFS_VOLUME_DATA, "file", 101U) == PHIPFS_STATUS_OK);
     assert(!expect_published_size_before_close);
-    assert(truncates == 3U && stats == 1U);
+    assert(truncates == 3U && stats == 3U);
     assert(!reenter_on_open);
     const unsigned counted = capacity_queries;
     const unsigned before_drive = opens;
@@ -433,6 +442,18 @@ int main(void)
     assert(ext4_backend_truncate(PHIPFS_VOLUME_DATA, "file", 100U) == PHIPFS_STATUS_READ_ONLY);
     assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->size == 101U);
     permanent_status = PHIPIA_EXT4_STATUS_OK;
+    stat_refusals = 1U;
+    assert(ext4_backend_truncate(PHIPFS_VOLUME_DATA, "file", 103U) == PHIPFS_STATUS_IO);
+    assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->size == 101U);
+    uint8_t grown_byte = 0U;
+    size_t grown_count = 0U;
+    uint64_t grown_end = 0U;
+    assert(ext4_backend_pread(first, &grown_byte, 1U, 102U, &grown_count) == PHIPFS_STATUS_OK);
+    assert(grown_count == 1U && grown_byte == 0x55U);
+    assert(ext4_backend_seek(first, 0, PHIPFS_SEEK_END, &grown_end) == PHIPFS_STATUS_OK);
+    assert(grown_end == 103U && state->size == 103U);
+    assert(ext4_backend_seek(first, 0, PHIPFS_SEEK_START, &grown_end) == PHIPFS_STATUS_OK);
+    assert(ext4_backend_truncate(PHIPFS_VOLUME_DATA, "file", 101U) == PHIPFS_STATUS_OK);
     refusals = 1U;
     assert(ext4_backend_truncate(PHIPFS_VOLUME_DATA, "file", 65537U) == PHIPFS_STATUS_IO);
     sync_refusals = 1U;
