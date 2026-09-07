@@ -70,8 +70,10 @@ fn align_4(size: usize) -> usize {
 }
 
 fn xattr_body_start(inode: &Inode) -> usize {
-    if inode.inode_data.len() < 0x80 + 2 {
-        128
+    if inode.inode_data.len() < 0x80 + 2 || read_u16le(&inode.inode_data, 0x80) == 0 {
+        // i_extra_isize itself must be declared before inode-body attributes
+        // can exist. Treat the remaining undeclared bytes as opaque padding.
+        inode.inode_data.len()
     } else {
         128 + usize::from(read_u16le(&inode.inode_data, 0x80))
     }
@@ -365,18 +367,17 @@ impl Inode {
             let ibody = &self.inode_data[ibody_start..];
             if ibody.len() >= EXT4_XATTR_IBODY_HEADER_SIZE {
                 let magic = read_u32le(ibody, 0);
-                if magic == 0 {
-                    // No inode-body xattrs.
-                } else if magic == EXT4_XATTR_MAGIC {
+                if magic == EXT4_XATTR_MAGIC {
                     entries.extend(parse_xattr_entries(
                         self,
                         ibody,
                         EXT4_XATTR_IBODY_HEADER_SIZE,
                         EXT4_XATTR_IBODY_HEADER_SIZE,
                     )?);
-                } else {
-                    return Err(CorruptKind::Xattr(self.index).into());
                 }
+                // Linux/e2fsprogs recognize inode-body attributes only by
+                // this magic. Shortened extra fields can leave old timestamp
+                // bytes here; they are not an attribute header.
             }
         }
 

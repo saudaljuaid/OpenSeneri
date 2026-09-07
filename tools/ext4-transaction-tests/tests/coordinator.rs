@@ -2045,11 +2045,17 @@ fn inode_checksums_follow_declared_extra_size_and_preserve_undeclared_bytes() {
         let input = std::fs::read(&image).unwrap();
         assert_eq!(u16::from_le_bytes(input[root + 0x80..root + 0x82].try_into().unwrap()), extra);
         let raw = ext4plus::Ext4::load(Box::new(input.clone())).unwrap();
-        ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(2).unwrap()).unwrap();
+        let inode = ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(2).unwrap()).unwrap();
+        assert!(inode.list_xattrs(&raw).unwrap().is_empty());
         let mut mounted = mount_bytes(input.clone());
         fsck(&path, &format!("coordinator-checksum-width-before-{extra}"));
         ext4::create_file_probe(&mut mounted, b"checksum-width-file", 0o600).unwrap();
         ext4::transaction_probe(&mut mounted, b"checksum-width-file", 4093, b"checksum width").unwrap();
+        if extra == 0 {
+            let before = DEVICE.with_borrow(|device| device.bytes.clone());
+            assert_eq!(ext4::set_xattr(&mut mounted, b".", b"user.note", Some(b"opaque")), Err(Status::Full));
+            DEVICE.with_borrow(|device| assert_eq!(device.bytes, before));
+        }
         ext4::set_times(&mut mounted, b".", 1_780_000_001, 0, 1_780_000_002, 0).unwrap();
         if extra < 16 {
             let before = DEVICE.with_borrow(|device| device.bytes.clone());
