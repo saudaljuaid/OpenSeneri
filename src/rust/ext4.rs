@@ -178,6 +178,7 @@ struct PendingWrite {
 
 struct PendingOpen {
     path: Vec<u8>,
+    create_path: Option<Vec<u8>>,
     mode: u16,
     access: u8,
     flags: u8,
@@ -1617,7 +1618,9 @@ pub(crate) fn prepare_open(mounted: &mut Mounted, path: &[u8], access: u8,
     flags: u8, mode: u16) -> Result<Metadata, Status> {
     const CREATE: u8 = 1;
     const TRUNCATE: u8 = 2;
-    if !(1..=3).contains(&access) || flags & !(CREATE | TRUNCATE) != 0 || mode & !0o7777 != 0 {
+    const EXCLUSIVE: u8 = 4;
+    if !(1..=3).contains(&access) || flags & !(CREATE | TRUNCATE | EXCLUSIVE) != 0 || mode & !0o7777 != 0
+        || (flags & EXCLUSIVE != 0 && flags & CREATE == 0) {
         return Err(Status::Invalid);
     }
     if flags & TRUNCATE != 0 && access & 2 == 0 { return Err(Status::ReadOnly); }
@@ -1634,16 +1637,31 @@ pub(crate) fn prepare_open(mounted: &mut Mounted, path: &[u8], access: u8,
     } else if pending { return Err(Status::Busy); }
     let retry = mounted.pending_open.is_some();
     let mut request = mounted.pending_open.take().unwrap_or(PendingOpen {
-        path: absolute, mode, access, flags, inode: None,
+        path: absolute, create_path: None, mode, access, flags, inode: None,
     });
     let result = (|| {
         if request.inode.is_none() {
             if retry {
-                create_file_probe(mounted, &request.path, mode)?;
+                create_file_probe(mounted, request.create_path.as_deref().ok_or(Status::Invalid)?, mode)?;
             } else {
+                if flags & EXCLUSIVE != 0 {
+                    // Even a dangling final symlink is an existing name. Do
+                    // this before creating or truncating, under the same lease.
+                    match lstat(mounted, &request.path) {
+                        Ok(_) => return Err(Status::Exists),
+                        Err(Status::NotFound) => {},
+                        Err(status) => return Err(status),
+                    }
+                }
                 match stat(mounted, &request.path) {
                     Ok(_) => {},
-                    Err(Status::NotFound) if flags & CREATE != 0 => create_file_probe(mounted, &request.path, mode)?,
+                    Err(Status::NotFound) if flags & CREATE != 0 => {
+                        let target = mounted.readable_filesystem()?.canonicalize_for_create(
+                            Path::try_from(request.path.as_slice()).map_err(|_| Status::Invalid)?)
+                            .map_err(map_error)?;
+                        request.create_path = Some(Vec::from(target.as_ref()));
+                        create_file_probe(mounted, request.create_path.as_deref().ok_or(Status::Invalid)?, mode)?;
+                    }
                     Err(status) => return Err(status),
                 }
             }

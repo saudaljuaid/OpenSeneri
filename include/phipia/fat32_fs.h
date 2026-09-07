@@ -31,6 +31,7 @@ enum phipfs_access {
 
 #define PHIPFS_OPEN_CREATE 1U
 #define PHIPFS_OPEN_TRUNCATE 2U
+#define PHIPFS_OPEN_EXCLUSIVE 4U
 
 enum phipfs_seek_origin {
     PHIPFS_SEEK_START = 0,

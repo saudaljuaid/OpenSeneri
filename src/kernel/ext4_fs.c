@@ -1147,7 +1147,8 @@ enum phipfs_status ext4_backend_open_options(enum phipfs_volume volume, const ch
     enum phipfs_status status;
 
     if (handle == NULL || stat == NULL || !valid_volume(volume) || length == 0U || length >= PHIPFS_MAX_PATH ||
-        (flags & ~(PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE)) != 0U || (mode & ~07777U) != 0U ||
+        (flags & ~(PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE | PHIPFS_OPEN_EXCLUSIVE)) != 0U || (mode & ~07777U) != 0U ||
+        ((flags & PHIPFS_OPEN_EXCLUSIVE) != 0U && (flags & PHIPFS_OPEN_CREATE) == 0U) ||
         (access != PHIPFS_ACCESS_READ && access != PHIPFS_ACCESS_WRITE &&
             access != PHIPFS_ACCESS_READ_WRITE)) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;

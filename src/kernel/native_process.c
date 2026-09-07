@@ -3222,6 +3222,7 @@ static int64_t syscall_file_open(
         ((request.flags & PHIPIA_OPEN_MODE_PRESENT) == 0U ? request.reserved != 0U :
             ((request.flags & PHIPIA_OPEN_CREATE) == 0U || (request.reserved & ~07777U) != 0U)) ||
         (request.flags & ~PHIPIA_OPEN_FLAGS_V1) != 0U ||
+        ((request.flags & PHIPIA_OPEN_EXCLUSIVE) != 0U && (request.flags & PHIPIA_OPEN_CREATE) == 0U) ||
         (request.flags & (PHIPIA_OPEN_READ | PHIPIA_OPEN_WRITE)) == 0U ||
         !path_from_user(process, &request.path, path, &volume)) {
         return -PHIPIA_EINVAL;
@@ -3241,7 +3242,8 @@ static int64_t syscall_file_open(
             PHIPFS_ACCESS_WRITE) : PHIPFS_ACCESS_READ;
     const uint8_t open_flags = (uint8_t)(
         ((request.flags & PHIPIA_OPEN_CREATE) != 0U ? PHIPFS_OPEN_CREATE : 0U) |
-        ((request.flags & PHIPIA_OPEN_TRUNCATE) != 0U ? PHIPFS_OPEN_TRUNCATE : 0U));
+        ((request.flags & PHIPIA_OPEN_TRUNCATE) != 0U ? PHIPFS_OPEN_TRUNCATE : 0U) |
+        ((request.flags & PHIPIA_OPEN_EXCLUSIVE) != 0U ? PHIPFS_OPEN_EXCLUSIVE : 0U));
     cpu_interrupt_enable();
     status = phipfs_open_options(volume, path, access, open_flags,
         (request.flags & PHIPIA_OPEN_MODE_PRESENT) != 0U ? (uint16_t)request.reserved : 0644U, &file);

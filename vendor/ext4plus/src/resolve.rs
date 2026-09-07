@@ -64,6 +64,20 @@ pub(crate) async fn resolve_path(
     path: Path<'_>,
     follow: FollowSymlinks,
 ) -> Result<(Inode, PathBuf), Ext4Error> {
+    let (inode, path) = resolve_path_inner(fs, path, follow, false).await?;
+    Ok((inode.ok_or(Ext4Error::NotFound)?, path))
+}
+
+/// Resolve every symlink while permitting only a missing final, non-directory
+/// component. Missing ancestors, trailing separators and loops still fail.
+#[maybe_async::maybe_async]
+pub(crate) async fn resolve_creation_path(fs: &Ext4, path: Path<'_>) -> Result<PathBuf, Ext4Error> {
+    resolve_path_inner(fs, path, FollowSymlinks::All, true).await.map(|value| value.1)
+}
+
+#[maybe_async::maybe_async]
+async fn resolve_path_inner(fs: &Ext4, path: Path<'_>, follow: FollowSymlinks,
+    allow_missing_final: bool) -> Result<(Option<Inode>, PathBuf), Ext4Error> {
     // Maximum number of symlinks to resolve (for the whole path, not
     // individual components).
     const MAX_SYMLINKS: usize = 40;
@@ -142,12 +156,19 @@ pub(crate) async fn resolve_path(
         }
 
         // Lookup the component's entry in the directory.
-        let child_inode = get_dir_entry_inode_by_name(
+        let child_inode = match get_dir_entry_inode_by_name(
             fs,
             &inode,
             DirEntryName::try_from(comp).unwrap(),
         )
-        .await?;
+        .await {
+            Ok(inode) => inode,
+            Err(Ext4Error::NotFound) if allow_missing_final && next_sep.is_none()
+                && comp != b"." && comp != b".." => {
+                return Ok((None, PathBuf::try_from(path).map_err(|_| Ext4Error::MalformedPath)?));
+            }
+            Err(error) => return Err(error),
+        };
 
         if comp == b"." {
             // Remove this component and continue on from the same index.
@@ -230,7 +251,7 @@ pub(crate) async fn resolve_path(
     // OK to unwrap: all components of the path have already been validated.
     let output_path = PathBuf::try_from(path).unwrap();
 
-    Ok((inode, output_path))
+    Ok((Some(inode), output_path))
 }
 
 /// Find the index of the next path separator, starting at `start`

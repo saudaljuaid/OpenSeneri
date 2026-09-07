@@ -559,16 +559,18 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
 fn prepared_open_retries_create_and_inode_truncate_with_old_or_new_crash_states() {
     let Some(path) = fixture() else { return };
     let name = b"system/open-test";
-    for create in [false, true] {
+    for case in 0..3 {
+        let create = case != 0;
         let mut mounted = mount_fixture(&path);
         if !create {
             ext4::create_file_probe(&mut mounted, name, 0o640).unwrap();
             ext4::transaction_probe(&mut mounted, name, 0, &[0x67; 8192]).unwrap();
         }
+        if case == 1 { ext4::symlink_probe(&mut mounted, name, b"/data/user/open-target").unwrap(); }
         ext4::sync(&mut mounted).unwrap();
         let initial = DEVICE.with_borrow(|device| device.bytes.clone());
         drop(mounted);
-        let flags = if create { 3 } else { 2 };
+        let flags = match case { 0 => 2, 1 => 3, _ => 7 };
         let perform = |mounted: &mut ext4::Mounted| ext4::prepare_open(mounted, name, 3, flags, 0o1720);
         let mut reference = mount_bytes(initial.clone());
         let old_free = ext4::free_bytes(&reference).unwrap();
@@ -605,6 +607,12 @@ fn prepared_open_retries_create_and_inode_truncate_with_old_or_new_crash_states(
                 DEVICE.with_borrow(|device| assert!(device.bytes == expected_disk));
                 drop(mounted);
                 let recovered = mount_bytes(crash);
+                if case == 1 {
+                    assert_eq!(ext4::lstat(&recovered, name).unwrap().file_type, 3);
+                    let mut target = [0; 22];
+                    assert_eq!(ext4::readlink(&recovered, name, &mut target), Ok(22));
+                    assert_eq!(&target, b"/data/user/open-target");
+                }
                 match ext4::stat(&recovered, name) {
                     Err(Status::NotFound) if create => assert_eq!(ext4::free_bytes(&recovered), Ok(old_free)),
                     Ok(metadata) => {
@@ -621,7 +629,7 @@ fn prepared_open_retries_create_and_inode_truncate_with_old_or_new_crash_states(
                     state => panic!("invalid open crash state: {state:?}"),
                 }
                 ext4::unmount(&recovered).unwrap();
-                fsck(&path, &format!("coordinator-open-cut-{create}-{fail}-{accept}"));
+                fsck(&path, &format!("coordinator-open-cut-{case}-{fail}-{accept}"));
             }
         }
     }
@@ -655,6 +663,39 @@ fn prepared_open_follows_existing_links_and_drops_completed_retry_identity() {
     ext4::sync(&mut mounted).unwrap();
     ext4::unmount(&mounted).unwrap();
     fsck(&path, "coordinator-open-identity");
+}
+
+#[test]
+fn prepared_open_exclusive_and_dangling_links_preserve_namespace_rules() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    ext4::symlink_probe(&mut mounted, b"system/open-parent", b"../data/user").unwrap();
+    ext4::symlink_probe(&mut mounted, b"system/open-dangling", b"open-parent/../new-target").unwrap();
+    ext4::symlink_probe(&mut mounted, b"system/open-loop", b"open-loop").unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    DEVICE.with_borrow_mut(|device| device.events.clear());
+    for name in [b"system/open-dangling".as_slice(), b"system/open-parent", b"system", b"system/README.TXT"] {
+        assert_eq!(ext4::prepare_open(&mut mounted, name, 3, 7, 0o600), Err(Status::Exists));
+    }
+    for name in [b"system/open-parent/absent/child".as_slice(), b"system/open-loop", b"system/missing/", b"system/README.TXT/child"] {
+        assert!(ext4::prepare_open(&mut mounted, name, 3, 1, 0o600).is_err());
+    }
+    assert_eq!(ext4::prepare_open(&mut mounted, b"system/new", 3, 4, 0o600), Err(Status::Invalid));
+    DEVICE.with_borrow(|device| assert!(device.events.is_empty()));
+    let created = ext4::prepare_open(&mut mounted, b"system/open-dangling", 3, 1, 0o620).unwrap();
+    assert_eq!(ext4::stat(&mounted, b"data/new-target"), Ok(created));
+    assert_eq!(ext4::stat(&mounted, b"system/new-target"), Err(Status::NotFound));
+    assert_eq!(ext4::lstat(&mounted, b"system/open-dangling").unwrap().file_type, 3);
+    ext4::transaction_probe(&mut mounted, b"data/new-target", 0, b"retained").unwrap();
+    DEVICE.with_borrow_mut(|device| device.events.clear());
+    assert_eq!(ext4::prepare_open(&mut mounted, b"system/open-dangling", 3, 7, 0o777), Err(Status::Exists));
+    DEVICE.with_borrow(|device| assert!(device.events.is_empty()));
+    let mut content = [0; 8];
+    read_exact(&mounted, b"data/new-target", &mut content);
+    assert_eq!(&content, b"retained");
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-exclusive-create-links");
 }
 
 #[test]

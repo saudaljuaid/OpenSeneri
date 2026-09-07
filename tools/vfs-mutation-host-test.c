@@ -17,13 +17,14 @@ static bool closing_directory;
 static uint16_t requested_directory_mode;
 static uint16_t expected_file_mode = 0644U;
 static unsigned prepared_calls;
+static uint8_t expected_prepared_flags = PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE;
 
 static enum phipfs_status prepared_open(enum phipfs_volume volume, const char *path,
     enum phipfs_access access, uint8_t flags, uint16_t mode,
     phipfs_handle *handle, struct phipfs_stat *result)
 {
     assert(volume == PHIPFS_VOLUME_DATA && strcmp(path, expected_path) == 0);
-    assert(access == PHIPFS_ACCESS_READ_WRITE && flags == (PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE));
+    assert(access == PHIPFS_ACCESS_READ_WRITE && flags == expected_prepared_flags);
     assert(mode == 01720U);
     ++prepared_calls;
     if (mutation_result != PHIPFS_STATUS_OK) return mutation_result;
@@ -296,6 +297,14 @@ int main(void)
         PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE, 01720U, &opened) == PHIPFS_STATUS_NO_HANDLES);
     assert(opened == 0U && prepared_calls == 2U);
     for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index) open_files[index].active = false;
+    expected_prepared_flags = PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE;
+    mutation_result = PHIPFS_STATUS_EXISTS;
+    assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,
+        expected_prepared_flags, 01720U, &opened) == PHIPFS_STATUS_EXISTS);
+    assert(opened == 0U && prepared_calls == 3U && live_backend_handles == 0U);
+    assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,
+        PHIPFS_OPEN_EXCLUSIVE, 01720U, &opened) == PHIPFS_STATUS_INVALID_ARGUMENT);
+    assert(opened == 0U && prepared_calls == 3U);
     assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
     for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) assert(!vnodes[index].active);
     puts("VFS journal mutation retries, backend errors, path bounds and vnode census: PASS");

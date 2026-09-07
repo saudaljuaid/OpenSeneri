@@ -39,12 +39,14 @@ int open(const char *path, int flags, ...)
     int number = -1;
 
     if (phipia_runtime_path(path, &parsed) != 0) return -1;
+    if ((flags & O_EXCL) != 0 && (flags & O_CREAT) == 0) { errno = EINVAL; return -1; }
     if ((flags & O_RDWR) == O_RDWR) native |= PHIPIA_OPEN_READ | PHIPIA_OPEN_WRITE;
     else if ((flags & O_WRONLY) != 0) native |= PHIPIA_OPEN_WRITE;
     else native |= PHIPIA_OPEN_READ;
     if ((flags & O_CREAT) != 0) native |= PHIPIA_OPEN_CREATE;
     if ((flags & O_TRUNC) != 0) native |= PHIPIA_OPEN_TRUNCATE;
     if ((flags & O_APPEND) != 0) native |= PHIPIA_OPEN_APPEND;
+    if ((flags & O_EXCL) != 0) native |= PHIPIA_OPEN_EXCLUSIVE;
     if ((flags & O_CREAT) != 0) {
         va_list arguments;
         va_start(arguments, flags);

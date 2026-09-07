@@ -794,6 +794,11 @@ int main(void)
     assert(ext4_backend_open_options(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ,
         PHIPFS_OPEN_TRUNCATE, 0600U, &first, &path_metadata) == PHIPFS_STATUS_ACCESS);
     assert(first == 0U && prepared_opens == before_invalid_open && opens == closes);
+    permanent_status = PHIPIA_EXT4_STATUS_EXISTS;
+    assert(ext4_backend_open_options(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0600U, &first, &path_metadata) == PHIPFS_STATUS_EXISTS);
+    assert(first == 0U && prepared_flags == (PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE));
+    assert(path_metadata.object_id == 0U && opens == closes);
     for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
         permanent_status = attempt == 0U ? PHIPIA_EXT4_STATUS_IO : PHIPIA_EXT4_STATUS_OK;
         assert(ext4_backend_mkdir_mode(PHIPFS_VOLUME_DATA, "file", 01720U) ==

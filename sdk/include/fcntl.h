@@ -7,5 +7,6 @@
 #define O_CREAT 0x0100
 #define O_TRUNC 0x0200
 #define O_APPEND 0x0400
+#define O_EXCL 0x0800
 int open(const char *path, int flags, ...);
 #endif

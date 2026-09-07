@@ -1474,6 +1474,13 @@ impl Ext4 {
             .map(|v| v.1)
     }
 
+    /// Resolve a regular-file creation target, including dangling symlinks.
+    /// Only the final component may be missing; this performs no mutation.
+    #[maybe_async::maybe_async]
+    pub async fn canonicalize_for_create(&self, path: Path<'_>) -> Result<PathBuf, Ext4Error> {
+        resolve::resolve_creation_path(self, path).await
+    }
+
     /// Check if `path` exists.
     ///
     /// Returns `Ok(true)` if `path` exists, or `Ok(false)` if it does

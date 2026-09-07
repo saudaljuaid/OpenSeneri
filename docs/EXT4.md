@@ -549,7 +549,12 @@ sync or an external exact retry retires that identity before inode reuse.
 Known handle exhaustion refuses before mutation, and failed opens release
 their handles. Storage failures may still commit the requested mutation.
 Every-write/flush retry and old-or-new crash fixtures await Linux verification.
-Creation through a dangling final symlink and exclusive create remain unfinished.
+Creation follows dangling final symlinks using the existing component resolver,
+permitting only a missing final name. Missing ancestors, trailing directory
+separators and link loops still refuse. O_CREAT|O_EXCL reaches the same leased
+operation and refuses any existing final name, including dangling symlinks,
+before allocation or truncation. Exact retries retain the resolved creation
+target as well as the original request. These additions await Linux verification.
 The additive PATH_METADATA syscall supplies SDK stat/lstat with inode identity,
 mode, uid/gid, link count and signed access/modify/change seconds plus nanoseconds.
 lstat keeps the final symlink's own metadata, including dangling links. The older

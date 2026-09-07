@@ -730,7 +730,8 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
     *handle = 0U;
-    if ((flags & ~(PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE)) != 0U || (mode & ~07777U) != 0U ||
+    if ((flags & ~(PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE | PHIPFS_OPEN_EXCLUSIVE)) != 0U || (mode & ~07777U) != 0U ||
+        ((flags & PHIPFS_OPEN_EXCLUSIVE) != 0U && (flags & PHIPFS_OPEN_CREATE) == 0U) ||
         (access != PHIPFS_ACCESS_READ && access != PHIPFS_ACCESS_WRITE && access != PHIPFS_ACCESS_READ_WRITE))
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     if ((flags & PHIPFS_OPEN_TRUNCATE) != 0U && (access & PHIPFS_ACCESS_WRITE) == 0U)
@@ -751,7 +752,8 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     if (backend->open_options == NULL) {
         // Compatibility backends retain their checked parent traversal.
         if ((flags & PHIPFS_OPEN_CREATE) != 0U) {
-            status = phipfs_stat_path(volume, path, &opened_stat);
+            status = (flags & PHIPFS_OPEN_EXCLUSIVE) != 0U ? PHIPFS_STATUS_NOT_FOUND :
+                phipfs_stat_path(volume, path, &opened_stat);
             if (status == PHIPFS_STATUS_NOT_FOUND) status = phipfs_create_mode(volume, path, mode);
             if (status != PHIPFS_STATUS_OK) return status;
         }

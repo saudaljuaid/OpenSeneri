@@ -125,5 +125,14 @@ int main(void)
     returned_metadata.size = 24U;
     if (lstat("nested", &metadata) != -1 || errno != EIO) return 18;
     if (stat("nested", NULL) != -1 || errno != EFAULT || invalid_request) return 19;
+    expected_open_flags = PHIPIA_OPEN_CREATE | PHIPIA_OPEN_WRITE | PHIPIA_OPEN_MODE_PRESENT | PHIPIA_OPEN_EXCLUSIVE;
+    expected_mode = 0600U;
+    syscall_result = -PHIPIA_EEXIST;
+    if (open("nested", O_CREAT | O_EXCL | O_WRONLY, 0600) != -1 || errno != EEXIST) return 20;
+    syscall_result = 42;
+    descriptor = open("nested", O_CREAT | O_EXCL | O_WRONLY, 0600);
+    if (descriptor < 3 || close(descriptor) != 0) return 21;
+    if (open("nested", O_EXCL | O_WRONLY) != -1 || errno != EINVAL) return 22;
+    if (open_calls != 12U || close_calls != 7U || invalid_request) return 23;
     return 0;
 }
