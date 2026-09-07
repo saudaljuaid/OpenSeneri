@@ -2609,7 +2609,7 @@ static enum phipfs_status explorer_copy_file(const char *source,
 {
     if (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) {
         struct phipfs_stat source_stat;
-        struct data_publication save;
+        struct data_publication save = { 0 };
         phipfs_handle input = 0U;
         uint64_t copied = 0U;
         enum phipfs_status ext4_status = phipfs_stat_path(
