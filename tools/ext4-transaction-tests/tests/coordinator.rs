@@ -1200,7 +1200,7 @@ fn legacy_zero_link_orphan_recovery_retries_every_storage_failure() {
 }
 
 #[test]
-fn checksummed_extent_cycles_are_refused_before_traversal_or_mutation() {
+fn checksummed_malformed_extent_trees_are_refused_before_traversal_or_mutation() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);
     let name = b"system/extent-cycle";
@@ -1222,7 +1222,7 @@ fn checksummed_extent_cycles_are_refused_before_traversal_or_mutation() {
         | (u64::from(u16::from_le_bytes(bytes[inode_start + 0x3c..inode_start + 0x3e].try_into().unwrap())) << 32);
     let start = leaf as usize * 4096;
     let original = bytes.clone();
-    for case in 0..7 {
+    for case in 0..8 {
         bytes.clone_from(&original);
         match case {
             0 => {
@@ -1242,7 +1242,10 @@ fn checksummed_extent_cycles_are_refused_before_traversal_or_mutation() {
                 bytes[start + 6..start + 8].copy_from_slice(&1u16.to_le_bytes());
             }
             5 => bytes[start + 18..start + 24].fill(0), // initialized block zero
-            _ => bytes[start + 12..start + 16].copy_from_slice(&8u32.to_le_bytes()),
+            6 => bytes[start + 12..start + 16].copy_from_slice(&8u32.to_le_bytes()),
+            // Locally valid, non-overlapping leaf whose first key disagrees
+            // with its parent's logical zero. The checksum alone admits it.
+            _ => bytes[start + 12..start + 16].copy_from_slice(&1u32.to_le_bytes()),
         }
         let maximum = u16::from_le_bytes(bytes[start + 4..start + 6].try_into().unwrap()) as usize;
         let checksum_offset = start + 12 * (maximum + 1);

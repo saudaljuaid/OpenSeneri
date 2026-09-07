@@ -272,6 +272,7 @@ impl ExtentNode {
         checksum_base: Checksum,
         ext4: &Ext4,
         parent_depth: u16,
+        parent_first_logical: FileBlockIndex,
     ) -> Result<Self, Ext4Error> {
         let header = NodeHeader::from_bytes(data, inode)?;
         // Every disk node is a child of the inline root or another node.
@@ -293,6 +294,11 @@ impl ExtentNode {
             &header,
             inode,
         )?;
+        // The parent's search key must describe the first entry in this
+        // subtree. Linux permits an empty leaf during extent removal.
+        if header.num_entries != 0 && read_u32le(data, 12) != parent_first_logical {
+            return Err(CorruptKind::ExtentBlock(inode).into());
+        }
 
         if ext4.has_metadata_checksums() {
             let checksum_offset = header.checksum_offset();
@@ -470,9 +476,10 @@ impl ExtentTree {
     #[maybe_async::maybe_async]
     async fn read_extent_node(
         &self,
-        block: FsBlockIndex,
+        entry: &ExtentInternalNode,
         parent_depth: u16,
     ) -> Result<ExtentNode, Ext4Error> {
+        let block = entry.block;
         let data = self.ext4.read_block(block).await?;
         ExtentNode::from_bytes(
             Some(block),
@@ -481,6 +488,7 @@ impl ExtentTree {
             self.checksum_base.clone(),
             &self.ext4,
             parent_depth,
+            entry.block_within_file,
         )
     }
 
@@ -496,7 +504,7 @@ impl ExtentTree {
                     let mut children = Vec::with_capacity(internal_nodes.len());
                     for internal_node in internal_nodes {
                         children.push(
-                            self.read_extent_node(internal_node.block, node.header.depth).await?,
+                            self.read_extent_node(&internal_node, node.header.depth).await?,
                         );
                     }
                     while let Some(child) = children.pop() {
@@ -524,7 +532,7 @@ impl ExtentTree {
                     for internal_node in internal_nodes {
                         out.push(internal_node.block);
                         children.push(
-                            self.read_extent_node(internal_node.block, node.header.depth).await?,
+                            self.read_extent_node(&internal_node, node.header.depth).await?,
                         );
                     }
                     while let Some(child) = children.pop() {
@@ -839,6 +847,7 @@ impl ExtentTree {
                         self.checksum_base.clone(),
                         &self.ext4,
                         node.header.depth,
+                        internal_nodes[next_node_index].block_within_file,
                     )?;
                 }
             }
@@ -968,6 +977,7 @@ impl ExtentTree {
                             tree.checksum_base.clone(),
                             &tree.ext4,
                             node.header.depth,
+                            internal_nodes[0].block_within_file,
                         )?;
                     }
                 }
@@ -1001,6 +1011,7 @@ impl ExtentTree {
                             tree.checksum_base.clone(),
                             &tree.ext4,
                             node.header.depth,
+                            next_node.block_within_file,
                         )?;
                     }
                 }
@@ -1058,6 +1069,7 @@ impl ExtentTree {
                                         self.checksum_base.clone(),
                                         &self.ext4,
                                         parent.header.depth,
+                                        internal_nodes[left_sibling_index].block_within_file,
                                     )?;
                                     prev = rightmost_leaf_last_extent(
                                         self,
@@ -1104,6 +1116,7 @@ impl ExtentTree {
                                                 self.checksum_base.clone(),
                                                 &self.ext4,
                                                 parent.header.depth,
+                                                internal_nodes[right_sibling_index].block_within_file,
                                             )?;
                                         next = leftmost_leaf_first_extent(
                                             self,
@@ -1146,6 +1159,7 @@ impl ExtentTree {
                         self.checksum_base.clone(),
                         &self.ext4,
                         node.header.depth,
+                        internal_nodes[next_node_index].block_within_file,
                     )?;
                 }
             }

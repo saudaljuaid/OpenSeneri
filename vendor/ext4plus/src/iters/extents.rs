@@ -227,6 +227,7 @@ impl Extents {
             return Ok(Some(Extent::new(ee_block, start_block, ee_len)));
         } else {
             let parent_depth = item.depth;
+            let parent_first_logical = read_u32le(entry, 0);
             let ei_leaf_lo = read_u32le(entry, 4);
             let ei_leaf_hi = read_u16le(entry, 8);
             let child_block = u64_from_hilo(u32::from(ei_leaf_hi), ei_leaf_lo);
@@ -285,6 +286,11 @@ impl Extents {
             let child = ToVisitItem::new(child_node, self.inode)?;
             if child.depth.checked_add(1) != Some(parent_depth) {
                 return Err(CorruptKind::ExtentDepth(self.inode).into());
+            }
+            if child.node.len() > ENTRY_SIZE_IN_BYTES
+                && read_u32le(&child.node, ENTRY_SIZE_IN_BYTES) != parent_first_logical
+            {
+                return Err(CorruptKind::ExtentBlock(self.inode).into());
             }
             self.to_visit.push(child);
         }
