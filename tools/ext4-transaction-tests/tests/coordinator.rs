@@ -1686,6 +1686,63 @@ fn checksummed_malformed_extent_trees_are_refused_before_traversal_or_mutation()
 }
 
 #[test]
+fn inode_block_count_uses_48_bits_without_overwriting_xattr_address() {
+    use ext4plus::Ext4Read;
+    let Some(path) = fixture() else { return };
+    let image = path.with_extension("coordinator-inode-block-fields.img");
+    let pristine = std::fs::read(&path).unwrap();
+    write_sparse_fixture(&image, &pristine).unwrap();
+    // These deliberately oversized fields exercise the Linux disk layout,
+    // without admitting the synthetic inode as a writable filesystem.
+    debugfs(&image, "set_inode_field <2> blocks 0x123456780008");
+    debugfs(&image, "set_inode_field <2> file_acl 0xa55a11223344");
+    let bytes = std::fs::read(&image).unwrap();
+    let table = u32::from_le_bytes(bytes[4104..4108].try_into().unwrap()) as usize;
+    let offset = table * 4096 + 256;
+    let stage = std::rc::Rc::new(ext4plus::JournalMutationStage::new(Box::new(bytes.clone()), bytes.len() as u64).unwrap());
+    let filesystem = ext4plus::Ext4::load_with_writer(Box::new(stage.clone()), Some(Box::new(stage.clone()))).unwrap();
+    let index = std::num::NonZeroU32::new(2).unwrap();
+    let original = ext4plus::inode::Inode::read(&filesystem, index).unwrap();
+    assert_eq!(original.blocks(), 0x1234_5678_0008);
+    assert_eq!(original.fs_blocks(&filesystem).unwrap(), 0x1234_5678_0008 / 8);
+    for huge in [false, true] {
+        let divisor = if huge { 1 } else { 8 };
+        let maximum = ((1u64 << 48) - 1) / divisor;
+        for count in [0, 1, (1u64 << 32) / divisor, maximum] {
+            let mut inode = original.clone();
+            let mut flags = inode.flags();
+            flags.set(ext4plus::inode::InodeFlags::HUGE_FILE, huge);
+            inode.set_flags(flags);
+            assert_eq!(inode.set_fs_blocks(count, &filesystem).unwrap(), count * divisor);
+            assert_eq!(inode.fs_blocks(&filesystem).unwrap(), count);
+            // Neither encoding overflow nor sector multiplication overflow may
+            // partially change an inode that the caller could later persist.
+            for overflow in [maximum + 1, u64::MAX] {
+                assert!(inode.set_fs_blocks(overflow, &filesystem).is_err());
+                assert_eq!(inode.blocks(), count * divisor);
+                assert!(stage.is_empty());
+            }
+            inode.write(&filesystem).unwrap();
+            let loaded = ext4plus::inode::Inode::read(&filesystem, index).unwrap();
+            assert_eq!(loaded.fs_blocks(&filesystem).unwrap(), count);
+            let mut raw = [0; 256];
+            stage.read(offset as u64, &mut raw).unwrap();
+            assert_eq!(&raw[0x68..0x6c], &0x1122_3344u32.to_le_bytes());
+            assert_eq!(&raw[0x76..0x78], &0xa55au16.to_le_bytes());
+            assert_eq!(u32::from_le_bytes(raw[0x1c..0x20].try_into().unwrap()) as u64
+                | ((u16::from_le_bytes(raw[0x74..0x76].try_into().unwrap()) as u64) << 32), count * divisor);
+            stage.rollback();
+            stage.read(offset as u64, &mut raw).unwrap();
+            assert_eq!(&raw, &bytes[offset..offset + 256]);
+        }
+    }
+    debugfs(&image, "set_inode_field <2> blocks 9");
+    let filesystem = ext4plus::Ext4::load(Box::new(std::fs::read(&image).unwrap())).unwrap();
+    let inode = ext4plus::inode::Inode::read(&filesystem, index).unwrap();
+    assert!(inode.fs_blocks(&filesystem).is_err());
+}
+
+#[test]
 fn file_extents_cannot_overwrite_or_free_fixed_metadata() {
     let Some(path) = fixture() else { return };
     let name = b"system/metadata-alias";

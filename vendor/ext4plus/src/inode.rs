@@ -610,15 +610,20 @@ impl Inode {
     #[must_use]
     pub fn blocks(&self) -> u64 {
         let i_blocks_lo = read_u32le(&self.inode_data, 0x1c);
-        let i_blocks_high = read_u32le(&self.inode_data, 0x74);
-        u64_from_hilo(i_blocks_high, i_blocks_lo)
+        let i_blocks_high = read_u16le(&self.inode_data, 0x74);
+        u64_from_hilo(u32::from(i_blocks_high), i_blocks_lo)
     }
 
     /// Set the number of blocks allocated to the inode.
-    pub(crate) fn set_blocks(&mut self, blocks: u64) {
+    pub(crate) fn set_blocks(&mut self, blocks: u64) -> Result<(), Ext4Error> {
         let (i_blocks_high, i_blocks_lo) = u64_to_hilo(blocks);
+        // Linux osd2 stores a 48-bit count. The next u16 is i_file_acl_hi;
+        // reject overflow before changing either half of the count.
+        let i_blocks_high = u16::try_from(i_blocks_high)
+            .map_err(|_| CorruptKind::TooManyBlocksInFile)?;
         write_u32le(&mut self.inode_data, 0x1c, i_blocks_lo);
-        write_u32le(&mut self.inode_data, 0x74, i_blocks_high);
+        write_u16le(&mut self.inode_data, 0x74, i_blocks_high);
+        Ok(())
     }
 
     /// Get the number of filesystem blocks allocated to the inode.
@@ -629,9 +634,11 @@ impl Inode {
         if self.flags().contains(InodeFlags::HUGE_FILE) {
             Ok(real_blocks)
         } else {
-            Ok(real_blocks
-                .checked_div(ext4.0.superblock.block_size().to_u64() / 512)
-                .ok_or(CorruptKind::TooManyBlocksInFile)?)
+            let sectors_per_block = ext4.0.superblock.block_size().to_u64() / 512;
+            if real_blocks.checked_rem(sectors_per_block) != Some(0) {
+                return Err(CorruptKind::TooManyBlocksInFile.into());
+            }
+            Ok(real_blocks / sectors_per_block)
         }
     }
 
@@ -650,7 +657,7 @@ impl Inode {
                 .checked_mul(ext4.0.superblock.block_size().to_u64() / 512)
                 .ok_or(CorruptKind::TooManyBlocksInFile)?
         };
-        self.set_blocks(real_blocks);
+        self.set_blocks(real_blocks)?;
         Ok(real_blocks)
     }
 
