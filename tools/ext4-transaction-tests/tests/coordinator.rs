@@ -3141,6 +3141,119 @@ fn linear_directory_shrink_reclaims_previously_emptied_suffix_with_retries() {
 }
 
 #[test]
+fn indexed_directory_compaction_preserves_names_links_and_replays_every_boundary() {
+    let Some(path) = fixture() else { return };
+    for sentinel in [false, true] {
+        let image = path.with_extension(format!("htree-shrink-input-{sentinel}.img"));
+        write_sparse_fixture(&image, &std::fs::read(&path).unwrap()).unwrap();
+        if sentinel { debugfs(&image, "set_inode_field /indexed links_count 1"); }
+        let names: Vec<String> = (0..256).map(|index| format!("indexed/entry-{index:04}-phipia-fixture")).collect();
+        let record_bytes = (8 + names[0].split('/').next_back().unwrap().len() + 3) & !3;
+        let capacity = (4096 - 12) / record_bytes;
+        assert!(capacity + 1 < names.len());
+        let mut mounted = mount_fixture(&image);
+        let old_size = ext4::stat(&mounted, b"indexed").unwrap().size;
+        assert!(old_size > 8192 && old_size <= 64 * 4096);
+        // Leave exactly one too many names for a single leaf. Empty the target
+        // file first so the compaction's free-space delta is directory storage.
+        for name in &names[capacity + 1..] { ext4::unlink_file_probe(&mut mounted, name.as_bytes()).unwrap(); }
+        ext4::truncate_probe(&mut mounted, names[capacity].as_bytes(), 0).unwrap();
+        assert_eq!(ext4::stat(&mounted, b"indexed").unwrap().size, old_size);
+        let snapshot = ext4::directory_snapshot(&mounted, b"indexed").unwrap();
+        let content_size = ext4::stat(&mounted, names[0].as_bytes()).unwrap().size as usize;
+        let mut content = vec![0; content_size];
+        read_exact(&mounted, names[0].as_bytes(), &mut content);
+        ext4::sync(&mut mounted).unwrap();
+        ext4::unmount(&mounted).unwrap();
+        fsck(&path, &format!("coordinator-htree-shrink-before-{sentinel}"));
+        let baseline = DEVICE.with_borrow(|device| device.bytes.clone());
+        drop(mounted);
+        let check = |mounted: &ext4::Mounted, removed: bool| {
+            assert_eq!(ext4::stat(mounted, b"indexed").unwrap().size, if removed { 8192 } else { old_size });
+            assert_eq!(ext4::stat(mounted, b"indexed").unwrap().links, if sentinel { 1 } else { 2 });
+            for name in &names[..capacity] { assert!(ext4::stat(mounted, name.as_bytes()).is_ok(), "{name}"); }
+            assert_eq!(ext4::stat(mounted, names[capacity].as_bytes()) == Err(Status::NotFound), removed);
+            let mut actual = vec![0; content_size];
+            read_exact(mounted, names[0].as_bytes(), &mut actual);
+            assert_eq!(actual, content);
+        };
+        let mut mounted = mount_bytes(baseline.clone());
+        let free = ext4::free_bytes(&mounted).unwrap();
+        ext4::unlink_file_probe(&mut mounted, names[capacity].as_bytes()).unwrap();
+        let operations = DEVICE.with_borrow(|device| device.events.clone());
+        check(&mounted, true);
+        assert_eq!(ext4::free_bytes(&mounted).unwrap(), free + old_size - 8192);
+        assert!(snapshot.entry(capacity as u64).is_some());
+        assert!(snapshot.entry(capacity as u64 + 1).is_none());
+        drop(snapshot);
+        ext4::sync(&mut mounted).unwrap();
+        ext4::unmount(&mounted).unwrap();
+        let final_bytes = DEVICE.with_borrow(|device| device.bytes.clone());
+        fsck(&path, &format!("coordinator-htree-shrink-final-{sentinel}"));
+        drop(mounted);
+        for failure in 0..operations.len() {
+            for accepted in [false, true] {
+                let mut mounted = mount_bytes(baseline.clone());
+                DEVICE.with_borrow_mut(|device| {
+                    device.fail_event = Some(failure);
+                    device.accept_failed_write = accepted;
+                });
+                assert_eq!(ext4::unlink_file_probe(&mut mounted, names[capacity].as_bytes()), Err(Status::Io));
+                let crash = DEVICE.with_borrow(|device| {
+                    assert_eq!(device.events, operations[..=failure]);
+                    device.bytes.clone()
+                });
+                DEVICE.with_borrow_mut(|device| device.fail_event = None);
+                ext4::unlink_file_probe(&mut mounted, names[capacity].as_bytes()).unwrap();
+                check(&mounted, true);
+                ext4::sync(&mut mounted).unwrap();
+                ext4::unmount(&mounted).unwrap();
+                DEVICE.with_borrow(|device| assert_eq!(device.bytes, final_bytes));
+                drop(mounted);
+                let recovered = mount_bytes(crash);
+                let removed = ext4::stat(&recovered, names[capacity].as_bytes()) == Err(Status::NotFound);
+                check(&recovered, removed);
+                ext4::unmount(&recovered).unwrap();
+                fsck(&path, &format!("coordinator-htree-shrink-cut-{sentinel}-{failure}-{accepted}"));
+            }
+        }
+        let mut cut = baseline;
+        let mut committed = false;
+        for (index, operation) in operations.iter().enumerate() {
+            match operation {
+                Event::Write(start, bytes) => cut[*start as usize..*start as usize + bytes.len()].copy_from_slice(bytes),
+                Event::Flush(boundary) => {
+                    committed |= *boundary == 3;
+                    let image = path.with_extension(format!("htree-shrink-linux-{sentinel}-{index}.img"));
+                    write_sparse_fixture(&image, &cut).unwrap();
+                    let replay = std::process::Command::new("e2fsck").args(["-E", "journal_only", "-p"])
+                        .arg(&image).output().unwrap();
+                    let log = format!("{}\n{}", String::from_utf8_lossy(&replay.stdout), String::from_utf8_lossy(&replay.stderr));
+                    std::fs::write(image.with_extension("replay.txt"), &log).unwrap();
+                    assert!(matches!(replay.status.code(), Some(0 | 1)), "{log}");
+                    let recovered = mount_fixture(&image);
+                    check(&recovered, committed);
+                    ext4::unmount(&recovered).unwrap();
+                    fsck(&path, &format!("coordinator-htree-shrink-linux-{sentinel}-{index}"));
+                }
+            }
+        }
+        // The compact tree remains writable and can split again. Child mkdir,
+        // cross-parent rename and rmdir retain the sentinel where applicable.
+        let mut mounted = mount_bytes(final_bytes);
+        ext4::create_directory_probe(&mut mounted, b"indexed/child").unwrap();
+        ext4::rename_probe(&mut mounted, b"indexed/child", b"system/child").unwrap();
+        ext4::rename_probe(&mut mounted, b"system/child", b"indexed/child").unwrap();
+        ext4::remove_directory_probe(&mut mounted, b"indexed/child").unwrap();
+        for name in &names[capacity..capacity + 8] { ext4::create_file_probe(&mut mounted, name.as_bytes(), 0o600).unwrap(); }
+        assert!(ext4::stat(&mounted, b"indexed").unwrap().size > 8192);
+        ext4::sync(&mut mounted).unwrap();
+        ext4::unmount(&mounted).unwrap();
+        fsck(&path, &format!("coordinator-htree-shrink-regrow-{sentinel}"));
+    }
+}
+
+#[test]
 fn indexed_directory_untracked_link_counts_survive_namespace_mutations() {
     let Some(path) = fixture() else { return };
     let image = path.with_extension("dir-nlink.img");

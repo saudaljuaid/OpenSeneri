@@ -1242,14 +1242,16 @@ fn pack_htree_leaf_block(
     dir_inode: &Inode,
     entries: &[HtreeLeafEntryData],
 ) -> Result<Vec<u8>, Ext4Error> {
-    if entries.is_empty() {
-        return Err(dir_entry_error(dir_inode.index));
-    }
-
     let block_size = fs.0.superblock.block_size().to_usize();
     let usable = htree_leaf_usable_bytes(fs, dir_inode.index)?;
     let mut block = vec![0u8; block_size];
     let mut off = 0usize;
+
+    if entries.is_empty() {
+        // An empty leaf is one unused record followed by the checksum tail.
+        write_u16le(&mut block, 4, u16::try_from(usable)
+            .map_err(|_| dir_entry_error(dir_inode.index))?);
+    }
 
     for (idx, entry) in entries.iter().enumerate() {
         let rec_len = if idx.checked_add(1).unwrap() == entries.len() {
@@ -1464,6 +1466,70 @@ pub(crate) async fn add_dir_entry_htree(
     Ok(())
 }
 
+/// Collapse a small htree to its root and one leaf when deleting `name`
+/// makes the remaining entries fit. Keep the index flag: dir_nlink's sentinel
+/// link count remains valid, including when the caller removes a child dir.
+#[maybe_async::maybe_async]
+async fn compact_htree_after_removal(
+    fs: &Ext4,
+    dir_inode: &mut Inode,
+    name: DirEntryName<'_>,
+) -> Result<bool, Ext4Error> {
+    let block_size = fs.superblock().block_size().to_u64();
+    let blocks = dir_inode.file_size_in_blocks(fs)?;
+    // Bound this optional compaction's scan/revocations. Larger directories
+    // retain their existing htree and use ordinary leaf deletion.
+    if blocks <= 2 || blocks > 64 { return Ok(false); }
+    let usable = htree_leaf_usable_bytes(fs, dir_inode.index)?;
+    let mut entries = Vec::new();
+    let mut bytes = 0usize;
+    let mut found = false;
+    let mut iter = ReadDir::new(fs.clone(), dir_inode, PathBuf::empty())?;
+    while let Some(entry) = iter.next().await {
+        let entry = entry?;
+        let entry_name = entry.file_name();
+        if entry_name == "." || entry_name == ".." { continue; }
+        if entry_name == name {
+            if found { return Err(dir_entry_error(dir_inode.index)); }
+            found = true;
+            continue;
+        }
+        bytes = checked_add_usize(bytes,
+            dir_entry_min_size(entry_name.as_ref().len(), dir_inode.index)?,
+            dir_inode.index)?;
+        if bytes > usable { return Ok(false); }
+        // A single leaf covers every hash; its records need no hash ordering.
+        entries.push(HtreeLeafEntryData {
+            hash: 0, inode: entry.inode, name: entry_name.as_ref().to_vec(),
+            file_type: entry.file_type()?,
+        });
+    }
+    if !found { return Err(Ext4Error::NotFound); }
+    let leaf = pack_htree_leaf_block(fs, dir_inode, &entries)?;
+    let mut root = vec![0; block_size as usize];
+    crate::dir_htree::read_root_block(fs, dir_inode, &mut root).await?;
+    let mut mapping = FileBlocks::new(fs.clone(), dir_inode)?;
+    let root_block = mapping.next().await.ok_or_else(|| dir_entry_error(dir_inode.index))??;
+    let leaf_block = mapping.next().await.ok_or_else(|| dir_entry_error(dir_inode.index))??;
+    if root_block == 0 || leaf_block == 0 { return Err(dir_entry_error(dir_inode.index)); }
+    // Linux dx_root layout: retain dot/dotdot, hash algorithm and limit;
+    // reset depth/count/leftmost child, with a newly calculated dx_tail CRC.
+    root[0x1e] = 0;
+    write_u16le(&mut root, 0x22, 1);
+    write_u32le(&mut root, 0x24, 1);
+    root[0x28..].fill(0);
+    DirBlock {
+        fs, block_index: root_block, is_first: true, dir_inode: dir_inode.index,
+        has_htree: true, checksum_base: dir_inode.checksum_base().clone(),
+    }.update_checksum(&mut root)?;
+    // Both retained images and all suffix revocations belong to the caller's
+    // single stage. No home writes occur here; any error discards the stage.
+    fs.write_to_block(root_block, 0, &root).await?;
+    fs.write_to_block(leaf_block, 0, &leaf).await?;
+    truncate(fs, dir_inode, block_size * 2).await?;
+    Ok(true)
+}
+
 /// Remove an item from a directory with an htree.
 #[maybe_async::maybe_async]
 pub(crate) async fn remove_dir_entry_htree(
@@ -1484,6 +1550,10 @@ pub(crate) async fn remove_dir_entry_htree(
 
     if name.as_ref() == b"." || name.as_ref() == b".." {
         return Err(Ext4Error::Readonly);
+    }
+
+    if compact_htree_after_removal(fs, dir_inode, name).await? {
+        return Ok(());
     }
 
     let mut leaf_lookup =
