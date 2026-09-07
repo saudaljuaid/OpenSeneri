@@ -3,12 +3,42 @@
 
 use crate::error::CorruptKind;
 use crate::inode::{Inode, InodeFlags, InodeIndex};
+#[cfg(not(feature = "sync"))]
+use crate::iters::AsyncIterator;
+use crate::iters::read_dir::ReadDir;
+use crate::path::PathBuf;
 use crate::{Ext4, Ext4Error};
 use alloc::vec::Vec;
 
 const MAX_ORPHANS: usize = 128;
 
 impl Ext4 {
+    #[maybe_async::maybe_async]
+    async fn validate_orphan_kind(&self, inode: &Inode) -> Result<(), Ext4Error> {
+        if inode.links_count() != 0
+            || inode.flags().intersects(InodeFlags::IMMUTABLE | InodeFlags::APPEND_ONLY) {
+            return Err(Ext4Error::Readonly);
+        }
+        if inode.file_type().is_regular_file() { return Ok(()); }
+        if !inode.file_type().is_dir() { return Err(Ext4Error::Readonly); }
+        let block_size = self.superblock().block_size().to_u64();
+        if inode.size_in_bytes() == 0 || inode.size_in_bytes() % block_size != 0
+            || inode.size_in_bytes() / block_size > 8192 {
+            return Err(CorruptKind::OrphanInode(inode.index.get()).into());
+        }
+        let mut entries = ReadDir::new(self.clone(), inode, PathBuf::empty())?;
+        let (mut dot, mut dotdot) = (false, false);
+        while let Some(entry) = entries.next().await {
+            let entry = entry?;
+            if entry.file_name() == b"." && !dot && entry.inode == inode.index { dot = true; }
+            else if entry.file_name() == b".." && !dotdot
+                && entry.inode.get() <= self.superblock().inodes_count() { dotdot = true; }
+            else { return Err(CorruptKind::OrphanInode(inode.index.get()).into()); }
+        }
+        if !dot || !dotdot { return Err(CorruptKind::OrphanInode(inode.index.get()).into()); }
+        Ok(())
+    }
+
     #[maybe_async::maybe_async]
     async fn validate_orphan_allocation(&self, index: InodeIndex) -> Result<(), Ext4Error> {
         if index.get() < 11 || index.get() > self.0.superblock.inodes_count() {
@@ -34,17 +64,14 @@ impl Ext4 {
             self.validate_orphan_allocation(index).await?;
             let inode = Inode::read(self, index).await?;
             // Linked Linux truncation orphans need a separate cleanup path.
-            if inode.links_count() != 0 || !inode.file_type().is_regular_file()
-                || inode.flags().intersects(InodeFlags::IMMUTABLE | InodeFlags::APPEND_ONLY) {
-                return Err(Ext4Error::Readonly);
-            }
+            self.validate_orphan_kind(&inode).await?;
             next = inode.dtime_val();
             chain.push(inode);
         }
         Ok(chain)
     }
 
-    /// Validate and list the admitted zero-link regular-file orphan chain.
+    /// Validate and list the admitted zero-link regular-file/empty-directory chain.
     #[maybe_async::maybe_async]
     pub async fn orphan_inodes(&self) -> Result<Vec<InodeIndex>, Ext4Error> {
         Ok(self.orphan_chain().await?.into_iter().map(|inode| inode.index).collect())
@@ -55,10 +82,10 @@ impl Ext4 {
         if self.0.writer.is_none() { return Err(Ext4Error::Readonly); }
         self.validate_orphan_allocation(inode.index).await?;
         let chain = self.orphan_chain().await?;
-        if chain.len() == MAX_ORPHANS || chain.iter().any(|item| item.index == inode.index)
-            || inode.links_count() != 0 || !inode.file_type().is_regular_file() {
+        if chain.len() == MAX_ORPHANS || chain.iter().any(|item| item.index == inode.index) {
             return Err(CorruptKind::OrphanInode(inode.index.get()).into());
         }
+        self.validate_orphan_kind(inode).await?;
         inode.set_dtime_val(self.0.superblock.last_orphan());
         inode.write(self).await?;
         self.0.superblock.set_last_orphan(inode.index.get());

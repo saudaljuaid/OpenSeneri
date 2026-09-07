@@ -255,7 +255,7 @@ fn commit_reload_failure_hides_view_and_retry_does_not_rewrite_storage() {
 #[test]
 fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
     let Some(path) = fixture() else { return };
-    for case in 0..23 {
+    for case in 0..25 {
         let mut mounted = mount_fixture(&path);
         if case != 0 && case < 5 {
             if case == 4 {
@@ -281,8 +281,11 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
             ext4::sync(&mut mounted).unwrap();
         }
         if case >= 9 && case != 22 {
-            if case == 19 {
+            if case == 19 || case == 23 || case == 24 {
                 ext4::create_directory_probe(&mut mounted, b"system/retry-test").unwrap();
+                if case == 24 {
+                    ext4::create_directory_probe(&mut mounted, b"data/user/retry-test").unwrap();
+                }
             } else if case == 17 {
                 ext4::symlink_probe(&mut mounted, b"system/retry-test", b"missing").unwrap();
             } else {
@@ -335,6 +338,9 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
             19 | 20 => ext4::remove_entry_guarded(mounted, b"system/retry-test", &[]),
             21 => ext4::unlink_file_guarded(mounted, b"system/retry-test", &[inode, inode]),
             22 => ext4::rename_replace_guarded(mounted, b"system/retry-test", b"data/user/retry-test",
+                &[inode, replaced_inode, replaced_inode]),
+            23 => ext4::remove_directory_guarded(mounted, b"system/retry-test", &[inode, inode]),
+            24 => ext4::rename_replace_guarded(mounted, b"system/retry-test", b"data/user/retry-test",
                 &[inode, replaced_inode, replaced_inode]),
             _ => ext4::symlink_probe(mounted, b"system/retry-test", &target),
         };
@@ -391,9 +397,9 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
                 };
                 assert_eq!(retry, expected[phase_start..], "retry event {failed_at}");
                 let name: &[u8] = if case == 18 { b"system/retained-alias" }
-                    else if case == 3 || case == 4 || case == 7 || case == 22 { b"data/user/retry-test" }
+                    else if case == 3 || case == 4 || case == 7 || case == 22 || case == 24 { b"data/user/retry-test" }
                     else { b"system/retry-test" };
-                if case == 19 || case == 20 || case == 21 {
+                if case == 19 || case == 20 || case == 21 || case == 23 {
                     assert_eq!(ext4::lstat(&mounted, name), Err(Status::NotFound));
                 } else if case == 5 || case == 6 || case == 17 {
                     let target = if case == 17 { b"missing".as_slice() } else { target.as_slice() };
@@ -403,7 +409,7 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
                     assert_eq!(ext4::lstat(&mounted, name).unwrap().links, if case == 17 { 2 } else { 1 });
                 } else {
                     assert_eq!(ext4::stat(&mounted, name).unwrap().links,
-                        if case == 4 || case == 16 { 2 } else { 1 }, "case {case}, event {failed_at}");
+                        if case == 4 || case == 16 || case == 24 { 2 } else { 1 }, "case {case}, event {failed_at}");
                 }
                 ext4::sync(&mut mounted).unwrap();
                 ext4::unmount(&mounted).unwrap();
@@ -1370,6 +1376,50 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
     let output = linux(&["cat", kernel_file.to_str().unwrap()]);
     assert_eq!(&output.stdout, b"written-by-linux+phipia");
     kernel.unmount();
+
+    for replace in [false, true] {
+        let mut mounted = mount_fixture(&path);
+        let source = b"system/kernel-directory";
+        let target = b"data/user/kernel-directory";
+        ext4::create_directory_probe(&mut mounted, target).unwrap();
+        let target_inode = ext4::stat(&mounted, target).unwrap().inode;
+        let source_inode = if replace {
+            ext4::create_directory_probe(&mut mounted, source).unwrap();
+            ext4::stat(&mounted, source).unwrap().inode
+        } else { 0 };
+        ext4::sync(&mut mounted).unwrap();
+        let mut prefix = DEVICE.with_borrow_mut(|device| { device.events.clear(); device.bytes.clone() });
+        if replace {
+            ext4::rename_replace_guarded(&mut mounted, source, target, &[source_inode, target_inode]).unwrap();
+        } else {
+            ext4::remove_directory_guarded(&mut mounted, target, &[target_inode]).unwrap();
+        }
+        let events = DEVICE.with_borrow(|device| device.events.clone());
+        drop(mounted);
+        let mut committed = false;
+        for (index, event) in events.iter().enumerate() {
+            match event {
+                Event::Write(start, data) => prefix[*start as usize..*start as usize + data.len()].copy_from_slice(data),
+                Event::Flush(boundary) => {
+                    committed |= *boundary == 3;
+                    std::fs::write(&image, &prefix).unwrap();
+                    let kernel = LoopMount::mount(&image, &directory);
+                    assert_eq!(directory.join("data/user/kernel-directory").is_dir(), !committed || replace);
+                    assert_eq!(directory.join("system/kernel-directory").is_dir(), replace && !committed);
+                    kernel.unmount();
+                    let recovered = mount_fixture(&image);
+                    if committed {
+                        assert_eq!(ext4::stat_inode(&recovered, target_inode), Err(Status::NotFound));
+                        if replace { assert_eq!(ext4::stat(&recovered, target).unwrap().inode, source_inode); }
+                    } else {
+                        assert_eq!(ext4::stat(&recovered, target).unwrap().inode, target_inode);
+                    }
+                    ext4::unmount(&recovered).unwrap();
+                    fsck(&path, &format!("coordinator-kernel-directory-replace-{replace}-cut-{index}"));
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -1416,15 +1466,52 @@ fn replacing_open_files_preserves_both_inode_handles_and_delays_target_reuse() {
     ext4::create_directory_probe(&mut mounted, b"data/user/replace-dir").unwrap();
     let target = ext4::stat(&mounted, b"data/user/replace-dir").unwrap().inode;
     ext4::sync(&mut mounted).unwrap();
-    let before = DEVICE.with_borrow(|device| device.bytes.clone());
-    assert_eq!(ext4::rename_replace_guarded(&mut mounted, b"system/replace-dir", b"data/user/replace-dir", &[target]),
-        Err(Status::Busy));
+    let snapshot = ext4::directory_snapshot(&mounted, b"data/user/replace-dir").unwrap();
+    ext4::rename_replace_guarded(&mut mounted, b"system/replace-dir", b"data/user/replace-dir", &[target]).unwrap();
     ext4::sync_with_open_inodes(&mut mounted, &[target]).unwrap();
-    DEVICE.with_borrow(|device| assert!(device.bytes == before));
-    ext4::rename_replace_guarded(&mut mounted, b"system/replace-dir", b"data/user/replace-dir", &[]).unwrap();
+    assert_eq!(ext4::stat_inode(&mounted, target).unwrap().links, 0);
+    assert_eq!(snapshot.metadata.inode, target);
+    assert!(snapshot.entry(0).is_none());
+    ext4::create_directory_probe(&mut mounted, b"system/replace-dir").unwrap();
+    assert_ne!(ext4::stat(&mounted, b"system/replace-dir").unwrap().inode, target);
+    drop(snapshot);
     ext4::sync(&mut mounted).unwrap();
+    assert_eq!(ext4::stat_inode(&mounted, target), Err(Status::NotFound));
     ext4::unmount(&mounted).unwrap();
-    fsck(&path, "coordinator-replace-directory-guard");
+    fsck(&path, "coordinator-replace-open-directory");
+}
+
+#[test]
+fn removed_open_directory_keeps_snapshot_and_inode_until_last_close() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let name = b"system/snapshot-dir";
+    ext4::create_directory_probe(&mut mounted, name).unwrap();
+    ext4::create_file_probe(&mut mounted, b"system/snapshot-dir/old", 0o600).unwrap();
+    let snapshot = ext4::directory_snapshot(&mounted, name).unwrap();
+    let inode = snapshot.metadata.inode;
+    ext4::unlink_file_probe(&mut mounted, b"system/snapshot-dir/old").unwrap();
+    ext4::remove_directory_guarded(&mut mounted, name, &[inode, inode]).unwrap();
+    ext4::sync_with_open_inodes(&mut mounted, &[inode]).unwrap();
+    assert_eq!(ext4::stat(&mounted, name), Err(Status::NotFound));
+    assert_eq!(ext4::stat_inode(&mounted, inode).unwrap().links, 0);
+    let entry = snapshot.entry(0).unwrap();
+    assert_eq!(&entry.name[..entry.name_length as usize], b"old");
+    assert!(snapshot.entry(1).is_none());
+    ext4::create_directory_probe(&mut mounted, name).unwrap();
+    assert_ne!(ext4::stat(&mounted, name).unwrap().inode, inode);
+    let crash = DEVICE.with_borrow(|device| device.bytes.clone());
+    drop(snapshot);
+    ext4::sync(&mut mounted).unwrap();
+    assert_eq!(ext4::stat_inode(&mounted, inode), Err(Status::NotFound));
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-rmdir-open-close");
+    drop(mounted);
+    let recovered = mount_bytes(crash);
+    assert_ne!(ext4::stat(&recovered, name).unwrap().inode, inode);
+    assert_eq!(ext4::stat_inode(&recovered, inode), Err(Status::NotFound));
+    ext4::unmount(&recovered).unwrap();
+    fsck(&path, "coordinator-rmdir-open-recovery");
 }
 
 #[test]

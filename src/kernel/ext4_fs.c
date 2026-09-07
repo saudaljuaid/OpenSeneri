@@ -97,7 +97,7 @@ extern int32_t phipia_ext4_link_file_probe(uintptr_t mounted,
 extern int32_t phipia_ext4_create_directory_probe(uintptr_t mounted,
     const uint8_t *path, size_t path_length);
 extern int32_t phipia_ext4_remove_directory_probe(uintptr_t mounted,
-    const uint8_t *path, size_t path_length);
+    const uint8_t *path, size_t path_length, const uint64_t *open_inodes, size_t open_count);
 extern int32_t phipia_ext4_rename_probe(uintptr_t mounted,
     const uint8_t *source, size_t source_length, const uint8_t *destination,
     size_t destination_length);
@@ -959,7 +959,7 @@ enum phipfs_status ext4_backend_sync(enum phipfs_volume volume)
         return status;
     }
     uint64_t open_inodes[EXT4_MAX_HANDLES];
-    const size_t open_count = collect_open_inodes(volume, open_inodes, false);
+    const size_t open_count = collect_open_inodes(volume, open_inodes, true);
     status = map_status(phipia_ext4_sync(mount->rust_mount, open_inodes, open_count));
     if (status == PHIPFS_STATUS_OK && open_count == 0U) mount->orphan_cleanup_pending = false;
     if (status == PHIPFS_STATUS_OK) {
@@ -1093,7 +1093,7 @@ enum phipfs_status ext4_backend_close(phipfs_handle handle)
 
     if (status == PHIPFS_STATUS_OK) {
         const enum phipfs_volume volume = state->volume;
-        const bool cleanup = !state->directory && ext4_mounts[volume].orphan_cleanup_pending;
+        const bool cleanup = ext4_mounts[volume].orphan_cleanup_pending;
         if (state->directory_snapshot != 0U) phipia_ext4_snapshot_free(state->directory_snapshot);
         zero_bytes(state, sizeof(*state));
         /* Close releases the descriptor; it is not a durability barrier.
@@ -1251,7 +1251,7 @@ static enum phipfs_status remove_path(enum phipfs_volume volume,
         return status;
     }
     uint64_t open_inodes[EXT4_MAX_HANDLES];
-    const size_t open_count = collect_open_inodes(volume, open_inodes, false);
+    const size_t open_count = collect_open_inodes(volume, open_inodes, true);
     if (open_count != 0U) mount->orphan_cleanup_pending = true;
     status = map_status(phipia_ext4_unlink_file_probe(mount->rust_mount,
         (const uint8_t *)path, length, open_inodes, open_count, remove_directory));
@@ -1333,8 +1333,11 @@ enum phipfs_status ext4_backend_remove_directory_probe(
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
+    uint64_t open_inodes[EXT4_MAX_HANDLES];
+    const size_t open_count = collect_open_inodes(volume, open_inodes, true);
+    if (open_count != 0U) mount->orphan_cleanup_pending = true;
     status = map_status(phipia_ext4_remove_directory_probe(mount->rust_mount,
-        (const uint8_t *)path, length));
+        (const uint8_t *)path, length, open_inodes, open_count));
     close_status = end_operation(mount, NULL);
     return status != PHIPFS_STATUS_OK ? status : close_status;
 }

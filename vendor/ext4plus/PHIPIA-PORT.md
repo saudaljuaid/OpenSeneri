@@ -291,3 +291,12 @@ directories and use it when an admitted indexed parent's count exceeds 65000.
 Mkdir, cross-parent move and rmdir share the counter handling, following Linux
 v6.12 ext4_inc_count/ext4_dec_count. An indexed directory can be empty while its
 count remains one; removal still validates every entry and both dot records.
+
+`remove_open_directory` retains a validated empty directory on the legacy
+orphan chain instead of freeing its inode while snapshots exist. The parent
+link decrement and orphan head commit together. Cleanup validates both dot
+records and rejects other entries before freeing any directory; the admitted
+retained size is nonzero, block aligned, and at most 8192 blocks. Phipia keeps
+the original size for validating the retained directory, so zero-size Linux
+directory orphans are still refused. Linux-kernel recovery fixtures cover
+Phipia rmdir/open-directory replacement cuts and await execution.

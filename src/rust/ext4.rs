@@ -1528,10 +1528,10 @@ pub(crate) fn readlink(
 /// Remove an entry of either kind, resuming the original journal operation.
 pub(crate) fn remove_entry_guarded(mounted: &mut Mounted, path: &[u8], open_inodes: &[u64]) -> Result<(), Status> {
     if mounted.pending_mutation.as_ref().is_some_and(|pending| pending.kind == PendingMutationKind::RemoveDirectory) {
-        return remove_directory_probe(mounted, path);
+        return remove_directory_guarded(mounted, path, open_inodes);
     }
     match unlink_file_guarded(mounted, path, open_inodes) {
-        Err(Status::IsDirectory) => remove_directory_probe(mounted, path),
+        Err(Status::IsDirectory) => remove_directory_guarded(mounted, path, open_inodes),
         result => result,
     }
 }
@@ -1739,6 +1739,10 @@ pub(crate) fn remove_directory_probe(
     mounted: &mut Mounted,
     path: &[u8],
 ) -> Result<(), Status> {
+    remove_directory_guarded(mounted, path, &[])
+}
+
+pub(crate) fn remove_directory_guarded(mounted: &mut Mounted, path: &[u8], open_inodes: &[u64]) -> Result<(), Status> {
     let absolute = absolute_path(path)?;
     if mounted.pending_mutation.is_some() {
         return resume_namespace_mutation(
@@ -1769,7 +1773,12 @@ pub(crate) fn remove_directory_probe(
             .path_to_inode(parent, FollowSymlinks::All)?;
         let mut parent_directory =
             Dir::open_inode(filesystem, parent_inode)?;
-        parent_directory.remove_empty_directory(name, inode)
+        if open_inodes.contains(&u64::from(inode.index.get())) {
+            parent_directory.remove_open_directory(name, inode)?;
+            Ok(None)
+        } else {
+            parent_directory.remove_empty_directory(name, inode).map(Some)
+        }
     })();
     let revoked_block = match mutation {
         Ok(block) => block,
@@ -1781,7 +1790,7 @@ pub(crate) fn remove_directory_probe(
     // Removing the child can also shrink its parent; an empty grown child may
     // itself own several blocks. Keep every stage revoke, requiring at least
     // the child's validated first block in the committed transaction below.
-    if mounted.stage.is_empty() || mounted.stage.revoked_block_count() == 0 {
+    if mounted.stage.is_empty() || (revoked_block.is_some() && mounted.stage.revoked_block_count() == 0) {
         discard_uncommitted_stage(mounted, true)?;
         return Err(Status::Invalid);
     }
@@ -1793,7 +1802,7 @@ pub(crate) fn remove_directory_probe(
         0,
         0,
         &[],
-        Some(revoked_block),
+        revoked_block,
     )?;
     if resumed == 0 {
         Ok(())
@@ -1846,7 +1855,11 @@ fn remove_rename_destination(
     }
     if target.file_type().is_dir() {
         if !source.file_type().is_dir() { return Err(Ext4Error::IsADirectory); }
-        directory.remove_empty_directory(name, target)?;
+        if open_inodes.contains(&u64::from(target.index.get())) {
+            directory.remove_open_directory(name, target)?;
+        } else {
+            directory.remove_empty_directory(name, target)?;
+        }
     } else {
         if source.file_type().is_dir() { return Err(Ext4Error::NotADirectory); }
         if !target.file_type().is_regular_file() && !target.file_type().is_symlink() {
@@ -1907,15 +1920,6 @@ fn rename_transaction(
         .path_to_inode(source_parent, FollowSymlinks::All).map_err(map_error)?;
     let destination_parent_inode = filesystem
         .path_to_inode(destination_parent, FollowSymlinks::All).map_err(map_error)?;
-    if replace && !open_inodes.is_empty() {
-        let target_path = Path::try_from(destination_absolute.as_slice()).map_err(|_| Status::Invalid)?;
-        match filesystem.path_to_inode(target_path, FollowSymlinks::ExcludeFinalComponent) {
-            Ok(target) if target.index != inode.index && target.file_type().is_dir()
-                && open_inodes.contains(&u64::from(target.index.get())) => return Err(Status::Busy),
-            Ok(_) | Err(Ext4Error::NotFound) => {},
-            Err(error) => return Err(map_error(error)),
-        }
-    }
     if source_parent_inode.flags().intersects(InodeFlags::IMMUTABLE | InodeFlags::APPEND_ONLY)
         || destination_parent_inode.flags().contains(InodeFlags::IMMUTABLE) {
         return Err(Status::ReadOnly);

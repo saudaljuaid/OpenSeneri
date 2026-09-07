@@ -50,8 +50,10 @@ replacement in one transaction, preserving same-inode no-ops and refusing
 nonempty directory destinations or incompatible file/directory types. The
 destination's freed blocks are revoked with the namespace change. An open regular
 destination is retained on the orphan chain, while source handles keep their
-inode identity. Replacing an open directory destination remains BUSY; unrelated
-handles no longer block replacement. The existing image/revoke limits still
+inode identity. Empty directory destinations and rmdir targets with open
+snapshots now use the same retention path. Their inode numbers stay reserved
+until the last snapshot closes; captured entries remain readable. Directory
+retention and kernel-recovery fixtures are pending Linux verification. The existing image/revoke limits still
 apply. Open-file replacement and Linux-kernel recovery/roundtrip fixtures
 passed Linux verification at f61d344.
 The existing native `PATH_REPLACE` syscall selects this
@@ -77,8 +79,11 @@ descriptors, a zero first-data-block field, `has_journal`,
 `extra_isize`, with no additional feature bits other than the transient ext4
 incompat-recovery marker. The declared block count must
 fit the NVMe namespace and all free/total geometry is checked. Legacy orphan
-cleanup is bounded to 128 allocated, zero-link regular inodes. Linked Linux
-truncation orphans, cycles, invalid allocation/checksum state, and reachable
+cleanup is bounded to 128 allocated, zero-link regular inodes or empty
+directories. Retained directories must have valid dot records, checksummed
+blocks, a nonzero block-aligned size, and at most 8192 blocks. Zero-size Linux
+directory orphans and linked Linux truncation orphans remain refused. Cycles,
+invalid allocation/checksum state, and reachable
 zero-link inodes are refused before recovery home writes. Recovery validates
 the post-replay view, checkpoints the journal while retaining the marker,
 then journals each orphan deletion before clearing recovery state.

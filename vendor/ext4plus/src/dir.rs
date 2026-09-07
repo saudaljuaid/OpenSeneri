@@ -1000,6 +1000,20 @@ impl Dir {
         name: DirEntryName<'_>,
         inode: Inode,
     ) -> Result<u64, Ext4Error> {
+        self.remove_empty_directory_inner(name, inode, false).await
+    }
+
+    /// Remove an empty directory while retaining its inode for live snapshots.
+    /// The caller must journal the orphan head and finalize after the last close.
+    #[maybe_async::maybe_async]
+    pub async fn remove_open_directory(&mut self, name: DirEntryName<'_>, inode: Inode) -> Result<(), Ext4Error> {
+        self.remove_empty_directory_inner(name, inode, true).await.map(|_| ())
+    }
+
+    #[maybe_async::maybe_async]
+    async fn remove_empty_directory_inner(
+        &mut self, name: DirEntryName<'_>, mut inode: Inode, retain_open: bool,
+    ) -> Result<u64, Ext4Error> {
         if self.inode.flags().intersects(InodeFlags::IMMUTABLE | InodeFlags::APPEND_ONLY)
             || inode.flags().intersects(InodeFlags::IMMUTABLE | InodeFlags::APPEND_ONLY) {
             return Err(Ext4Error::Readonly);
@@ -1066,7 +1080,12 @@ impl Dir {
         remove_dir_entry(&self.fs, &mut self.inode, name).await?;
         self.inode.set_links_count(parent_links_after);
         self.inode.write(&self.fs).await?;
-        self.fs.delete_file(inode).await?;
+        if retain_open {
+            inode.set_links_count(0);
+            self.fs.defer_unlinked_inode(&mut inode).await?;
+        } else {
+            self.fs.delete_file(inode).await?;
+        }
         Ok(revoked_block)
     }
 

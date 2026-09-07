@@ -986,10 +986,13 @@ pub(crate) unsafe extern "C" fn phipia_ext4_remove_directory_probe(
     mounted: usize,
     path: *const u8,
     path_length: usize,
+    open_inodes: *const u64,
+    open_count: usize,
 ) -> i32 {
-    if mounted == 0 || path.is_null() {
+    if mounted == 0 || path.is_null() || open_inodes.is_null() {
         return ext4::Status::NullArgument as i32;
     }
+    if open_count > 128 { return ext4::Status::Range as i32; }
     // SAFETY: the complete, non-overlapping inputs are the caller's contract.
     let (mounted, path) = unsafe {
         (
@@ -997,7 +1000,9 @@ pub(crate) unsafe extern "C" fn phipia_ext4_remove_directory_probe(
             core::slice::from_raw_parts(path, path_length),
         )
     };
-    match ext4::remove_directory_probe(mounted, path) {
+    // SAFETY: C supplies the live inode array under the volume lease.
+    let open_inodes = unsafe { core::slice::from_raw_parts(open_inodes, open_count) };
+    match ext4::remove_directory_guarded(mounted, path, open_inodes) {
         Ok(()) => ext4::Status::Ok as i32,
         Err(status) => status as i32,
     }

@@ -331,6 +331,15 @@ int32_t phipia_ext4_unlink_file_probe(uintptr_t mounted, const uint8_t *path,
     return permanent_status;
 }
 
+int32_t phipia_ext4_remove_directory_probe(uintptr_t mounted, const uint8_t *path,
+    size_t path_bytes, const uint64_t *open_inodes, size_t open_count)
+{
+    assert(mounted == 1U && path_bytes == 4U && memcmp(path, "file", 4U) == 0);
+    assert(ext4_mounts[PHIPFS_VOLUME_DATA].session.writable);
+    assert(open_count == 1U && open_inodes[0] == 42U);
+    return permanent_status;
+}
+
 int32_t phipia_ext4_readlink(uintptr_t mounted, const uint8_t *path,
     size_t path_bytes, uint8_t *output, size_t capacity, size_t *read_bytes)
 {
@@ -524,7 +533,11 @@ int main(void)
     assert(present && strlen(entry.name) == 255U);
     assert(ext4_backend_directory_read(first, &entry, &present) == PHIPFS_STATUS_OK && !present);
     assert(opens == snapshot_opens);
+    assert(ext4_backend_rmdir(PHIPFS_VOLUME_DATA, "file") == PHIPFS_STATUS_OK);
+    assert(ext4_backend_sync(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK);
+    assert(last_sync_open_count == 1U);
     assert(ext4_backend_directory_close(first) == PHIPFS_STATUS_OK);
+    assert(last_sync_open_count == 0U && !ext4_mounts[PHIPFS_VOLUME_DATA].orphan_cleanup_pending);
     assert(live_snapshots == 0U && freed_snapshots == 1U);
     assert(ext4_backend_directory_close(first) == PHIPFS_STATUS_STALE_HANDLE);
     phipfs_handle held[EXT4_MAX_HANDLES];
