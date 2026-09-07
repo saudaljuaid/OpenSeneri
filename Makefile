@@ -56,6 +56,10 @@ QEMU_ACCEL ?= tcg
 GRUB_MKRESCUE ?= grub-mkrescue
 GRUB_MODULE_DIR ?=
 GRUB_MKRESCUE_FLAGS := $(if $(GRUB_MODULE_DIR),-d $(GRUB_MODULE_DIR),)
+# CI keeps the clean-build contract.  Local loops can skip the clean step after
+# one complete run, while independent host-test groups fan out by default.
+VERIFY_CLEAN ?= 1
+VERIFY_JOBS ?= 2
 
 # The one target Rust is built for. It matches the C flags exactly - no MMX, no
 # SSE, soft float, no red zone - which is why the two halves can share a stack.
@@ -1466,9 +1470,12 @@ $(EXT4_FIXTURE): tools/ext4_image.py
 ext4-images: $(EXT4_FIXTURE)
 
 verify: toolchain lint
+ifneq ($(VERIFY_CLEAN),0)
 	$(MAKE) clean
+endif
 	$(MAKE) kernel
-	$(MAKE) wall-clock-tests ext4-tests package-repository-tests \
+	$(MAKE) --jobs=$(VERIFY_JOBS) \
+		wall-clock-tests ext4-tests package-repository-tests \
 		package-transaction-tests package-state-tests package-service-tests \
 		package-trust-asset-tests package-trust-tests package-control-tests \
 		package-fetch-tests package-upload-tests \

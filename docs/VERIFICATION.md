@@ -20,6 +20,11 @@ rejects warnings, unresolved symbols, unexpected sections, W+X mappings,
 floating-point or SIMD instructions in the kernel, modified pinned assets, and
 non-reproducible filesystem images.
 
+The clean step is enabled by default for CI. After one complete run, a local
+iteration can reuse unchanged outputs with `VERIFY_CLEAN=0 make verify`; the
+independent host-test groups use two workers by default and can be adjusted
+with `VERIFY_JOBS`.
+
 `make qemu-tests` runs the complete 117-scenario guest suite. The Makefile is
 the source of truth for scenario names and expected results.
 
