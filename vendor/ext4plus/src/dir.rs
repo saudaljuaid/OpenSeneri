@@ -201,7 +201,7 @@ async fn add_dir_entry_inner(
             let rec_end =
                 checked_add_usize(off, rec_len_usize, dir_inode.index)?;
 
-            if rec_len_usize < 8 || rec_end > usable_size {
+            if rec_len_usize < 8 || rec_len_usize % 4 != 0 || rec_end > usable_size {
                 return Err(dir_entry_error(dir_inode.index));
             }
 
@@ -389,6 +389,7 @@ async fn remove_dir_entry_inner(
         let mut block_has_entries = false;
 
         while off < block_size_usize {
+            if block_size_usize - off < 8 { return Err(dir_entry_error(dir_inode.index)); }
             let inode_field = read_u32le(&block_buf, off);
             let rec_len_offset = checked_add_usize(off, 4, dir_inode.index)?;
             let rec_len = read_u16le(&block_buf, rec_len_offset);
@@ -447,6 +448,7 @@ async fn remove_dir_entry_inner(
                     let mut all_empty = true;
                     let mut verify_off = 0usize;
                     while verify_off < block_size_usize {
+                        if block_size_usize - verify_off < 8 { return Err(dir_entry_error(dir_inode.index)); }
                         let inode_field = read_u32le(&block_buf, verify_off);
                         let verify_rec_len_offset =
                             checked_add_usize(verify_off, 4, dir_inode.index)?;
@@ -1333,13 +1335,14 @@ pub(crate) async fn add_dir_entry_htree(
     let mut off = 0usize;
 
     while off < block_size {
+        if block_size - off < 8 { return Err(dir_entry_error(dir_inode.index)); }
         let inode_field = read_u32le(&block_buf, off);
         let rec_len_offset = checked_add_usize(off, 4, dir_inode.index)?;
         let rec_len = read_u16le(&block_buf, rec_len_offset);
         let rec_len_usize = usize::from(rec_len);
         let rec_end = checked_add_usize(off, rec_len_usize, dir_inode.index)?;
 
-        if rec_len_usize < 8 || rec_end > block_size {
+        if rec_len_usize < 8 || rec_len_usize % 4 != 0 || rec_end > block_size {
             return Err(dir_entry_error(dir_inode.index));
         }
 
@@ -1566,6 +1569,7 @@ pub(crate) async fn remove_dir_entry_htree(
         let mut prev_off: Option<usize> = None;
 
         while off < block_size {
+            if block_size - off < 8 { return Err(dir_entry_error(dir_inode.index)); }
             let inode_field = read_u32le(&block_buf, off);
             let rec_len_offset = checked_add_usize(off, 4, dir_inode.index)?;
             let rec_len = read_u16le(&block_buf, rec_len_offset);
@@ -1573,7 +1577,7 @@ pub(crate) async fn remove_dir_entry_htree(
             let rec_end =
                 checked_add_usize(off, rec_len_usize, dir_inode.index)?;
 
-            if rec_len_usize < 8 || rec_end > block_size {
+            if rec_len_usize < 8 || rec_len_usize % 4 != 0 || rec_end > block_size {
                 return Err(dir_entry_error(dir_inode.index));
             }
 

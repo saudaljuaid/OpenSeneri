@@ -2179,7 +2179,7 @@ fn namespace_counts_parents_types_and_unique_names_are_checked_before_mutation()
     let first_offset = entry_offset(b"first");
     let alias_offset = entry_offset(b"alias");
     let image = path.with_extension("coordinator-namespace-count-input.img");
-    for case in 0..12 {
+    for case in 0..18 {
         for dirty in [false, true] {
             write_sparse_fixture(&image, &pristine).unwrap();
             match case {
@@ -2197,7 +2197,19 @@ fn namespace_counts_parents_types_and_unique_names_are_checked_before_mutation()
                         8 => hostile[block + 12..block + 16].copy_from_slice(&2u32.to_le_bytes()),
                         9 => hostile[block..block + 4].fill(0),
                         10 => hostile[alias_offset + 8..alias_offset + 13].copy_from_slice(b"first"),
-                        _ => hostile[first_offset + 7] = 2, // inode remains regular
+                        11 => hostile[first_offset + 7] = 2, // inode remains regular
+                        12 => hostile[first_offset + 4..first_offset + 6].copy_from_slice(&9u16.to_le_bytes()),
+                        13 => hostile[first_offset + 4..first_offset + 6].copy_from_slice(&65532u16.to_le_bytes()),
+                        14 => hostile[first_offset + 4..first_offset + 6].copy_from_slice(&8u16.to_le_bytes()),
+                        _ => {
+                            hostile[first_offset..first_offset + 4].fill(0);
+                            let length = match case {
+                                15 => 65532,
+                                16 => (block + 4092 - first_offset) as u16,
+                                _ => 9,
+                            };
+                            hostile[first_offset + 4..first_offset + 6].copy_from_slice(&length.to_le_bytes());
+                        }
                     }
                     let mut crc = u32::from_le_bytes(hostile[1648..1652].try_into().unwrap());
                     for byte in number.to_le_bytes().iter().chain(&hostile[inode_start + 0x64..inode_start + 0x68])
@@ -2214,7 +2226,14 @@ fn namespace_counts_parents_types_and_unique_names_are_checked_before_mutation()
             let raw = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
             // Both directory and inode CRCs are valid; the new graph/count
             // checks must detect these semantically invalid namespaces.
-            for entry in raw.read_dir("/system/namespace-count").unwrap() { entry.unwrap().metadata().unwrap(); }
+            if case < 12 {
+                for entry in raw.read_dir("/system/namespace-count").unwrap() { entry.unwrap().metadata().unwrap(); }
+            } else {
+                let error = raw.read_dir("/system/namespace-count").unwrap()
+                    .find_map(|entry| entry.err()).expect("malformed record must fail iteration");
+                assert!(format!("{error:?}").starts_with("Corrupt(DirEntry"),
+                    "record bounds, not a checksum failure: {error:?}");
+            }
             DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
             assert!(ext4::mount(1, hostile.len() as u64).is_err(), "accepted namespace case {case}, dirty={dirty}");
             DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });

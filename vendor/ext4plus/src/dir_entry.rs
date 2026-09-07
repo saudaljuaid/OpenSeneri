@@ -271,6 +271,11 @@ impl DirEntry {
                 CorruptKind::DirEntryRecordTooSmall(inode, rec_len).into()
             );
         }
+        // Even unused records and disguised htree nodes must stay inside
+        // the current block and advance on a four-byte boundary.
+        if rec_len % 4 != 0 || rec_len > bytes.len() {
+            return Err(CorruptKind::DirEntry(inode).into());
+        }
         // OK to unwrap: above check ensures that `rec_len >= NAME_OFFSET`.
         let rec_len = NonZero::new(rec_len).unwrap();
 
@@ -290,6 +295,9 @@ impl DirEntry {
         // at most 255, so the result fits in a `u16`, which is the
         // minimum size of `usize`.
         let name_end: usize = NAME_OFFSET.checked_add(name_len_usize).unwrap();
+        if name_end > rec_len.get() {
+            return Err(CorruptKind::DirEntryNameTooLarge(inode, name_len).into());
+        }
 
         // Get the entry's name.
         let name_slice = bytes
@@ -551,7 +559,7 @@ mod tests {
             CorruptKind::DirEntryInvalidFileType(inode1, 123),
         );
 
-        // Error: not enough data for the name.
+        // Error: the claimed record extends beyond the supplied block.
         let mut bytes = Vec::new();
         bytes.extend(2u32.to_le_bytes()); // inode
         bytes.extend(72u16.to_le_bytes()); // record length
@@ -561,8 +569,26 @@ mod tests {
         assert_eq!(
             DirEntry::from_bytes(fs.clone(), &bytes, inode1, path.clone())
                 .unwrap_err(),
-            CorruptKind::DirEntryNameTooLarge(inode1, 3),
+            CorruptKind::DirEntry(inode1),
         );
+
+        for points_to in [0u32, 2] {
+            for length in [9u16, 71, 76] {
+                let mut bytes = vec![0; 72];
+                bytes[..4].copy_from_slice(&points_to.to_le_bytes());
+                bytes[4..6].copy_from_slice(&length.to_le_bytes());
+                assert_eq!(DirEntry::from_bytes(fs.clone(), &bytes, inode1, path.clone())
+                    .unwrap_err(), CorruptKind::DirEntry(inode1));
+            }
+        }
+        // A name cannot borrow bytes from the following directory record.
+        let mut bytes = vec![b'a'; 72];
+        bytes[..4].copy_from_slice(&2u32.to_le_bytes());
+        bytes[4..6].copy_from_slice(&12u16.to_le_bytes());
+        bytes[6] = 5;
+        bytes[7] = 1;
+        assert_eq!(DirEntry::from_bytes(fs.clone(), &bytes, inode1, path.clone())
+            .unwrap_err(), CorruptKind::DirEntryNameTooLarge(inode1, 5));
 
         // Error: name contains invalid characters.
         let mut bytes = Vec::new();
