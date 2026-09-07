@@ -192,6 +192,7 @@ impl Inode {
         let (block, offset) = get_inode_location(ext4, index)?;
         let mut data = vec![0; usize::from(ext4.superblock().inode_size())];
         ext4.read_from_block(block, offset, &mut data).await?;
+        Self::validate_extra_size(&data, index)?;
         for range in [0..2, 4..8, 0x14..0x24, 0x28..0x64, 0x68..0x70, 0x74..0x78] {
             if data.get(range).is_none_or(|bytes| bytes.iter().any(|byte| *byte != 0)) {
                 return Err(Ext4Error::Readonly);
@@ -226,6 +227,17 @@ impl Inode {
     const INLINE_DATA_LEN: usize = 60;
     const L_I_CHECKSUM_LO_OFFSET: usize = 0x74 + 0x8;
     const I_CHECKSUM_HI_OFFSET: usize = 0x82;
+
+    fn validate_extra_size(data: &[u8], index: InodeIndex) -> Result<(), Ext4Error> {
+        if data.len() > 128 {
+            let extra = data.get(128..130).map(|bytes| usize::from(read_u16le(bytes, 0)))
+                .ok_or(CorruptKind::InodeTruncated { inode: index, size: data.len() })?;
+            if extra % 4 != 0 || extra > data.len() - 128 {
+                return Err(CorruptKind::InodeTruncated { inode: index, size: 128 + extra }.into());
+            }
+        }
+        Ok(())
+    }
 
     fn has_checksum_hi(data: &[u8]) -> bool {
         data.len() >= Self::I_CHECKSUM_HI_OFFSET + 2 && read_u16le(data, 0x80) >= 4
@@ -273,6 +285,7 @@ impl Inode {
         }
 
         let i_mode = read_u16le(data, 0x0);
+        Self::validate_extra_size(data, index)?;
         let i_generation = read_u32le(data, 0x64);
         let checksum = if ext4.has_metadata_checksums() { Self::stored_checksum(data) } else { 0 };
         let mode = InodeMode::from_bits_retain(i_mode);

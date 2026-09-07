@@ -1276,6 +1276,7 @@ fn writable_profile_refuses_foreign_inode_layout_and_inconsistent_cluster_geomet
     for (offset, width, value) in [
         (0x1c, 4, 3u32), (0x24, 4, bpg / 2), (0x48, 4, 1),
         (0x4c, 4, 0), (0x175, 1, 0), (0x20, 4, bpg + 1), (0x28, 4, ipg + 1),
+        (0x15c, 2, 132), (0x15c, 2, 3), (0x15e, 2, 132), (0x15e, 2, 3),
     ] {
         let mut hostile = pristine.clone();
         hostile[1024 + offset..1024 + offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
@@ -1975,6 +1976,19 @@ fn inode_checksums_follow_declared_extra_size_and_preserve_undeclared_bytes() {
     let pristine = std::fs::read(&path).unwrap();
     let table = u32::from_le_bytes(pristine[4104..4108].try_into().unwrap()) as usize * 4096;
     let root = table + 256;
+    for extra in [1u16, 2, 3, 129, 132, u16::MAX] {
+        let image = path.with_extension(format!("coordinator-extra-size-invalid-{extra}.img"));
+        write_sparse_fixture(&image, &pristine).unwrap();
+        debugfs(&image, &format!("set_inode_field <2> extra_isize {extra}"));
+        let hostile = std::fs::read(&image).unwrap();
+        assert_eq!(u16::from_le_bytes(hostile[root + 0x80..root + 0x82].try_into().unwrap()), extra);
+        let raw = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
+        let error = ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(2).unwrap()).unwrap_err();
+        assert!(format!("{error:?}").starts_with("Corrupt(InodeTruncated"), "{error:?}");
+        DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+        assert!(ext4::mount(1, hostile.len() as u64).is_err());
+        DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+    }
     for extra in [0u16, 4, 32] {
         let image = path.with_extension(format!("coordinator-checksum-width-{extra}.img"));
         write_sparse_fixture(&image, &pristine).unwrap();
