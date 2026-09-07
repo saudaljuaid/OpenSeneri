@@ -329,15 +329,35 @@ impl Inode {
             .cmp(&(b.name_index, b.name.len(), b.name.as_slice())));
         let start = xattr_body_start(self);
         let length = self.inode_data.len().saturating_sub(start);
+        // Maximize the bytes packed inline. First-fit can report ENOSPC even
+        // when swapping one inline entry for two smaller ones makes the full
+        // set fit. Record sizes are multiples of four; the admitted256-byte
+        // inode needs at most32 states. Each state keeps its first predecessor
+        // so reconstruction cannot reuse an entry added by a later iteration.
+        let capacity = length.saturating_sub(EXT4_XATTR_IBODY_HEADER_SIZE + 4) / 4;
+        let mut choices = vec![None; capacity + 1];
+        choices[0] = Some((usize::MAX, 0));
+        for (index, entry) in entries.iter().enumerate() {
+            let cost = (align_4(EXT4_XATTR_ENTRY_BASE_SIZE + entry.name.len()) + align_4(entry.value.len())) / 4;
+            if cost <= capacity {
+                for used in (cost..=capacity).rev() {
+                    if choices[used].is_none() && choices[used - cost].is_some() {
+                        choices[used] = Some((index, used - cost));
+                    }
+                }
+            }
+        }
+        let mut selected = vec![false; entries.len()];
+        let mut used = choices.iter().rposition(Option::is_some).unwrap();
+        while used != 0 {
+            let (index, previous) = choices[used].unwrap();
+            selected[index] = true;
+            used = previous;
+        }
         let mut inside = Vec::new();
         let mut outside = Vec::new();
-        for entry in entries {
-            inside.push(entry);
-            match serialize_xattrs(length, &inside, false) {
-                Ok(_) => {},
-                Err(Ext4Error::NoSpace) => outside.push(inside.pop().unwrap()),
-                Err(error) => return Err(error),
-            }
+        for (index, entry) in entries.into_iter().enumerate() {
+            if selected[index] { inside.push(entry); } else { outside.push(entry); }
         }
         let body = serialize_xattrs(length, &inside, false)?;
         // Complete both packing checks before touching allocator reservations.

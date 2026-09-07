@@ -1138,6 +1138,47 @@ fn external_xattr_updates_pack_hashes_and_release_storage_without_losing_inline_
 }
 
 #[test]
+fn xattr_packing_uses_available_inode_space_before_reporting_enospc() {
+    let Some(path) = fixture() else { return };
+    let name = b"system/packed-xattrs";
+    let mut mounted = mount_fixture(&path);
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    let free = ext4::free_bytes(&mounted).unwrap();
+    // Inline capacity88 bytes: a costs60; b+c cost44+44. The external
+    // block can hold a+large (4052 bytes) but not b+c+large (4080 bytes).
+    let values = [("user.a", vec![0x41; 40]), ("user.b", vec![0x42; 24]),
+        ("user.c", vec![0x43; 24]), ("user.large", vec![0x44; 3968])];
+    for (key, value) in &values {
+        ext4::set_xattr(&mut mounted, name, key.as_bytes(), Some(value)).unwrap();
+    }
+    assert_eq!(ext4::free_bytes(&mounted).unwrap(), free - 4096);
+    let before = DEVICE.with_borrow_mut(|device| { device.events.clear(); device.bytes.clone() });
+    assert_eq!(ext4::set_xattr(&mut mounted, name, b"user.large", Some(&[0x55; 3980])), Err(Status::Full));
+    DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, before); });
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-xattrs-packed");
+    drop(mounted);
+    let image = path.with_extension("coordinator-xattrs-packed.img");
+    let bytes = DEVICE.with_borrow(|device| device.bytes.clone());
+    write_sparse_fixture(&image, &bytes).unwrap();
+    let mut mounted = mount_bytes(bytes);
+    for (index, (key, value)) in values.iter().enumerate() {
+        let mut read = vec![0; value.len()];
+        assert_eq!(ext4::get_xattr(&mounted, name, key.as_bytes(), &mut read), Ok(value.len()));
+        assert_eq!(&read, value);
+        let exported = path.with_extension(format!("coordinator-packed-xattr-{index}.bin"));
+        debugfs(&image, &format!("ea_get -f {} /system/packed-xattrs {key}", exported.display()));
+        assert_eq!(&std::fs::read(exported).unwrap(), value);
+    }
+    ext4::unlink_file_probe(&mut mounted, name).unwrap();
+    assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-xattrs-packed-release");
+}
+
+#[test]
 fn external_xattr_checksums_shared_release_and_final_free() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);
