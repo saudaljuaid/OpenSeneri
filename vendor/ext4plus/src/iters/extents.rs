@@ -197,6 +197,23 @@ impl Extents {
     //   there are nodes left to process.
     #[maybe_async::maybe_async]
     async fn next_impl(&mut self) -> Result<Option<Extent>, Ext4Error> {
+        self.next_checked_impl(None).await
+    }
+
+    /// Validate allocation while descending so even empty extent leaves must
+    /// reside in allocated blocks, without retaining a second tree walk.
+    #[maybe_async::maybe_async]
+    pub(crate) async fn validate_allocation(mut self,
+        allocations: &mut crate::BlockAllocationSnapshot<'_>) -> Result<(), Ext4Error> {
+        while !self.is_done {
+            self.next_checked_impl(Some(&mut *allocations)).await?;
+        }
+        Ok(())
+    }
+
+    #[maybe_async::maybe_async]
+    async fn next_checked_impl(&mut self,
+        allocations: Option<&mut crate::BlockAllocationSnapshot<'_>>) -> Result<Option<Extent>, Ext4Error> {
         let Some(item) = self.to_visit.last_mut() else {
             self.is_done = true;
             return Ok(None);
@@ -236,6 +253,11 @@ impl Extents {
             self.next_logical = extent.block_within_file
                 .checked_add(u32::from(extent.num_blocks))
                 .ok_or(CorruptKind::ExtentBlock(self.inode))?;
+            if let Some(allocations) = allocations {
+                if !allocations.range_is_allocated(extent.start_block, u32::from(extent.num_blocks)).await? {
+                    return Err(CorruptKind::ExtentBlock(self.inode).into());
+                }
+            }
             return Ok(Some(extent));
         } else {
             let parent_depth = item.depth;
@@ -243,6 +265,11 @@ impl Extents {
             let ei_leaf_lo = read_u32le(entry, 4);
             let ei_leaf_hi = read_u16le(entry, 8);
             let child_block = u64_from_hilo(u32::from(ei_leaf_hi), ei_leaf_lo);
+            if let Some(allocations) = allocations {
+                if !allocations.range_is_allocated(child_block, 1).await? {
+                    return Err(CorruptKind::ExtentBlock(self.inode).into());
+                }
+            }
 
             // Read just the header of the child node. This is needed to
             // find out how much data is in the full child node.

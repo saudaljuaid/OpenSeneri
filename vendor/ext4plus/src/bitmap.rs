@@ -60,20 +60,13 @@ impl<'a> BlockAllocationSnapshot<'a> {
         Ok(true)
     }
 
-    /// Validate data allocation for every extent, including unwritten extents
-    /// beyond EOF. Extent-node and cross-inode ownership are separate checks.
+    /// Validate extent-node and data allocation, including unwritten extents
+    /// beyond EOF. Cross-inode ownership remains a separate check.
     #[maybe_async::maybe_async]
     pub async fn validate_inode_extents(&mut self, inode: &crate::inode::Inode) -> Result<(), Ext4Error> {
-        #[cfg(not(feature = "sync"))]
-        use crate::iters::AsyncIterator;
         if inode.flags().contains(crate::inode::InodeFlags::EXTENTS) {
-            let mut extents = crate::iters::extents::Extents::new(self.filesystem.clone(), inode)?;
-            while let Some(extent) = extents.next().await {
-                let extent = extent?;
-                if !self.range_is_allocated(extent.start_block, u32::from(extent.num_blocks)).await? {
-                    return Err(CorruptKind::ExtentBlock(inode.index).into());
-                }
-            }
+            crate::iters::extents::Extents::new(self.filesystem.clone(), inode)?
+                .validate_allocation(self).await?;
         }
         Ok(())
     }

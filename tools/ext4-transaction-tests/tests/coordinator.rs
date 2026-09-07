@@ -1141,6 +1141,7 @@ fn checksummed_extents_require_allocated_data_even_beyond_eof_or_on_orphan_chain
     let mut mounted = mount_fixture(&path);
     ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
     ext4::transaction_probe(&mut mounted, name, 0, &vec![0x64; 8192]).unwrap();
+    for block in 0..5 { ext4::transaction_probe(&mut mounted, name, (3 + block * 2) * 4096, b"sparse").unwrap(); }
     let number = ext4::stat(&mounted, name).unwrap().inode;
     ext4::sync(&mut mounted).unwrap();
     ext4::unmount(&mounted).unwrap();
@@ -1151,6 +1152,12 @@ fn checksummed_extents_require_allocated_data_even_beyond_eof_or_on_orphan_chain
     let file = filesystem.open("/system/allocation-map").unwrap();
     let first = file.filesystem_block_at_offset(0).unwrap().unwrap();
     let second = file.filesystem_block_at_offset(4096).unwrap().unwrap();
+    let ipg = u32::from_le_bytes(pristine[1064..1068].try_into().unwrap());
+    let descriptor = 4096 + ((number as u32 - 1) / ipg) as usize * 64;
+    let table = u32::from_le_bytes(pristine[descriptor + 8..descriptor + 12].try_into().unwrap());
+    let inode_start = table as usize * 4096 + ((number as u32 - 1) % ipg) as usize * 256;
+    assert_eq!(u16::from_le_bytes(pristine[inode_start + 0x2e..inode_start + 0x30].try_into().unwrap()), 1);
+    let leaf = u64::from(u32::from_le_bytes(pristine[inode_start + 0x38..inode_start + 0x3c].try_into().unwrap()));
     let mut bitmap = filesystem.block_allocation_snapshot();
     assert!(bitmap.range_is_allocated(first, 1).unwrap());
     assert!(bitmap.range_is_allocated(second, 1).unwrap());
@@ -1158,33 +1165,36 @@ fn checksummed_extents_require_allocated_data_even_beyond_eof_or_on_orphan_chain
     assert!(!bitmap.range_is_allocated(u64::MAX, 2).unwrap());
     assert!(!bitmap.range_is_allocated((pristine.len() / 4096) as u64, 1).unwrap());
     let image = path.with_extension("coordinator-unallocated-extent.img");
-    for zero_size in [false, true] {
-        for orphan in [false, true] {
-            std::fs::write(&image, &pristine).unwrap();
-            // debugfs recomputes the bitmap and descriptor checksums. The
-            // inode still points at the second block, now marked available.
-            debugfs(&image, &format!("freeb {second}"));
-            if zero_size { debugfs(&image, &format!("set_inode_field <{number}> size 0")); }
-            if orphan {
-                debugfs(&image, &format!("set_inode_field <{number}> links_count 0"));
-                debugfs(&image, "unlink /system/allocation-map");
-                debugfs(&image, &format!("set_super_value last_orphan {number}"));
-                debugfs(&image, "feature needs_recovery");
+    for target in [second, leaf] {
+        for zero_size in [false, true] {
+            for orphan in [false, true] {
+                std::fs::write(&image, &pristine).unwrap();
+                // debugfs recomputes the bitmap and descriptor checksums. The
+                // inode still points at a data/extent-node block marked available.
+                debugfs(&image, &format!("freeb {target}"));
+                if zero_size { debugfs(&image, &format!("set_inode_field <{number}> size 0")); }
+                if orphan {
+                    debugfs(&image, &format!("set_inode_field <{number}> links_count 0"));
+                    debugfs(&image, "unlink /system/allocation-map");
+                    debugfs(&image, &format!("set_super_value last_orphan {number}"));
+                    debugfs(&image, "feature needs_recovery");
+                }
+                let hostile = std::fs::read(&image).unwrap();
+                let filesystem = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
+                let mut bitmap = filesystem.block_allocation_snapshot();
+                assert!(bitmap.range_is_allocated(first, 1).unwrap());
+                assert!(!bitmap.range_is_allocated(target, 1).unwrap());
+                let inode = ext4plus::inode::Inode::read(&filesystem, std::num::NonZeroU32::new(number as u32).unwrap()).unwrap();
+                assert!(bitmap.validate_inode_extents(&inode).is_err());
+                let size = hostile.len() as u64;
+                DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), watched_read_block: Some(leaf), ..Device::default() });
+                assert!(ext4::mount(1, size).is_err());
+                DEVICE.with_borrow(|device| {
+                    assert!(device.events.is_empty());
+                    assert_eq!(device.bytes, hostile);
+                    if target == leaf && !orphan { assert_eq!(device.watched_reads, 0); }
+                });
             }
-            let hostile = std::fs::read(&image).unwrap();
-            let filesystem = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
-            let mut bitmap = filesystem.block_allocation_snapshot();
-            assert!(bitmap.range_is_allocated(first, 1).unwrap());
-            assert!(!bitmap.range_is_allocated(second, 1).unwrap());
-            let inode = ext4plus::inode::Inode::read(&filesystem, std::num::NonZeroU32::new(number as u32).unwrap()).unwrap();
-            assert!(bitmap.validate_inode_extents(&inode).is_err());
-            let size = hostile.len() as u64;
-            DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
-            assert!(ext4::mount(1, size).is_err());
-            DEVICE.with_borrow(|device| {
-                assert!(device.events.is_empty());
-                assert_eq!(device.bytes, hostile);
-            });
         }
     }
     let mut mounted = mount_bytes(pristine);
