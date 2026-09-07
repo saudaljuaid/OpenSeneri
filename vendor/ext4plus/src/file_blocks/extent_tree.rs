@@ -1610,16 +1610,22 @@ impl ExtentTree {
     }
 
     /// Try to merge adjacency-eligible extents and rebuild the tree if needed.
+    /// Return the number of mapping blocks released by the rebuild so the
+    /// caller can keep i_blocks consistent even for an imported split tree.
     #[maybe_async::maybe_async]
     pub(crate) async fn try_merge_adjacent(
         &mut self,
         _hint_block: FileBlockIndex,
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<u32, Ext4Error> {
         let mut extents = self.collect_extents().await?;
         if self.normalize_extents(&mut extents)? {
+            let before = self.metadata_block_count().await?;
             self.rebuild_from_extents(extents).await?;
+            let after = self.metadata_block_count().await?;
+            return before.checked_sub(after)
+                .ok_or_else(|| CorruptKind::InodeBlockCount(self.inode).into());
         }
-        Ok(())
+        Ok(0)
     }
 
     fn can_merge(left: &Extent, right: &Extent) -> bool {
@@ -2192,7 +2198,12 @@ impl ExtentTree {
             start_offset_in_block =
                 offset_in_block_usize(current_offset, block_size_u64)?;
 
-            self.try_merge_adjacent(current_block).await?;
+            let freed_metadata = self.try_merge_adjacent(current_block).await?;
+            if freed_metadata != 0 {
+                let blocks = inode.fs_blocks(&ext4)?.checked_sub(u64::from(freed_metadata))
+                    .ok_or(CorruptKind::InodeBlockCount(inode.index))?;
+                inode.set_fs_blocks(blocks, &ext4)?;
+            }
         }
 
         let new_size = add_to_file_offset(offset, total_written)?;

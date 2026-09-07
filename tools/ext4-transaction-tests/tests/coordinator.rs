@@ -1901,6 +1901,109 @@ fn inode_block_count_uses_48_bits_without_overwriting_xattr_address() {
 }
 
 #[test]
+fn overwrite_merging_an_imported_extent_tree_accounts_for_freed_nodes() {
+    let Some(path) = fixture() else { return };
+    let name = b"system/merge-count";
+    let mut mounted = mount_fixture(&path);
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    for index in 0..6 { ext4::transaction_probe(&mut mounted, name, index * 8192, &[index as u8 + 1]).unwrap(); }
+    let number = ext4::stat(&mounted, name).unwrap().inode as u32;
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    drop(mounted);
+    let mut bytes = DEVICE.with_borrow(|device| device.bytes.clone());
+    let ipg = u32::from_le_bytes(bytes[1064..1068].try_into().unwrap());
+    let descriptor = 4096 + ((number - 1) / ipg) as usize * 64;
+    let table = u32::from_le_bytes(bytes[descriptor + 8..descriptor + 12].try_into().unwrap()) as usize;
+    let inode_start = table * 4096 + ((number - 1) % ipg) as usize * 256;
+    assert_eq!(u16::from_le_bytes(bytes[inode_start + 0x2e..inode_start + 0x30].try_into().unwrap()), 1);
+    let leaf = u32::from_le_bytes(bytes[inode_start + 0x38..inode_start + 0x3c].try_into().unwrap()) as usize * 4096;
+    assert_eq!(u16::from_le_bytes(bytes[leaf + 2..leaf + 4].try_into().unwrap()), 6);
+    let mut runs = 0;
+    let mut previous = None;
+    let mut old = vec![0; 6 * 4096];
+    for index in 0..6 {
+        let entry = leaf + 12 + index * 12;
+        bytes[entry..entry + 4].copy_from_slice(&(index as u32).to_le_bytes());
+        let physical = u32::from_le_bytes(bytes[entry + 8..entry + 12].try_into().unwrap());
+        assert_eq!(u16::from_le_bytes(bytes[entry + 4..entry + 6].try_into().unwrap()), 1);
+        if previous != physical.checked_sub(1) { runs += 1; }
+        previous = Some(physical);
+        old[index * 4096] = index as u8 + 1;
+    }
+    assert!(runs <= 4, "fixture must collapse to the inline root after merging");
+    let maximum = u16::from_le_bytes(bytes[leaf + 4..leaf + 6].try_into().unwrap()) as usize;
+    let checksum_offset = leaf + 12 * (maximum + 1);
+    let mut crc = u32::from_le_bytes(bytes[1648..1652].try_into().unwrap());
+    for byte in number.to_le_bytes().iter().chain(&bytes[inode_start + 0x64..inode_start + 0x68])
+        .chain(&bytes[leaf..checksum_offset]) {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 { crc = (crc >> 1) ^ (0x82f6_3b78u32 & 0u32.wrapping_sub(crc & 1)); }
+    }
+    bytes[checksum_offset..checksum_offset + 4].copy_from_slice(&crc.to_le_bytes());
+    let image = path.with_extension("coordinator-merge-count-input.img");
+    write_sparse_fixture(&image, &bytes).unwrap();
+    debugfs(&image, "set_inode_field /system/merge-count size 24576");
+    let baseline = std::fs::read(&image).unwrap();
+    let mut mounted = mount_bytes(baseline.clone());
+    let free = ext4::free_bytes(&mounted).unwrap();
+    let mut data = vec![0; old.len()];
+    read_exact(&mounted, name, &mut data);
+    assert_eq!(data, old);
+    fsck(&path, "coordinator-merge-count-before");
+    let mut new = old.clone();
+    new[17..22].copy_from_slice(b"merge");
+    ext4::transaction_probe(&mut mounted, name, 17, b"merge").unwrap();
+    let operations = DEVICE.with_borrow(|device| device.events.clone());
+    assert_eq!(ext4::free_bytes(&mounted).unwrap(), free + 4096);
+    assert!(operations.iter().any(|event| matches!(event, Event::Write(_, bytes)
+        if bytes.len() == 4096 && bytes[..8] == [0xc0, 0x3b, 0x39, 0x98, 0, 0, 0, 5])));
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-merge-count-after");
+    drop(mounted);
+    let failure = operations.iter().position(|event| matches!(event, Event::Flush(3))).unwrap();
+    let mut mounted = mount_bytes(baseline.clone());
+    DEVICE.with_borrow_mut(|device| device.fail_event = Some(failure));
+    assert_eq!(ext4::transaction_probe(&mut mounted, name, 17, b"merge"), Err(Status::Io));
+    DEVICE.with_borrow_mut(|device| device.fail_event = None);
+    ext4::transaction_probe(&mut mounted, name, 17, b"merge").unwrap();
+    assert_eq!(ext4::free_bytes(&mounted).unwrap(), free + 4096);
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-merge-count-retry");
+    drop(mounted);
+    let mut cut = baseline;
+    let mut committed = false;
+    for (index, operation) in operations.iter().enumerate() {
+        match operation {
+            Event::Write(start, bytes) => cut[*start as usize..*start as usize + bytes.len()].copy_from_slice(bytes),
+            Event::Flush(boundary) => {
+                committed |= *boundary == 3;
+                for linux in [false, true] {
+                    let input = if linux {
+                        let image = path.with_extension(format!("coordinator-merge-count-linux-{index}.img"));
+                        write_sparse_fixture(&image, &cut).unwrap();
+                        let replay = std::process::Command::new("e2fsck").args(["-E", "journal_only", "-p"])
+                            .arg(&image).output().unwrap();
+                        let log = format!("{}\n{}", String::from_utf8_lossy(&replay.stdout), String::from_utf8_lossy(&replay.stderr));
+                        std::fs::write(image.with_extension("replay.txt"), &log).unwrap();
+                        assert!(matches!(replay.status.code(), Some(0 | 1)), "{log}");
+                        std::fs::read(&image).unwrap()
+                    } else { cut.clone() };
+                    let recovered = mount_bytes(input);
+                    assert_eq!(ext4::free_bytes(&recovered).unwrap(), if committed { free + 4096 } else { free });
+                    read_exact(&recovered, name, &mut data);
+                    if committed { assert_eq!(data, new); } else { assert!(data == old || data == new); }
+                    ext4::unmount(&recovered).unwrap();
+                    fsck(&path, &format!("coordinator-merge-count-cut-{index}-{linux}"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn inode_counts_must_match_all_mapping_and_xattr_blocks_before_admission() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);
