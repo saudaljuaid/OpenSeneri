@@ -49,6 +49,17 @@ SDK_LD ?= ld.lld
 SDK_AR ?= ar
 READELF ?= readelf
 FFMPEG ?= ffmpeg
+# The kernel objects and linker must produce ELF. MinGW's default gcc/as pair
+# targets PE/COFF on Windows, so use clang's ELF target and lld there while
+# leaving the host-test compiler (`CC`) unchanged.
+KERNEL_CC = $(CC)
+KERNEL_LD = $(LD)
+ifeq ($(OS),Windows_NT)
+RUST_SYSROOT := $(shell $(RUSTC) --print sysroot | cygpath -u -f -)
+RUST_HOST := $(shell $(RUSTC) -vV | sed -n 's/^host: //p')
+KERNEL_CC = clang --target=x86_64-unknown-none
+KERNEL_LD = $(RUST_SYSROOT)/lib/rustlib/$(RUST_HOST)/bin/rust-lld -flavor gnu
+endif
 HOST_EXEEXT := $(if $(filter Windows_NT,$(OS)),.exe,)
 HOST_SOCKET_LIBS := $(if $(filter Windows_NT,$(OS)),-lws2_32,)
 HOST_THREAD_FLAGS := $(if $(filter Windows_NT,$(OS)),,-pthread)
@@ -943,10 +954,10 @@ $(BUILD_DIR):
 	mkdir -p $@
 
 $(BUILD_DIR)/arch_%.o: src/arch/x86_64/%.S | $(BUILD_DIR)
-	$(CC) $(ASFLAGS) -c $< -o $@
+	$(KERNEL_CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/%.o: src/kernel/%.c | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
+	$(KERNEL_CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/package_trust.o: CPPFLAGS += -Ivendor/monocypher/src \
 	-Ivendor/monocypher/src/optional
@@ -963,7 +974,7 @@ $(PACKAGE_TRUST_ASSET_C): $(PACKAGE_TRUST_BLOB) tools/make-package-trust.py
 	$(PYTHON) tools/make-package-trust.py emit-c $< $@
 
 $(PACKAGE_TRUST_ASSET_OBJECT): $(PACKAGE_TRUST_ASSET_C) | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
+	$(KERNEL_CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
 
 package-trust-asset-tests: $(PACKAGE_TRUST_BLOB) $(PACKAGE_TRUST_ASSET_C)
 	$(PYTHON) tools/make-package-trust.py self-test
@@ -971,12 +982,12 @@ package-trust-asset-tests: $(PACKAGE_TRUST_BLOB) $(PACKAGE_TRUST_ASSET_C)
 
 $(BUILD_DIR)/monocypher/monocypher.o: vendor/monocypher/src/monocypher.c
 	mkdir -p $(dir $@)
-	$(CC) $(MONOCYPHER_CFLAGS) -MMD -MP -c $< -o $@
+	$(KERNEL_CC) $(MONOCYPHER_CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/monocypher/monocypher-ed25519.o: \
 		vendor/monocypher/src/optional/monocypher-ed25519.c
 	mkdir -p $(dir $@)
-	$(CC) $(MONOCYPHER_CFLAGS) -MMD -MP -c $< -o $@
+	$(KERNEL_CC) $(MONOCYPHER_CFLAGS) -MMD -MP -c $< -o $@
 
 # Regenerated only when the logo itself changes. The result is a build
 # artifact and is deliberately not committed; src/rust/abi.rs includes it.
@@ -1142,12 +1153,12 @@ $(FAT32_CORRUPT_IMAGE): $(FAT32_DATA_IMAGE) tools/fat32_image.py
 fat32-images: $(FAT32_SYSTEM_IMAGE) $(FAT32_DATA_IMAGE)
 
 $(KERNEL): $(OBJECTS) $(RUST_LIB) linker.ld
-	$(LD) $(LDFLAGS) -o $@ $(OBJECTS) $(RUST_LIB) || { \
+	$(KERNEL_LD) $(LDFLAGS) -o $@ $(OBJECTS) $(RUST_LIB) || { \
 		rm -f $@; \
 		sed -n '/__got_start/,/__got_end/p' $(BUILD_DIR)/phipia.map; \
 		sed 's/ASSERT(__got_end - __got_start <= 0x400,/ASSERT(1,/' \
 			linker.ld >$(BUILD_DIR)/linker-got-diagnostic.ld; \
-		$(LD) -nostdlib -z max-page-size=0x1000 -z noexecstack \
+		$(KERNEL_LD) -nostdlib -z max-page-size=0x1000 -z noexecstack \
 			--orphan-handling=error --build-id=none --emit-relocs \
 			-T $(BUILD_DIR)/linker-got-diagnostic.ld \
 			-o $(BUILD_DIR)/phipia-got-diagnostic.elf \
