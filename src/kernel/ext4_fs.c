@@ -32,6 +32,7 @@ struct ext4_mount_state {
     uint32_t controller_index;
     bool active;
     bool mounting;
+    bool detaching;
     bool operation_active;
     bool close_failed;
     bool orphan_cleanup_pending;
@@ -414,6 +415,10 @@ static enum phipfs_status begin_operation(
     if (!mount->active && !mount->mounting) {
         __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
         return PHIPFS_STATUS_NOT_MOUNTED;
+    }
+    if (mount->detaching) {
+        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
+        return PHIPFS_STATUS_BUSY;
     }
     if (mount->active && (!mount->healthy || mount->close_failed)) {
         __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
@@ -798,6 +803,10 @@ static enum phipfs_status retry_session_close(struct ext4_mount_state *mount)
     bool expected_idle = false;
     if (!__atomic_compare_exchange_n(&mount->operation_active, &expected_idle,
             true, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return PHIPFS_STATUS_BUSY;
+    if (mount->detaching) {
+        __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
+        return PHIPFS_STATUS_BUSY;
+    }
     if (mount->session.active && nvme_volume_close(&mount->session) != NVME_STATUS_OK) {
         __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
         return PHIPFS_STATUS_IO;
@@ -815,12 +824,15 @@ static enum phipfs_status release_failed_mount(struct ext4_mount_state *mount)
     if (mount->rust_mount != 0U) {
         status = begin_operation(mount, true);
         if (status != PHIPFS_STATUS_OK) return status;
+        mount->detaching = true;
         status = map_status(phipia_ext4_prepare_unmount(mount->rust_mount));
         const enum phipfs_status close_status = end_operation(mount, NULL);
-        if (status != PHIPFS_STATUS_OK) return status;
-        if (close_status != PHIPFS_STATUS_OK) return close_status;
+        if (status != PHIPFS_STATUS_OK || close_status != PHIPFS_STATUS_OK) {
+            mount->detaching = false;
+            return status != PHIPFS_STATUS_OK ? status : close_status;
+        }
         status = map_status(phipia_ext4_unmount(mount->rust_mount));
-        if (status != PHIPFS_STATUS_OK) return status;
+        if (status != PHIPFS_STATUS_OK) { mount->detaching = false; return status; }
     }
     zero_bytes(mount, sizeof(*mount));
     return PHIPFS_STATUS_OK;
@@ -934,14 +946,23 @@ enum phipfs_status ext4_backend_unmount(enum phipfs_volume volume)
         if (was_frozen) mount->close_failed = true;
         return status;
     }
+    // Recheck after acquiring the lease: an opening handle may have completed
+    // between the preliminary census and coordinator admission.
+    if (volume_has_open_handles(volume)) {
+        (void)end_operation(mount, NULL);
+        return PHIPFS_STATUS_BUSY;
+    }
+    mount->detaching = true;
     rust_status = phipia_ext4_prepare_unmount(mount->rust_mount);
     close_status = end_operation(mount, NULL);
     status = map_status(rust_status);
     if (status != PHIPFS_STATUS_OK || close_status != PHIPFS_STATUS_OK) {
+        mount->detaching = false;
         if (was_frozen) mount->close_failed = true;
         return status != PHIPFS_STATUS_OK ? status : close_status;
     }
     if (phipia_ext4_unmount(mount->rust_mount) != PHIPIA_EXT4_STATUS_OK) {
+        mount->detaching = false;
         if (was_frozen) mount->close_failed = true;
         return PHIPFS_STATUS_CORRUPT;
     }

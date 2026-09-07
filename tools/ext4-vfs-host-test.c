@@ -32,6 +32,7 @@ static bool reenter_on_close;
 static bool open_reports_failure;
 static bool expect_published_size_before_close;
 static unsigned capacity_queries;
+static unsigned unmount_refusals;
 static unsigned live_mounts = 1U;
 static uint32_t logical_block_bytes = 4096U;
 
@@ -70,6 +71,12 @@ int32_t phipia_ext4_unmount(uintptr_t mounted)
 {
     assert(mounted == 1U && live_mounts == 1U);
     assert(!ext4_mounts[PHIPFS_VOLUME_DATA].session.active);
+    assert(ext4_mounts[PHIPFS_VOLUME_DATA].detaching);
+    phipfs_handle attempted = 0U;
+    const unsigned before = opens;
+    assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &attempted) == PHIPFS_STATUS_BUSY);
+    assert(attempted == 0U && opens == before);
+    if (unmount_refusals != 0U) { --unmount_refusals; return PHIPIA_EXT4_STATUS_IO; }
     --live_mounts;
     return PHIPIA_EXT4_STATUS_OK;
 }
@@ -571,6 +578,11 @@ int main(void)
     expect_registered_before_close = true;
     assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);
     assert(!expect_registered_before_close && first != 0U);
+    assert(ext4_backend_close(first) == PHIPFS_STATUS_OK);
+    unmount_refusals = 1U;
+    assert(ext4_backend_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_CORRUPT);
+    assert(live_mounts == 1U && !ext4_mounts[PHIPFS_VOLUME_DATA].detaching);
+    assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);
     assert(ext4_backend_close(first) == PHIPFS_STATUS_OK);
     for (unsigned directory = 0U; directory < 2U; ++directory) {
         expect_registered_before_close = true;
