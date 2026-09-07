@@ -2505,7 +2505,9 @@ static enum phipfs_status files_refresh(void)
     }
 
     set_app_status(status == PHIPFS_STATUS_OK ?
-        "data volume / fat32 / synchronized view" : "Files", status);
+        (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA) ?
+            "data volume / ext4 / synchronized view" :
+            "data volume / fat32 / synchronized view") : "Files", status);
     if (status == PHIPFS_STATUS_OK) {
         phipia_sync_explorer();
     }
@@ -5630,7 +5632,9 @@ static enum ui_status draw_files_app(struct ui_rect damage)
     }
     if (status == UI_STATUS_OK) {
         status = draw_text(status_bar, damage, status_bar.x + 8U,
-            status_bar.y + 17U, "data / fat32", state.theme.title_inactive);
+            status_bar.y + 17U,
+            phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA) ?
+                "data / ext4" : "data / fat32", state.theme.title_inactive);
     }
     return status;
 }
