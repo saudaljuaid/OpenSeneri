@@ -88,6 +88,9 @@ impl NodeHeader {
         if eh_depth > 5 {
             return Err(CorruptKind::ExtentDepth(inode).into());
         }
+        if eh_max == 0 || eh_entries > eh_max {
+            return Err(CorruptKind::ExtentNodeSize(inode).into());
+        }
 
         Ok(Self {
             depth: eh_depth,
@@ -159,6 +162,9 @@ pub(crate) struct Extents {
 
 impl Extents {
     pub(crate) fn new(ext4: Ext4, inode: &Inode) -> Result<Self, Ext4Error> {
+        if NodeHeader::from_bytes(&inode.inline_data(), inode.index)?.max_entries != 4 {
+            return Err(CorruptKind::ExtentNodeSize(inode.index).into());
+        }
         Ok(Self {
             ext4,
             inode: inode.index,
@@ -219,6 +225,7 @@ impl Extents {
 
             return Ok(Some(Extent::new(ee_block, start_block, ee_len)));
         } else {
+            let parent_depth = item.depth;
             let ei_leaf_lo = read_u32le(entry, 4);
             let ei_leaf_hi = read_u16le(entry, 8);
             let child_block = u64_from_hilo(u32::from(ei_leaf_hi), ei_leaf_lo);
@@ -231,6 +238,9 @@ impl Extents {
                 .await?;
             let child_header =
                 NodeHeader::from_bytes(&child_header, self.inode)?;
+            if child_header.depth.checked_add(1) != Some(parent_depth) {
+                return Err(CorruptKind::ExtentDepth(self.inode).into());
+            }
 
             // The checksum is written in the four bytes directly after
             // the node.
@@ -271,8 +281,11 @@ impl Extents {
                 }
             }
 
-            self.to_visit
-                .push(ToVisitItem::new(child_node, self.inode)?);
+            let child = ToVisitItem::new(child_node, self.inode)?;
+            if child.depth.checked_add(1) != Some(parent_depth) {
+                return Err(CorruptKind::ExtentDepth(self.inode).into());
+            }
+            self.to_visit.push(child);
         }
 
         // This does not indicate end of iteration, we just haven't

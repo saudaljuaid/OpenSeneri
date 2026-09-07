@@ -270,8 +270,15 @@ impl ExtentNode {
         inode: InodeIndex,
         checksum_base: Checksum,
         ext4: &Ext4,
+        parent_depth: u16,
     ) -> Result<Self, Ext4Error> {
         let header = NodeHeader::from_bytes(data, inode)?;
+        // Every disk node is a child of the inline root or another node.
+        // Strict descent bounds both lookup and whole-tree mutation walks
+        // and refuses checksummed self/cyclic references before allocation.
+        if header.depth.checked_add(1) != Some(parent_depth) {
+            return Err(CorruptKind::ExtentDepth(inode).into());
+        }
         let node_size_in_bytes = header.node_size_in_bytes();
         if node_size_in_bytes > ext4.0.superblock.block_size() {
             return Err(CorruptKind::ExtentNodeSize(inode).into());
@@ -463,6 +470,7 @@ impl ExtentTree {
     async fn read_extent_node(
         &self,
         block: FsBlockIndex,
+        parent_depth: u16,
     ) -> Result<ExtentNode, Ext4Error> {
         let data = self.ext4.read_block(block).await?;
         ExtentNode::from_bytes(
@@ -471,6 +479,7 @@ impl ExtentTree {
             self.inode,
             self.checksum_base.clone(),
             &self.ext4,
+            parent_depth,
         )
     }
 
@@ -486,7 +495,7 @@ impl ExtentTree {
                     let mut children = Vec::with_capacity(internal_nodes.len());
                     for internal_node in internal_nodes {
                         children.push(
-                            self.read_extent_node(internal_node.block).await?,
+                            self.read_extent_node(internal_node.block, node.header.depth).await?,
                         );
                     }
                     while let Some(child) = children.pop() {
@@ -514,7 +523,7 @@ impl ExtentTree {
                     for internal_node in internal_nodes {
                         out.push(internal_node.block);
                         children.push(
-                            self.read_extent_node(internal_node.block).await?,
+                            self.read_extent_node(internal_node.block, node.header.depth).await?,
                         );
                     }
                     while let Some(child) = children.pop() {
@@ -828,6 +837,7 @@ impl ExtentTree {
                         self.inode,
                         self.checksum_base.clone(),
                         &self.ext4,
+                        node.header.depth,
                     )?;
                 }
             }
@@ -956,6 +966,7 @@ impl ExtentTree {
                             tree.inode,
                             tree.checksum_base.clone(),
                             &tree.ext4,
+                            node.header.depth,
                         )?;
                     }
                 }
@@ -988,6 +999,7 @@ impl ExtentTree {
                             tree.inode,
                             tree.checksum_base.clone(),
                             &tree.ext4,
+                            node.header.depth,
                         )?;
                     }
                 }
@@ -1044,6 +1056,7 @@ impl ExtentTree {
                                         self.inode,
                                         self.checksum_base.clone(),
                                         &self.ext4,
+                                        parent.header.depth,
                                     )?;
                                     prev = rightmost_leaf_last_extent(
                                         self,
@@ -1089,6 +1102,7 @@ impl ExtentTree {
                                                 self.inode,
                                                 self.checksum_base.clone(),
                                                 &self.ext4,
+                                                parent.header.depth,
                                             )?;
                                         next = leftmost_leaf_first_extent(
                                             self,
@@ -1130,6 +1144,7 @@ impl ExtentTree {
                         self.inode,
                         self.checksum_base.clone(),
                         &self.ext4,
+                        node.header.depth,
                     )?;
                 }
             }

@@ -1199,6 +1199,69 @@ fn legacy_zero_link_orphan_recovery_retries_every_storage_failure() {
     for case in 0..4 { orphan_recovery_failure_case(case); }
 }
 
+#[test]
+fn checksummed_extent_cycles_are_refused_before_traversal_or_mutation() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let name = b"system/extent-cycle";
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    for block in 0..6 { ext4::transaction_probe(&mut mounted, name, block * 8192, b"extent").unwrap(); }
+    let number = ext4::stat(&mounted, name).unwrap().inode as u32;
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-extent-cycle-before");
+    drop(mounted);
+    let mut bytes = DEVICE.with_borrow(|device| device.bytes.clone());
+    let ipg = u32::from_le_bytes(bytes[1064..1068].try_into().unwrap());
+    let descriptor = 4096 + ((number - 1) / ipg) as usize * 64;
+    let table = u64::from(u32::from_le_bytes(bytes[descriptor + 8..descriptor + 12].try_into().unwrap()))
+        | (u64::from(u32::from_le_bytes(bytes[descriptor + 40..descriptor + 44].try_into().unwrap())) << 32);
+    let inode_start = table as usize * 4096 + ((number - 1) % ipg) as usize * 256;
+    assert_eq!(u16::from_le_bytes(bytes[inode_start + 0x2e..inode_start + 0x30].try_into().unwrap()), 1);
+    let leaf = u64::from(u32::from_le_bytes(bytes[inode_start + 0x38..inode_start + 0x3c].try_into().unwrap()))
+        | (u64::from(u16::from_le_bytes(bytes[inode_start + 0x3c..inode_start + 0x3e].try_into().unwrap())) << 32);
+    let start = leaf as usize * 4096;
+    // Turn the checksummed leaf into an internal node referring to itself.
+    // Its depth no longer decreases from the root, so it must never be followed.
+    bytes[start + 2..start + 4].copy_from_slice(&1u16.to_le_bytes());
+    bytes[start + 6..start + 8].copy_from_slice(&1u16.to_le_bytes());
+    bytes[start + 12..start + 16].fill(0);
+    bytes[start + 16..start + 20].copy_from_slice(&(leaf as u32).to_le_bytes());
+    bytes[start + 20..start + 22].copy_from_slice(&((leaf >> 32) as u16).to_le_bytes());
+    bytes[start + 22..start + 24].fill(0);
+    let maximum = u16::from_le_bytes(bytes[start + 4..start + 6].try_into().unwrap()) as usize;
+    let checksum_offset = start + 12 * (maximum + 1);
+    let mut checksum = u32::from_le_bytes(bytes[1648..1652].try_into().unwrap());
+    for byte in number.to_le_bytes().iter()
+        .chain(&bytes[inode_start + 0x64..inode_start + 0x68])
+        .chain(&bytes[start..checksum_offset]) {
+        checksum ^= u32::from(*byte);
+        for _ in 0..8 { checksum = (checksum >> 1) ^ (0x82f6_3b78u32 & 0u32.wrapping_sub(checksum & 1)); }
+    }
+    bytes[checksum_offset..checksum_offset + 4].copy_from_slice(&checksum.to_le_bytes());
+    let stage = std::rc::Rc::new(ext4plus::JournalMutationStage::new(Box::new(bytes.clone()), bytes.len() as u64).unwrap());
+    let filesystem = ext4plus::Ext4::load_with_writer(Box::new(stage.clone()), Some(Box::new(stage.clone()))).unwrap();
+    let inode = ext4plus::inode::Inode::read(&filesystem, std::num::NonZeroU32::new(number).unwrap()).unwrap();
+    // Exercise the separate read-only iterator as well as mutable lookup and
+    // complete-tree collection. No malformed directory entry is reached.
+    let mut iterator = ext4plus::ReadDir::new(filesystem.clone(), &inode, ext4plus::path::PathBuf::empty()).unwrap();
+    assert!(iterator.next().unwrap().is_err());
+    assert!(iterator.next().is_none());
+    let mut file = ext4plus::file::File::open_inode(&filesystem, inode).unwrap();
+    assert!(file.read_bytes_at(&mut [0; 1], 0).is_err());
+    assert!(file.write_bytes_at(b"bad", 0).is_err());
+    assert!(file.truncate(0).is_err());
+    assert!(stage.is_empty());
+    let size = bytes.len() as u64;
+    DEVICE.with_borrow_mut(|device| *device = Device { bytes: bytes.clone(), watched_read_block: Some(leaf), ..Device::default() });
+    assert!(ext4::mount(1, size).is_err());
+    DEVICE.with_borrow(|device| {
+        assert!(device.events.is_empty());
+        assert!(device.watched_reads <= 2);
+        assert_eq!(device.bytes, bytes);
+    });
+}
+
 fn orphan_recovery_failure_case(case: u8) {
     let directory = case != 0;
     let Some(path) = fixture() else { return };
