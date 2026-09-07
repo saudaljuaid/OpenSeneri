@@ -285,3 +285,9 @@ Phipia uses it before inode-based I/O, and orphan validation shares this check.
 Linux v6.12 fs/ext4/ialloc.c releases allocation separately from the inode body;
 a valid body checksum alone cannot identify a live inode. A real e2fsprogs
 fixture reconstructs a freed checksummed body and checks storage-free refusal.
+
+Directory parent link updates preserve the dir_nlink sentinel (one) for indexed
+directories and use it when an admitted indexed parent's count exceeds 65000.
+Mkdir, cross-parent move and rmdir share the counter handling, following Linux
+v6.12 ext4_inc_count/ext4_dec_count. An indexed directory can be empty while its
+count remains one; removal still validates every entry and both dot records.

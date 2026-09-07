@@ -1427,6 +1427,30 @@ fn short_directory_entries_grow_without_consuming_checksum_tails() {
 }
 
 #[test]
+fn indexed_directory_untracked_link_counts_survive_namespace_mutations() {
+    let Some(path) = fixture() else { return };
+    let image = path.with_extension("dir-nlink.img");
+    std::fs::copy(&path, &image).unwrap();
+    debugfs(&image, "set_inode_field /indexed links_count 1");
+    let mut mounted = mount_fixture(&image);
+    fsck(&path, "coordinator-dir-nlink-before");
+    let parent = ext4::stat(&mounted, b"system").unwrap();
+    ext4::create_directory_probe(&mut mounted, b"indexed/child").unwrap();
+    assert_eq!(ext4::stat(&mounted, b"indexed").unwrap().links, 1);
+    ext4::rename_probe(&mut mounted, b"indexed/child", b"system/child").unwrap();
+    assert_eq!(ext4::stat(&mounted, b"indexed").unwrap().links, 1);
+    assert_eq!(ext4::stat(&mounted, b"system").unwrap().links, parent.links + 1);
+    ext4::rename_probe(&mut mounted, b"system/child", b"indexed/child").unwrap();
+    assert_eq!(ext4::stat(&mounted, b"system").unwrap().links, parent.links);
+    assert_eq!(ext4::stat(&mounted, b"indexed").unwrap().links, 1);
+    ext4::remove_directory_probe(&mut mounted, b"indexed/child").unwrap();
+    assert_eq!(ext4::stat(&mounted, b"indexed").unwrap().links, 1);
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-dir-nlink-after");
+}
+
+#[test]
 fn indexed_directory_moves_update_dotdot_checksum_and_refuse_hostile_counts() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);

@@ -16,6 +16,7 @@ use crate::dir_htree::{
     insert_child_into_parent, split_index_path_for_new_child,
 };
 use crate::error::{CorruptKind, Ext4Error};
+use crate::features::ReadOnlyCompatibleFeatures;
 use crate::file::{truncate, write_at};
 use crate::file_type::FileType;
 use crate::inode::{Inode, InodeFlags, InodeIndex};
@@ -29,6 +30,30 @@ use crate::util::write_u32le;
 use crate::util::{read_u16le, read_u32le, write_u16le};
 use alloc::vec;
 use alloc::vec::Vec;
+
+fn untracked_directory_links(fs: &Ext4, inode: &Inode) -> bool {
+    inode.file_type().is_dir()
+        && inode.flags().contains(InodeFlags::DIRECTORY_HTREE)
+        && fs.superblock().read_only_compatible_features()
+            .contains(ReadOnlyCompatibleFeatures::LARGE_DIRECTORIES)
+}
+
+fn parent_links_after(fs: &Ext4, inode: &Inode, add: bool) -> Result<u16, Ext4Error> {
+    let old = inode.links_count();
+    let untracked = untracked_directory_links(fs, inode);
+    // Linux ext4_inc_count/ext4_dec_count keep the dir_nlink sentinel at one.
+    if old == 1 && untracked { return Ok(1); }
+    if old < 2 { return Err(dir_entry_error(inode.index)); }
+    if add {
+        if old >= 65000 {
+            return if untracked { Ok(1) } else { Err(Ext4Error::Readonly) };
+        }
+        Ok(old + 1)
+    } else {
+        old.checked_sub(1).filter(|links| *links >= 2)
+            .ok_or_else(|| dir_entry_error(inode.index))
+    }
+}
 
 /// Search a directory inode for an entry with the given `name`. If
 /// found, return the entry's inode, otherwise return a `NotFound`
@@ -732,9 +757,7 @@ impl Dir {
         target_inode.write(&self.fs).await?;
 
         if target_inode.file_type() == FileType::Directory {
-            let parent_old = self.inode.links_count();
-            let parent_new =
-                parent_old.checked_add(1).ok_or(Ext4Error::Readonly)?;
+            let parent_new = parent_links_after(&self.fs, &self.inode, true)?;
             self.inode.set_links_count(parent_new);
             self.inode.write(&self.fs).await?;
         }
@@ -864,11 +887,8 @@ impl Dir {
             }
             ancestor = parent;
         }
-        let source_links = self.inode.links_count().checked_sub(1)
-            .filter(|links| *links >= 2)
-            .ok_or_else(|| dir_entry_error(self.inode.index))?;
-        let destination_links = destination_parent.inode.links_count()
-            .checked_add(1).ok_or(Ext4Error::Readonly)?;
+        let source_links = parent_links_after(&self.fs, &self.inode, false)?;
+        let destination_links = parent_links_after(&self.fs, &destination_parent.inode, true)?;
         let mut blocks = FileBlocks::new(self.fs.clone(), &inode)?;
         let block_index = blocks.next().await
             .ok_or_else(|| dir_entry_error(inode.index))??;
@@ -996,12 +1016,9 @@ impl Dir {
         if linked_inode.index != inode.index {
             return Err(dir_entry_error(self.inode.index));
         }
-        let parent_links = self.inode.links_count();
-        let parent_links_after = parent_links
-            .checked_sub(1)
-            .filter(|links| *links >= 2)
-            .ok_or_else(|| dir_entry_error(self.inode.index))?;
-        if inode.links_count() != 2 {
+        let parent_links_after = parent_links_after(&self.fs, &self.inode, false)?;
+        if inode.links_count() != 2
+            && !(inode.links_count() == 1 && untracked_directory_links(&self.fs, &inode)) {
             return Err(dir_entry_error(inode.index));
         }
 
