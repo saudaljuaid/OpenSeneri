@@ -11,7 +11,7 @@ use crate::Ext4;
 use crate::checksum::Checksum;
 use crate::error::{CorruptKind, Ext4Error};
 use crate::features::{CompatibleFeatures, FilesystemFeature};
-use crate::inode::Inode;
+use crate::inode::{Inode, InodeMode};
 use crate::util::{read_u16le, read_u32le, write_u16le, write_u32le};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -121,6 +121,61 @@ fn parse_xattr_name(name: &[u8]) -> Result<(u8, Vec<u8>), Ext4Error> {
     }
 
     Err(Ext4Error::InvalidXattrName)
+}
+
+// ext4 ACL version 1 uses four-byte entries, except named users/groups
+// which also carry a 32-bit ID. These are not the version 2 xattr ABI bytes.
+struct PosixAcl {
+    owner: usize,
+    group: usize,
+    other: usize,
+    extended: bool,
+}
+
+impl PosixAcl {
+    fn parse(value: &[u8]) -> Option<Self> {
+        if value.len() < 16 || read_u32le(value, 0) != 1 { return None; }
+        let mut state = 0;
+        let mut offset = 4;
+        let mut group = None;
+        let mut mask = None;
+        let mut other = None;
+        let mut named = Vec::new();
+        while offset < value.len() {
+            if value.len() - offset < 4 || read_u16le(value, offset + 2) > 7 { return None; }
+            let tag = read_u16le(value, offset);
+            match tag {
+                1 if state == 0 => state = 1,
+                2 | 8 if (tag == 2 && state == 1) || (tag == 8 && state == 2) => {
+                    if value.len() - offset < 8 { return None; }
+                    let id = read_u32le(value, offset + 4);
+                    if id == u32::MAX || named.contains(&(tag, id)) { return None; }
+                    named.push((tag, id));
+                }
+                4 if state == 1 => { group = Some(offset); state = 2; }
+                16 if state == 2 => { mask = Some(offset); state = 3; }
+                32 if state == 3 || (state == 2 && named.is_empty()) => {
+                    other = Some(offset); state = 4;
+                }
+                _ => return None,
+            }
+            offset += if tag == 2 || tag == 8 { 8 } else { 4 };
+        }
+        if state != 4 { return None; }
+        Some(Self { owner: 4, group: mask.or(group)?, other: other?, extended: mask.is_some() })
+    }
+
+    fn apply_mode(&self, value: &mut [u8], mut mode: u16, inherit: bool) -> u16 {
+        // Linux posix_acl_create_masq / __posix_acl_chmod_masq: named
+        // permissions and the owning group are unchanged when a mask exists.
+        for (offset, shift) in [(self.owner, 6), (self.group, 3), (self.other, 0)] {
+            let requested = (mode >> shift) & 7;
+            let permissions = if inherit { requested & read_u16le(value, offset + 2) } else { requested };
+            write_u16le(value, offset + 2, permissions);
+            mode = (mode & !(7 << shift)) | (permissions << shift);
+        }
+        mode
+    }
 }
 
 fn parse_xattr_entries(
@@ -506,7 +561,56 @@ impl Inode {
             }
         }
 
+        for entry in &entries {
+            if entry.name_index == EXT4_XATTR_POSIX_ACL_ACCESS || entry.name_index == EXT4_XATTR_POSIX_ACL_DEFAULT {
+                // Linux treats a version-only ACL as absent. Otherwise reject
+                // malformed ACLs before mount recovery or any mutation uses them.
+                if (entry.value != 1u32.to_le_bytes() && PosixAcl::parse(&entry.value).is_none())
+                    || (entry.name_index == EXT4_XATTR_POSIX_ACL_DEFAULT && !self.file_type().is_dir()) {
+                    return Err(CorruptKind::Xattr(self.index).into());
+                }
+            }
+        }
+
         Ok(entries)
+    }
+
+    /// Initialize a newly allocated child's ACLs before publishing its name.
+    /// The caller must keep inode, xattrs and namespace in the same transaction.
+    #[maybe_async::maybe_async]
+    pub async fn inherit_default_acl(&mut self, ext4: &Ext4, parent: &Inode) -> Result<(), Ext4Error> {
+        if self.file_type().is_symlink() { return Ok(()); }
+        let Some(default) = parent.get_xattr(ext4, b"system.posix_acl_default").await? else { return Ok(()); };
+        if default == 1u32.to_le_bytes() { return Ok(()); }
+        let acl = PosixAcl::parse(&default).ok_or(CorruptKind::Xattr(parent.index))?;
+        let mut access = default.clone();
+        let mode = acl.apply_mode(&mut access, self.mode().bits(), true);
+        self.set_mode(InodeMode::from_bits_retain(mode))?;
+        if self.file_type().is_dir() {
+            self.set_xattr(ext4, b"system.posix_acl_default", default).await?;
+        }
+        if acl.extended {
+            self.set_xattr(ext4, b"system.posix_acl_access", access).await?;
+        }
+        self.write(ext4).await
+    }
+
+    /// Change mode and any existing access ACL within the caller's stage.
+    #[maybe_async::maybe_async]
+    pub async fn chmod_with_acl(&mut self, ext4: &Ext4, mode: InodeMode) -> Result<(), Ext4Error> {
+        let access = self.get_xattr(ext4, b"system.posix_acl_access").await?;
+        self.set_mode(mode)?;
+        if let Some(mut access) = access {
+            if access == 1u32.to_le_bytes() {
+                self.remove_xattr(ext4, b"system.posix_acl_access").await?;
+            } else {
+                let acl = PosixAcl::parse(&access).ok_or(CorruptKind::Xattr(self.index))?;
+                acl.apply_mode(&mut access, mode.bits(), false);
+                if acl.extended { self.set_xattr(ext4, b"system.posix_acl_access", access).await?; }
+                else { self.remove_xattr(ext4, b"system.posix_acl_access").await?; }
+            }
+        }
+        self.write(ext4).await
     }
 
     /// List the inode's extended attribute names.

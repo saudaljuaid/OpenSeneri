@@ -520,8 +520,15 @@ It also passes non-ASCII filename bytes through unchanged for this backend.
 Root mode/time/xattr operations use the metadata path rather than namespace
 creation checks. Mount-relative syntax and existing path/depth bounds apply.
 
-VFS chmod replaces permission/special bits (0000–07777) through JBD2; immutable inodes and
-inodes with access ACLs are refused. The admitted xattr mutation namespace is
+VFS chmod replaces permission/special bits (0000–07777) through JBD2; immutable inodes
+are refused. The writable branch now updates an existing access ACL's owner,
+mask (or owning group), and other permissions in that same transaction. New
+files and directories inherit a parent's default ACL with requested permissions
+masked as in Linux; directories also retain the default for their children.
+Hard links, rename and symlinks do not acquire a destination parent's ACL.
+ACL parsing, inheritance, chmod, allocation rollback and crash fixtures await
+Linux verification; this does not claim complete multiuser ACL enforcement.
+The admitted explicit xattr mutation namespace is
 `user.*`, with names up to 255 bytes. Set/replace/remove journal the inode and
 any allocated, rewritten or released external attribute block. The writer
 packs small values in the inode and remaining values in one external block,

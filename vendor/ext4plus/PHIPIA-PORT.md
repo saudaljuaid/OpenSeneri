@@ -270,6 +270,19 @@ coordinator rollback discards reservations on failure. New Linux hash/export,
 shared-copy crash and allocation/rewrite/release fault tests remain pending.
 Inodes with extra_isize=0 retain their opaque tail and can use external xattrs.
 
+The writable branch parses ext4 version-1 POSIX ACL entries (short owner/group,
+mask/other records and full named-ID records), rejecting malformed permissions,
+ordering, duplicate IDs and default ACLs on non-directories during admission.
+New-file/directory creation calls `inherit_default_acl` before publishing the
+name; `chmod_with_acl` changes mode and access-mask permissions together. Both
+use the existing staged inode/external-xattr writer. Linux v6.12
+`fs/posix_acl.c` (`posix_acl_create_masq`, `__posix_acl_chmod_masq`) and
+`fs/ext4/acl.c` define these semantics. New real fixtures cover basic, named,
+external and inherited defaults, chmod, unchanged link/rename/symlink ACLs,
+allocation refusal, storage retries, recovery and malformed admission. Runtime
+verification of this addition is pending; general ACL access enforcement is
+outside the claimed profile.
+
 The journal coordinator sets an exclusive transaction time on its staged view.
 Inode writes update ctime (and directory mtime); file write/truncate updates
 mtime; creation sets all initial times after reserving the extra inode fields.

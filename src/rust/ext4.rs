@@ -1529,12 +1529,8 @@ pub(crate) fn chmod(mounted: &mut Mounted, path: &[u8], mode: u16) -> Result<(),
     if mode & !0o7777 != 0 { return Err(Status::Invalid); }
     mutate_inode(mounted, path, PendingMutationKind::Chmod, Vec::from(mode.to_le_bytes()),
         |filesystem, inode| {
-            // Updating mode alone would leave an access ACL inconsistent.
-            if inode.get_xattr(filesystem, b"system.posix_acl_access")?.is_some() {
-                return Err(Ext4Error::Readonly);
-            }
-            inode.set_mode(InodeMode::from_bits_retain((inode.mode().bits() & !0o7777) | mode))?;
-            inode.write(filesystem)
+            inode.chmod_with_acl(filesystem,
+                InodeMode::from_bits_retain((inode.mode().bits() & !0o7777) | mode))
         })
 }
 
@@ -1635,6 +1631,7 @@ pub(crate) fn create_file_probe(
             time: Duration::from_secs(0),
             flags: InodeFlags::empty(),
         })?;
+        inode.inherit_default_acl(filesystem, directory.inode())?;
         directory.link(name, &mut inode)
     })();
     if let Err(error) = mutation {
@@ -2010,7 +2007,7 @@ pub(crate) fn create_directory_probe(
             .path_to_inode(parent, FollowSymlinks::All)?;
         let mut parent_directory =
             Dir::open_inode(filesystem, parent_inode)?;
-        let inode = filesystem.create_inode(InodeCreationOptions {
+        let mut inode = filesystem.create_inode(InodeCreationOptions {
             file_type: FileType::Directory,
             mode: InodeMode::S_IFDIR
                 | InodeMode::S_IRUSR
@@ -2025,6 +2022,7 @@ pub(crate) fn create_directory_probe(
             time: Duration::from_secs(0),
             flags: InodeFlags::empty(),
         })?;
+        inode.inherit_default_acl(filesystem, parent_directory.inode())?;
         let mut directory = Dir::init(
             filesystem.clone(),
             inode,

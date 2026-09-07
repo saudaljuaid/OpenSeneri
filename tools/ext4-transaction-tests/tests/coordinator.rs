@@ -330,7 +330,7 @@ fn commit_reload_failure_hides_view_and_retry_does_not_rewrite_storage() {
 #[test]
 fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
     let Some(path) = fixture() else { return };
-    for case in 0..28 {
+    for case in 0..31 {
         let mut mounted = mount_fixture(&path);
         if case != 0 && case < 5 {
             if case == 4 {
@@ -355,7 +355,7 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
             ext4::transaction_probe(&mut mounted, b"system/retry-test", 0, &vec![0x71; 4093]).unwrap();
             ext4::sync(&mut mounted).unwrap();
         }
-        if case >= 9 && case != 22 {
+        if case >= 9 && case != 22 && case != 28 && case != 29 {
             if case == 19 || case == 23 || case == 24 {
                 ext4::create_directory_probe(&mut mounted, b"system/retry-test").unwrap();
                 if case == 24 {
@@ -390,6 +390,17 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
             std::fs::write(&image, initial).unwrap();
             debugfs(&image, "set_inode_field /system/retry-test flags 0x80020");
             std::fs::read(&image).unwrap()
+        } else if case >= 28 {
+            let image = path.with_extension(format!("coordinator-acl-retry-{case}.img"));
+            write_sparse_fixture(&image, &initial).unwrap();
+            let acl = path.with_extension(format!("coordinator-acl-retry-{case}.bin"));
+            std::fs::write(&acl, posix_acl_fixture(20, 2)).unwrap();
+            debugfs(&image, &format!("ea_set -f {} /system system.posix_acl_default", acl.display()));
+            if case == 30 {
+                debugfs(&image, &format!("ea_set -f {} /system/retry-test system.posix_acl_access", acl.display()));
+                debugfs(&image, &format!("set_inode_field /system/retry-test mode {}", 0o100751));
+            }
+            std::fs::read(&image).unwrap()
         } else { initial };
         let mut mounted = mount_bytes(initial.clone());
         let target = if case == 5 { b"README.TXT".to_vec() } else { vec![b'x'; 97] };
@@ -422,6 +433,9 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
                 &[inode, replaced_inode, replaced_inode]),
             25 | 26 => ext4::set_xattr(mounted, b"system/retry-test", b"user.note", Some(&[0x52; 701])),
             27 => ext4::set_xattr(mounted, b"system/retry-test", b"user.note", Some(b"inline")),
+            28 => ext4::create_file_probe(mounted, b"system/retry-test", 0o600),
+            29 => ext4::create_directory_probe(mounted, b"system/retry-test"),
+            30 => ext4::chmod(mounted, b"system/retry-test", 0o777),
             _ => ext4::symlink_probe(mounted, b"system/retry-test", &target),
         };
         mutate(&mut mounted).unwrap();
@@ -451,6 +465,7 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
                 );
                 let failed_prefix = DEVICE.with_borrow(|device| device.events.clone());
                 assert_eq!(failed_prefix, expected[..=failed_at]);
+                let acl_crash = (case >= 28).then(|| DEVICE.with_borrow(|device| device.bytes.clone()));
                 if failed_at >= 2 {
                     assert_public_reads_refused(&mounted);
                     if case == 8 {
@@ -489,7 +504,7 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
                     assert_eq!(ext4::lstat(&mounted, name).unwrap().links, if case == 17 { 2 } else { 1 });
                 } else {
                     assert_eq!(ext4::stat(&mounted, name).unwrap().links,
-                        if case == 4 || case == 16 || case == 24 { 2 } else { 1 }, "case {case}, event {failed_at}");
+                        if case == 4 || case == 16 || case == 24 || case == 29 { 2 } else { 1 }, "case {case}, event {failed_at}");
                 }
                 ext4::sync(&mut mounted).unwrap();
                 ext4::unmount(&mounted).unwrap();
@@ -499,6 +514,30 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
                         "case {case}, event {failed_at}, accepted {accept}"
                     )
                 });
+                if let Some(crash) = acl_crash {
+                    drop(mounted);
+                    let recovered = mount_bytes(crash);
+                    let state = ext4::stat(&recovered, b"system/retry-test");
+                    if case == 30 || state.is_ok() {
+                        let mode = state.unwrap().mode & 0o777;
+                        assert!(if case == 30 { mode == 0o751 || mode == 0o777 }
+                            else { mode == if case == 28 { 0o600 } else { 0o751 } });
+                        let raw = ext4plus::Ext4::load(Box::new(DEVICE.with_borrow(|device| device.bytes.clone()))).unwrap();
+                        let inode = raw.path_to_inode(ext4plus::path::Path::try_from("/system/retry-test").unwrap(),
+                            ext4plus::FollowSymlinks::All).unwrap();
+                        let mut expected_acl = posix_acl_fixture(20, 1);
+                        expected_acl[6..8].copy_from_slice(&((mode >> 6) & 7).to_le_bytes());
+                        let mask = expected_acl.len() - 6;
+                        expected_acl[mask..mask + 2].copy_from_slice(&((mode >> 3) & 7).to_le_bytes());
+                        let other = expected_acl.len() - 2;
+                        expected_acl[other..].copy_from_slice(&(mode & 7).to_le_bytes());
+                        assert_eq!(inode.get_xattr(&raw, b"system.posix_acl_access").unwrap(), Some(expected_acl));
+                        assert_eq!(inode.get_xattr(&raw, b"system.posix_acl_default").unwrap(),
+                            (case == 29).then(|| posix_acl_fixture(20, 1)));
+                    } else { assert_eq!(state, Err(Status::NotFound)); }
+                    ext4::unmount(&recovered).unwrap();
+                    fsck(&path, &format!("coordinator-acl-cut-{case}-{failed_at}-{accept}"));
+                }
             }
         }
         // Every refusal converged byte-for-byte to this same image, including
@@ -710,7 +749,7 @@ fn mode_and_inline_xattrs_survive_remount_and_rollback_enospc() {
 }
 
 #[test]
-fn linux_acl_entries_survive_user_xattr_mutation_and_guard_chmod() {
+fn linux_acl_entries_survive_user_xattr_mutation_and_acl_aware_chmod() {
     let Some(path) = fixture() else { return };
     let name = b"system/acl-preserve";
     let mut mounted = mount_fixture(&path);
@@ -748,9 +787,14 @@ fn linux_acl_entries_survive_user_xattr_mutation_and_guard_chmod() {
     let mut mounted = mount_bytes(baseline.clone());
     fsck(&path, "coordinator-acl-import");
     ext4::set_xattr(&mut mounted, name, b"user.note", Some(b"second")).unwrap();
-    let before = DEVICE.with_borrow_mut(|device| { device.events.clear(); device.bytes.clone() });
-    assert_eq!(ext4::chmod(&mut mounted, name, 0o777), Err(Status::ReadOnly));
-    DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, before); });
+    ext4::chmod(&mut mounted, name, 0o777).unwrap();
+    assert_eq!(ext4::stat(&mounted, name).unwrap().mode & 0o777, 0o777);
+    let raw = ext4plus::Ext4::load(Box::new(DEVICE.with_borrow(|device| device.bytes.clone()))).unwrap();
+    let inode = ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(number).unwrap()).unwrap();
+    let mut changed = disk_acl.clone();
+    for offset in [6, 22, 26] { changed[offset..offset + 2].copy_from_slice(&7u16.to_le_bytes()); }
+    assert_eq!(inode.get_xattr(&raw, b"system.posix_acl_access").unwrap(), Some(changed));
+    ext4::chmod(&mut mounted, name, 0o640).unwrap();
     assert_eq!(ext4::stat(&mounted, name).unwrap().mode & 0o777, 0o640);
     ext4::transaction_probe(&mut mounted, name, 0, b"preserved").unwrap();
     ext4::set_xattr(&mut mounted, name, b"user.note", None).unwrap();
@@ -799,6 +843,142 @@ fn linux_acl_entries_survive_user_xattr_mutation_and_guard_chmod() {
             assert!(inode.list_xattrs(&raw).is_err(), "case={case}");
             DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
             assert!(ext4::mount(1, hostile.len() as u64).is_err());
+            DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+        }
+    }
+}
+
+// A default ACL with owner=rwx, group/mask=r-x, other=x. Named users retain
+// rw- while the access mask controls their effective permissions.
+fn posix_acl_fixture(named: u32, version: u32) -> Vec<u8> {
+    let mut entries = vec![(1u16, 7u16, u32::MAX)];
+    entries.extend((0..named).map(|id| (2, 6, 1000 + id)));
+    entries.push((4, 5, u32::MAX));
+    if named != 0 {
+        entries.push((8, 4, 2000));
+        entries.push((16, 5, u32::MAX));
+    }
+    entries.push((32, 1, u32::MAX));
+    let mut bytes = Vec::from(version.to_le_bytes());
+    for (tag, permissions, id) in entries {
+        bytes.extend_from_slice(&tag.to_le_bytes());
+        bytes.extend_from_slice(&permissions.to_le_bytes());
+        if version == 2 || tag == 2 || tag == 8 { bytes.extend_from_slice(&id.to_le_bytes()); }
+    }
+    bytes
+}
+
+#[test]
+fn inherited_acls_mask_new_modes_survive_rename_and_rollback_allocations() {
+    let Some(path) = fixture() else { return };
+    for named in [0, 1, 20] {
+        let image = path.with_extension(format!("coordinator-default-acl-{named}.img"));
+        write_sparse_fixture(&image, &std::fs::read(&path).unwrap()).unwrap();
+        let acl = path.with_extension(format!("coordinator-default-acl-{named}.bin"));
+        let default = posix_acl_fixture(named, 2);
+        std::fs::write(&acl, &default).unwrap();
+        debugfs(&image, &format!("ea_set -f {} /system system.posix_acl_default", acl.display()));
+        let mut mounted = mount_fixture(&image);
+        // Arm recovery outside the allocation-refusal experiment.
+        ext4::create_file_probe(&mut mounted, b"data/user/anchor", 0o600).unwrap();
+        let baseline = DEVICE.with_borrow_mut(|device| { device.events.clear(); device.bytes.clone() });
+        let free = ext4::free_bytes(&mounted).unwrap();
+        ext4::set_stage_block_limit(&mut mounted, 1).unwrap();
+        assert_eq!(ext4::create_directory_probe(&mut mounted, b"system/acl-directory"), Err(Status::Full));
+        DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, baseline); });
+        assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
+        assert_eq!(ext4::stat(&mounted, b"system/acl-directory"), Err(Status::NotFound));
+        ext4::set_stage_block_limit(&mut mounted, 64).unwrap();
+        ext4::create_directory_probe(&mut mounted, b"system/acl-directory").unwrap();
+        ext4::create_file_probe(&mut mounted, b"system/acl-file", 0o666).unwrap();
+        ext4::create_file_probe(&mut mounted, b"system/acl-directory/grandchild", 0o666).unwrap();
+        ext4::symlink_probe(&mut mounted, b"system/acl-symlink", b"acl-file").unwrap();
+        ext4::create_file_probe(&mut mounted, b"data/user/no-acl", 0o666).unwrap();
+        ext4::link_file_probe(&mut mounted, b"data/user/no-acl", b"system/acl-hardlink").unwrap();
+        ext4::rename_probe(&mut mounted, b"data/user/no-acl", b"system/acl-renamed").unwrap();
+        assert_eq!(ext4::stat(&mounted, b"system/acl-file").unwrap().mode & 0o777, 0o640);
+        assert_eq!(ext4::stat(&mounted, b"system/acl-directory").unwrap().mode & 0o777, 0o751);
+        assert_eq!(ext4::stat(&mounted, b"system/acl-directory/grandchild").unwrap().mode & 0o777, 0o640);
+        assert_eq!(ext4::stat(&mounted, b"system/acl-renamed").unwrap().mode & 0o777, 0o666);
+        ext4::sync(&mut mounted).unwrap();
+        ext4::unmount(&mounted).unwrap();
+        fsck(&path, &format!("coordinator-inherited-acl-{named}"));
+        let bytes = DEVICE.with_borrow(|device| device.bytes.clone());
+        write_sparse_fixture(&image, &bytes).unwrap();
+        let raw = ext4plus::Ext4::load(Box::new(bytes.clone())).unwrap();
+        for name in ["/system/acl-symlink", "/system/acl-hardlink", "/system/acl-renamed"] {
+            let inode = raw.path_to_inode(ext4plus::path::Path::try_from(name).unwrap(),
+                ext4plus::FollowSymlinks::ExcludeFinalComponent).unwrap();
+            assert_eq!(inode.get_xattr(&raw, b"system.posix_acl_access").unwrap(), None);
+            assert_eq!(inode.get_xattr(&raw, b"system.posix_acl_default").unwrap(), None);
+        }
+        for name in ["/system/acl-file", "/system/acl-directory", "/system/acl-directory/grandchild"] {
+            let is_directory = name == "/system/acl-directory";
+            let inode = raw.path_to_inode(ext4plus::path::Path::try_from(name).unwrap(), ext4plus::FollowSymlinks::All).unwrap();
+            assert_eq!(inode.get_xattr(&raw, b"system.posix_acl_default").unwrap(),
+                is_directory.then(|| posix_acl_fixture(named, 1)));
+            if named == 0 {
+                assert_eq!(inode.get_xattr(&raw, b"system.posix_acl_access").unwrap(), None);
+            } else {
+                let export = path.with_extension(format!("coordinator-inherited-acl-export-{named}.bin"));
+                debugfs(&image, &format!("ea_get -f {} {name} system.posix_acl_access", export.display()));
+                let mut expected = default.clone();
+                if !is_directory {
+                    expected[6..8].copy_from_slice(&6u16.to_le_bytes());
+                    let mask = expected.len() - 14;
+                    expected[mask..mask + 2].copy_from_slice(&4u16.to_le_bytes());
+                    let other = expected.len() - 6;
+                    expected[other..other + 2].fill(0);
+                }
+                assert_eq!(std::fs::read(export).unwrap(), expected, "{name}");
+            }
+        }
+        drop(mounted);
+        let mut mounted = mount_bytes(bytes);
+        ext4::chmod(&mut mounted, b"system/acl-file", 0o702).unwrap();
+        ext4::unlink_file_probe(&mut mounted, b"system/acl-file").unwrap();
+        ext4::unlink_file_probe(&mut mounted, b"system/acl-directory/grandchild").unwrap();
+        ext4::remove_directory_probe(&mut mounted, b"system/acl-directory").unwrap();
+        ext4::unlink_file_probe(&mut mounted, b"system/acl-symlink").unwrap();
+        ext4::unlink_file_probe(&mut mounted, b"system/acl-hardlink").unwrap();
+        ext4::unlink_file_probe(&mut mounted, b"system/acl-renamed").unwrap();
+        assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
+        ext4::sync(&mut mounted).unwrap();
+        ext4::unmount(&mounted).unwrap();
+        fsck(&path, &format!("coordinator-inherited-acl-reclaimed-{named}"));
+    }
+}
+
+#[test]
+fn malformed_posix_acls_refuse_mount_before_any_recovery_write() {
+    let Some(path) = fixture() else { return };
+    let pristine = std::fs::read(&path).unwrap();
+    let image = path.with_extension("coordinator-malformed-acl.img");
+    let attribute = path.with_extension("coordinator-malformed-acl.bin");
+    for case in 0..7 {
+        let mut acl = posix_acl_fixture(2, 1);
+        match case {
+            0 => acl[..4].copy_from_slice(&2u32.to_le_bytes()), // userspace version on disk
+            1 => acl.truncate(7),
+            2 => acl[6..8].copy_from_slice(&8u16.to_le_bytes()),
+            3 => acl[20..24].copy_from_slice(&1000u32.to_le_bytes()), // duplicate named user
+            4 => { let mask = acl.len() - 8; acl.drain(mask..mask + 4); }
+            5 => acl.push(0),
+            _ => {}, // default ACL on a regular file
+        }
+        std::fs::write(&attribute, acl).unwrap();
+        for dirty in [false, true] {
+            write_sparse_fixture(&image, &pristine).unwrap();
+            let name = if case == 6 { "/system/README.TXT" } else { "/system" };
+            debugfs(&image, &format!("ea_set -r -f {} {name} system.posix_acl_default", attribute.display()));
+            if dirty { debugfs(&image, "feature needs_recovery"); }
+            let hostile = std::fs::read(&image).unwrap();
+            assert_ne!(hostile, pristine);
+            let raw = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
+            let inode = raw.path_to_inode(ext4plus::path::Path::try_from(name).unwrap(), ext4plus::FollowSymlinks::All).unwrap();
+            assert!(inode.list_xattrs(&raw).is_err(), "case={case}");
+            DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+            assert!(ext4::mount(1, hostile.len() as u64).is_err(), "case={case}, dirty={dirty}");
             DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
         }
     }
@@ -3413,6 +3593,11 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
     linux(&["ln", kernel_file.to_str().unwrap(), directory.join("system/linux-alias").to_str().unwrap()]);
     linux(&["python3", "-c", "import os,sys; os.setxattr(sys.argv[1], 'user.kernel', b'k'*701); os.setxattr(sys.argv[1], 'user.small', b'inline')",
         kernel_file.to_str().unwrap()]);
+    let acl_input = path.with_extension("kernel-default-acl.bin");
+    std::fs::write(&acl_input, posix_acl_fixture(20, 2)).unwrap();
+    let acl_parent = directory.join("system/kernel-acl-parent");
+    linux(&["python3", "-c", "import os,sys; p=sys.argv[1]; os.mkdir(p); os.setxattr(p, 'system.posix_acl_default', open(sys.argv[2], 'rb').read()); os.close(os.open(p+'/linux-file', os.O_CREAT|os.O_WRONLY, 0o666)); os.mkdir(p+'/linux-dir', 0o755)",
+        acl_parent.to_str().unwrap(), acl_input.to_str().unwrap()]);
     kernel.unmount();
     let mut mounted = mount_fixture(&image);
     let mut data = [0; 16];
@@ -3424,6 +3609,10 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
     ext4::set_xattr(&mut mounted, b"system/linux-alias", b"user.kernel", Some(&[b'p'; 3011])).unwrap();
     ext4::set_xattr(&mut mounted, b"system/from-linux", b"user.z", Some(&[b'z'; 701])).unwrap();
     ext4::append_probe(&mut mounted, b"system/linux-alias", b"+phipia", 16384).unwrap();
+    ext4::create_file_probe(&mut mounted, b"system/kernel-acl-parent/phipia-file", 0o666).unwrap();
+    ext4::create_directory_probe(&mut mounted, b"system/kernel-acl-parent/phipia-dir").unwrap();
+    assert_eq!(ext4::stat(&mounted, b"system/kernel-acl-parent/phipia-file").unwrap().mode & 0o777, 0o640);
+    ext4::chmod(&mut mounted, b"system/kernel-acl-parent/phipia-file", 0o702).unwrap();
     ext4::sync(&mut mounted).unwrap();
     ext4::unmount(&mounted).unwrap();
     fsck(&path, "coordinator-kernel-write-roundtrip");
@@ -3433,6 +3622,8 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
     assert_eq!(&output.stdout, b"written-by-linux+phipia");
     linux(&["python3", "-c", "import os,sys; p=sys.argv[1]; assert os.getxattr(p, 'user.kernel') == b'p'*3011; assert os.getxattr(p, 'user.z') == b'z'*701; assert os.getxattr(p, 'user.small') == b'inline'; os.setxattr(p, 'user.kernel', b'l'*903)",
         kernel_file.to_str().unwrap()]);
+    linux(&["python3", "-c", "import os,sys; p=sys.argv[1]; os.chmod(p+'/linux-file', 0o702); assert os.stat(p+'/linux-file').st_mode == os.stat(p+'/phipia-file').st_mode; assert os.getxattr(p+'/linux-file', 'system.posix_acl_access') == os.getxattr(p+'/phipia-file', 'system.posix_acl_access'); assert os.stat(p+'/linux-dir').st_mode == os.stat(p+'/phipia-dir').st_mode; assert os.getxattr(p+'/linux-dir', 'system.posix_acl_access') == os.getxattr(p+'/phipia-dir', 'system.posix_acl_access'); assert os.getxattr(p+'/linux-dir', 'system.posix_acl_default') == os.getxattr(p+'/phipia-dir', 'system.posix_acl_default')",
+        acl_parent.to_str().unwrap()]);
     kernel.unmount();
     let mut mounted = mount_fixture(&image);
     let mut updated = [0; 903];
