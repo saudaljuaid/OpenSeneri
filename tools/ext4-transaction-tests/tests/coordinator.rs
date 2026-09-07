@@ -1189,31 +1189,73 @@ fn inode_geometry_reserved_allocations_and_free_counter_overflow_are_refused() {
     DEVICE.with_borrow(|device| std::fs::write(&image, &device.bytes).unwrap());
     debugfs(&image, &format!("set_super_value free_inodes_count {inodes}"));
     let hostile = std::fs::read(&image).unwrap();
-    for remove_directory in [false, true] {
-        let mut mounted = mount_bytes(hostile.clone());
-        let name: &[u8] = if remove_directory { directory } else { file };
-        let before = ext4::stat(&mounted, name).unwrap();
-        let result = if remove_directory { ext4::remove_directory_probe(&mut mounted, name) }
-            else { ext4::unlink_file_probe(&mut mounted, name) };
-        assert_eq!(result, Err(Status::Invalid));
-        assert_eq!(ext4::stat(&mounted, name), Ok(before));
-        let mut data = [0; 9];
-        read_exact(&mounted, file, &mut data);
-        assert_eq!(&data, b"preserved");
-        ext4::sync(&mut mounted).unwrap();
-        DEVICE.with_borrow(|device| assert!(device.bytes == hostile));
-        ext4::unmount(&mounted).unwrap();
-    }
+    // The complete inode census now refuses contradictory counters before
+    // publishing a mount, rather than waiting for the first inode release.
+    DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+    assert!(ext4::mount(1, hostile.len() as u64).is_err());
+    DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
     std::fs::write(&image, &original).unwrap();
     debugfs(&image, "freei <1>");
     let hostile = std::fs::read(&image).unwrap();
     let bitmap = u32::from_le_bytes(hostile[4100..4104].try_into().unwrap()) as usize * 4096;
     assert_eq!(hostile[bitmap] & 1, 0);
-    let mut mounted = mount_bytes(hostile.clone());
-    assert_eq!(ext4::create_file_probe(&mut mounted, b"system/reserved-inode", 0o600), Err(Status::Invalid));
+    DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+    assert!(ext4::mount(1, hostile.len() as u64).is_err());
+    DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+}
+
+#[test]
+fn inode_bitmap_census_checks_group_totals_directory_counts_and_unused_tail() {
+    let Some(path) = fixture() else { return };
+    let pristine = std::fs::read(&path).unwrap();
+    let image = path.with_extension("coordinator-inode-census.img");
+    let per_group = u32::from_le_bytes(pristine[1064..1068].try_into().unwrap());
+    let free = u16::from_le_bytes(pristine[4110..4112].try_into().unwrap()) as u32;
+    let dirs = u16::from_le_bytes(pristine[4112..4114].try_into().unwrap()) as u32;
+    let total = u32::from_le_bytes(pristine[1040..1044].try_into().unwrap());
+    let lazy = (0..pristine.len() / (8192 * 4096)).find(|group| {
+        let descriptor = 4096 + group * 64;
+        u16::from_le_bytes(pristine[descriptor + 18..descriptor + 20].try_into().unwrap()) & 1 != 0
+    }).expect("fixture has a lazy inode group");
+    for case in 0..9 {
+        for dirty in [false, true] {
+            write_sparse_fixture(&image, &pristine).unwrap();
+            match case {
+                0 => debugfs(&image, &format!("set_bg 0 free_inodes_count {}", free - 1)),
+                1 => debugfs(&image, &format!("set_bg 0 free_inodes_count {}", free + 1)),
+                2 => debugfs(&image, &format!("set_bg 0 used_dirs_count {}", dirs - 1)),
+                3 => debugfs(&image, &format!("set_bg 0 used_dirs_count {}", dirs + 1)),
+                4 => debugfs(&image, &format!("set_bg 0 itable_unused {per_group}")),
+                5 => debugfs(&image, &format!("set_super_value free_inodes_count {}", total - 1)),
+                6 => debugfs(&image, &format!("set_bg {lazy} free_inodes_count {}", per_group - 1)),
+                7 => debugfs(&image, &format!("set_bg {lazy} itable_unused {}", per_group - 1)),
+                _ => {
+                    let bitmap = u32::from_le_bytes(pristine[4100..4104].try_into().unwrap()) as usize * 4096;
+                    assert!(per_group < 32768);
+                    let mut hostile = pristine.clone();
+                    // Padding is outside the bitmap checksum's logical span.
+                    hostile[bitmap + 4095] &= 0x7f;
+                    write_sparse_fixture(&image, &hostile).unwrap();
+                }
+            }
+            if dirty { debugfs(&image, "feature needs_recovery"); }
+            let hostile = std::fs::read(&image).unwrap();
+            assert_ne!(hostile, pristine, "debugfs must create a real counter fault");
+            DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+            assert!(ext4::mount(1, hostile.len() as u64).is_err(), "accepted census case {case}, dirty={dirty}");
+            DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+        }
+    }
+    let mut mounted = mount_bytes(pristine);
+    ext4::create_directory_probe(&mut mounted, b"system/census-dir").unwrap();
+    ext4::create_file_probe(&mut mounted, b"system/census-dir/file", 0o600).unwrap();
+    ext4::link_file_probe(&mut mounted, b"system/census-dir/file", b"system/census-dir/link").unwrap();
+    ext4::unlink_file_probe(&mut mounted, b"system/census-dir/file").unwrap();
+    ext4::unlink_file_probe(&mut mounted, b"system/census-dir/link").unwrap();
+    ext4::remove_directory_probe(&mut mounted, b"system/census-dir").unwrap();
     ext4::sync(&mut mounted).unwrap();
-    DEVICE.with_borrow(|device| assert!(device.bytes == hostile));
     ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-inode-census-valid");
 }
 
 #[test]

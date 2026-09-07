@@ -26,6 +26,7 @@ pub struct BlockAllocationSnapshot<'a> {
     extent_ranges: BTreeMap<u64, u64>,
     claimed_blocks: u64,
     validated_inodes: BTreeSet<crate::inode::InodeIndex>,
+    directory_counts: BTreeMap<u32, u32>,
     xattr_references: BTreeMap<u64, (u32, u32, crate::inode::InodeIndex)>,
     invalid: bool,
     fixed_reserved: bool,
@@ -34,7 +35,7 @@ pub struct BlockAllocationSnapshot<'a> {
 impl<'a> BlockAllocationSnapshot<'a> {
     pub(crate) fn new(filesystem: &'a Ext4) -> Self {
         Self { filesystem, groups: BTreeMap::new(), extent_ranges: BTreeMap::new(), claimed_blocks: 0,
-            validated_inodes: BTreeSet::new(), xattr_references: BTreeMap::new(),
+            validated_inodes: BTreeSet::new(), directory_counts: BTreeMap::new(), xattr_references: BTreeMap::new(),
             invalid: false, fixed_reserved: false }
     }
 
@@ -185,7 +186,7 @@ impl<'a> BlockAllocationSnapshot<'a> {
     #[maybe_async::maybe_async]
     pub async fn finish(self, inodes: &mut InodeAllocationSnapshot<'_>) -> Result<(), Ext4Error> {
         if self.invalid { return Err(Ext4Error::Readonly); }
-        inodes.validate_known_allocations(&self.validated_inodes).await?;
+        inodes.validate_known_allocations(&self.validated_inodes, &self.directory_counts).await?;
         for (_, (expected, seen, inode)) in self.xattr_references {
             if expected != seen { return Err(CorruptKind::Xattr(inode).into()); }
         }
@@ -258,6 +259,10 @@ impl<'a> BlockAllocationSnapshot<'a> {
             return Err(error);
         }
         self.validated_inodes.insert(inode.index);
+        if inode.file_type().is_dir() {
+            let group = (inode.index.get() - 1) / self.filesystem.superblock().inodes_per_block_group().get();
+            *self.directory_counts.entry(group).or_default() += 1;
+        }
         Ok(())
     }
 }
@@ -289,13 +294,18 @@ impl<'a> InodeAllocationSnapshot<'a> {
     /// namespace/orphan ownership pass. Otherwise an unreachable inode could
     /// hide a conflicting block claim or an unaccounted xattr reference.
     #[maybe_async::maybe_async]
-    async fn validate_known_allocations(&mut self, known: &BTreeSet<crate::inode::InodeIndex>) -> Result<(), Ext4Error> {
+    async fn validate_known_allocations(&mut self, known: &BTreeSet<crate::inode::InodeIndex>,
+        directories: &BTreeMap<u32, u32>) -> Result<(), Ext4Error> {
         let fs = self.filesystem;
         let sb = fs.superblock();
         let per_group = sb.inodes_per_block_group().get();
+        let mut total_free = 0u64;
         for group in 0..sb.num_block_groups() {
             let descriptor = fs.0.block_group_descriptors.get(group as usize)
                 .ok_or(CorruptKind::BlockGroupDescriptor(group))?;
+            if descriptor.used_dirs_count() != directories.get(&group).copied().unwrap_or(0) {
+                return Err(CorruptKind::BlockGroupDescriptor(group).into());
+            }
             if descriptor.flags() & 1 != 0 {
                 // A lazy inode group is logically empty; do not initialize it
                 // or interpret stale bitmap bytes as real allocations.
@@ -303,6 +313,7 @@ impl<'a> InodeAllocationSnapshot<'a> {
                     || descriptor.unused_inodes_count() != per_group {
                     return Err(CorruptKind::BlockGroupDescriptor(group).into());
                 }
+                total_free += u64::from(per_group);
                 continue;
             }
             let cached = self.groups.contains_key(&group);
@@ -311,18 +322,42 @@ impl<'a> InodeAllocationSnapshot<'a> {
                 self.groups.insert(group, bitmap.read_validated(fs, group).await?);
             }
             let bytes = self.groups.get(&group).ok_or(CorruptKind::BlockGroupDescriptor(group))?;
+            let initialized = per_group.checked_sub(descriptor.unused_inodes_count())
+                .ok_or(CorruptKind::BlockGroupDescriptor(group))?;
+            let mut free = 0u32;
             for offset in 0..per_group {
                 let number = u64::from(group) * u64::from(per_group) + u64::from(offset) + 1;
-                if number < u64::from(sb.first_allocatable_inode()) || number > u64::from(sb.inodes_count()) { continue; }
                 let byte = bytes.get((offset / 8) as usize).ok_or(CorruptKind::BlockGroupDescriptor(group))?;
                 if byte & (1 << (offset % 8)) != 0 {
+                    if offset >= initialized || number > u64::from(sb.inodes_count()) {
+                        return Err(CorruptKind::BlockGroupDescriptor(group).into());
+                    }
+                    if number < u64::from(sb.first_allocatable_inode()) { continue; }
                     let index = crate::inode::InodeIndex::new(number as u32).unwrap();
                     if !known.contains(&index) { return Err(CorruptKind::OrphanInode(index.get()).into()); }
+                } else {
+                    if number < u64::from(sb.first_allocatable_inode()) {
+                        return Err(CorruptKind::BlockGroupDescriptor(group).into());
+                    }
+                    free += 1;
                 }
             }
+            if free != descriptor.free_inodes_count() {
+                return Err(CorruptKind::BlockGroupDescriptor(group).into());
+            }
+            // The bitmap's unused tail is unavailable, not spare inode slots.
+            for offset in per_group as usize..bytes.len() * 8 {
+                if bytes[offset / 8] & (1 << (offset % 8)) == 0 {
+                    return Err(CorruptKind::BlockGroupDescriptor(group).into());
+                }
+            }
+            total_free += u64::from(free);
             // Keep only bitmaps already needed by the namespace walk. The
             // complete census otherwise needs one extra group buffer at a time.
             if !cached { self.groups.remove(&group); }
+        }
+        if total_free != u64::from(sb.free_inodes_count()) {
+            return Err(CorruptKind::BlockGroupDescriptor(0).into());
         }
         Ok(())
     }
