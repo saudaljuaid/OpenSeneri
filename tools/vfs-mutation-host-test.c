@@ -15,6 +15,7 @@ static bool directory_metadata;
 static phipfs_handle closing_frontend;
 static bool closing_directory;
 static uint16_t requested_directory_mode;
+static uint16_t expected_file_mode = 0644U;
 
 static enum phipfs_status replaced_open(enum phipfs_volume volume, const char *path,
     enum phipfs_access access, phipfs_handle *handle, struct phipfs_stat *stat)
@@ -89,7 +90,7 @@ static enum phipfs_status pair(enum phipfs_volume volume, const char *from, cons
 
 static enum phipfs_status create(enum phipfs_volume volume, const char *path, uint16_t mode)
 {
-    assert(mode == 0644U);
+    assert(mode == expected_file_mode);
     return mutation(volume, path);
 }
 
@@ -225,6 +226,13 @@ int main(void)
     const unsigned before_invalid_mkdir = calls;
     assert(phipfs_mkdir_mode(PHIPFS_VOLUME_DATA, expected_path, 010000U) == PHIPFS_STATUS_INVALID_ARGUMENT);
     assert(calls == before_invalid_mkdir);
+    expected_file_mode = 0U;
+    assert(phipfs_create_mode(PHIPFS_VOLUME_DATA, expected_path, 0U) == PHIPFS_STATUS_OK);
+    expected_file_mode = 07777U;
+    assert(phipfs_create_mode(PHIPFS_VOLUME_DATA, expected_path, 07777U) == PHIPFS_STATUS_OK);
+    const unsigned before_invalid_create = calls;
+    assert(phipfs_create_mode(PHIPFS_VOLUME_DATA, expected_path, 010000U) == PHIPFS_STATUS_INVALID_ARGUMENT);
+    assert(calls == before_invalid_create);
     puts("VFS journal mutation retries, backend errors, path bounds and vnode census: PASS");
     return 0;
 }

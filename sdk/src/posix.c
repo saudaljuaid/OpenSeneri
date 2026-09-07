@@ -45,7 +45,15 @@ int open(const char *path, int flags, ...)
     if ((flags & O_CREAT) != 0) native |= PHIPIA_OPEN_CREATE;
     if ((flags & O_TRUNC) != 0) native |= PHIPIA_OPEN_TRUNCATE;
     if ((flags & O_APPEND) != 0) native |= PHIPIA_OPEN_APPEND;
-    handle = phipia_file_open(parsed.volume, parsed.text, native);
+    if ((flags & O_CREAT) != 0) {
+        va_list arguments;
+        va_start(arguments, flags);
+        const mode_t mode = (mode_t)va_arg(arguments, int);
+        va_end(arguments);
+        handle = phipia_file_open_mode(parsed.volume, parsed.text, native, (uint16_t)(mode & 07777U));
+    } else {
+        handle = phipia_file_open(parsed.volume, parsed.text, native);
+    }
     if (handle < 0) { errno = (int)-handle; return -1; }
     phipia_runtime_lock(&descriptor_lock);
     for (int index = 3; index < DESCRIPTOR_MAX; ++index) {

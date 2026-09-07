@@ -857,8 +857,6 @@ fn linux_acl_entries_survive_user_xattr_mutation_and_acl_aware_chmod() {
     }
 }
 
-// A default ACL with owner=rwx, group/mask=r-x, other=x. Named users retain
-// rw- while the access mask controls their effective permissions.
 fn debugfs_acl_export(mut posix: Vec<u8>) -> Vec<u8> {
     assert_eq!(&posix[..4], &2u32.to_le_bytes());
     assert_eq!((posix.len() - 4) % 8, 0);
@@ -872,6 +870,8 @@ fn debugfs_acl_export(mut posix: Vec<u8>) -> Vec<u8> {
     posix
 }
 
+// A default ACL with owner=rwx, group/mask=r-x, other=x. Named users retain
+// rw- while the access mask controls their effective permissions.
 fn posix_acl_fixture(named: u32, version: u32) -> Vec<u8> {
     let mut entries = vec![(1u16, 7u16, u32::MAX)];
     entries.extend((0..named).map(|id| (2, 6, 1000 + id)));
@@ -941,6 +941,10 @@ fn inherited_acls_mask_new_modes_survive_rename_and_rollback_allocations() {
             let expected = (requested & 0o1000) | (requested & 0o751) | if named == 0 { 0 } else { 0o2000 };
             assert_eq!(actual.mode & 0o7777, expected);
             ext4::remove_directory_probe(&mut mounted, child.as_bytes()).unwrap();
+            ext4::create_file_probe(&mut mounted, child.as_bytes(), requested).unwrap();
+            let actual = ext4::stat(&mounted, child.as_bytes()).unwrap();
+            assert_eq!(actual.mode & 0o7777, (requested & 0o7000) | (requested & 0o751));
+            ext4::unlink_file_probe(&mut mounted, child.as_bytes()).unwrap();
         }
         ext4::sync(&mut mounted).unwrap();
         ext4::unmount(&mounted).unwrap();

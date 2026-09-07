@@ -3218,7 +3218,9 @@ static int64_t syscall_file_open(
         return -PHIPIA_EFAULT;
     }
     if (request.size != sizeof(request) ||
-        request.version != PHIPIA_ABI_VERSION || request.reserved != 0U ||
+        request.version != PHIPIA_ABI_VERSION ||
+        ((request.flags & PHIPIA_OPEN_MODE_PRESENT) == 0U ? request.reserved != 0U :
+            ((request.flags & PHIPIA_OPEN_CREATE) == 0U || (request.reserved & ~07777U) != 0U)) ||
         (request.flags & ~PHIPIA_OPEN_FLAGS_V1) != 0U ||
         (request.flags & (PHIPIA_OPEN_READ | PHIPIA_OPEN_WRITE)) == 0U ||
         !path_from_user(process, &request.path, path, &volume)) {
@@ -3241,7 +3243,8 @@ static int64_t syscall_file_open(
     status = phipfs_stat_path(volume, path, &(struct phipfs_stat){0});
     if (status == PHIPFS_STATUS_NOT_FOUND &&
         (request.flags & PHIPIA_OPEN_CREATE) != 0U) {
-        status = phipfs_create(volume, path);
+        status = phipfs_create_mode(volume, path,
+            (request.flags & PHIPIA_OPEN_MODE_PRESENT) != 0U ? (uint16_t)request.reserved : 0644U);
     }
     if (status == PHIPFS_STATUS_OK &&
         (request.flags & PHIPIA_OPEN_TRUNCATE) != 0U) {

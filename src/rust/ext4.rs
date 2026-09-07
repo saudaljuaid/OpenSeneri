@@ -1590,7 +1590,7 @@ pub(crate) fn create_file_probe(
     path: &[u8],
     mode: u16,
 ) -> Result<(), Status> {
-    if mode & !0o777 != 0 {
+    if mode & !0o7777 != 0 {
         return Err(Status::Invalid);
     }
     let absolute = absolute_path(path)?;

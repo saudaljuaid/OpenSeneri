@@ -28,11 +28,12 @@ enum phipia_open_flags {
     PHIPIA_OPEN_WRITE = UINT32_C(1) << 1,
     PHIPIA_OPEN_CREATE = UINT32_C(1) << 2,
     PHIPIA_OPEN_TRUNCATE = UINT32_C(1) << 3,
-    PHIPIA_OPEN_APPEND = UINT32_C(1) << 4
+    PHIPIA_OPEN_APPEND = UINT32_C(1) << 4,
+    PHIPIA_OPEN_MODE_PRESENT = UINT32_C(1) << 5,
 };
 
 #define PHIPIA_OPEN_FLAGS_V1 (PHIPIA_OPEN_READ | PHIPIA_OPEN_WRITE | \
-    PHIPIA_OPEN_CREATE | PHIPIA_OPEN_TRUNCATE | PHIPIA_OPEN_APPEND)
+    PHIPIA_OPEN_CREATE | PHIPIA_OPEN_TRUNCATE | PHIPIA_OPEN_APPEND | PHIPIA_OPEN_MODE_PRESENT)
 
 enum phipia_seek_origin {
     PHIPIA_SEEK_START = 0,
@@ -52,6 +53,8 @@ struct phipia_file_open_request {
     uint32_t version;
     struct phipia_path path;
     uint32_t flags;
+    /* Low-12-bit creation mode when MODE_PRESENT is set; otherwise zero.
+     * Existing native requests retain their default creation mode of 0644. */
     uint32_t reserved;
 } __attribute__((packed));
 

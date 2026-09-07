@@ -43,6 +43,7 @@ long phipia_memory_allocate(size_t length, uint32_t flags,
     struct phipia_memory_map_response *response);
 long phipia_memory_release(uint64_t address, uint64_t length);
 long phipia_file_open(uint16_t volume, const char *path, uint32_t flags);
+long phipia_file_open_mode(uint16_t volume, const char *path, uint32_t flags, uint16_t mode);
 long phipia_file_read(phipia_handle_t handle, void *buffer, size_t length);
 long phipia_file_write(phipia_handle_t handle, const void *buffer,
     size_t length);

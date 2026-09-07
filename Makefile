@@ -1197,12 +1197,12 @@ wall-clock-tests: $(WALL_CLOCK_HOST_TEST) $(SDK_TIME_HOST_TEST)
 	$(WALL_CLOCK_HOST_TEST)
 	$(SDK_TIME_HOST_TEST)
 
-$(BUILD_DIR)/sdk-filesystem-host-test: tools/sdk-filesystem-host-test.c sdk/src/posix.c \
+$(BUILD_DIR)/sdk-filesystem-host-test: tools/sdk-filesystem-host-test.c sdk/src/posix.c sdk/src/runtime.c \
 		sdk/src/internal.h sdk/include/phipia/runtime.h include/phipia/abi/storage.h
 	mkdir -p $(dir $@)
-	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections \
+	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections -fvisibility=hidden \
 		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion \
-		-Isdk/include -Iinclude tools/sdk-filesystem-host-test.c sdk/src/posix.c \
+		-Isdk/include -Iinclude tools/sdk-filesystem-host-test.c sdk/src/posix.c sdk/src/runtime.c \
 		-Wl,--gc-sections -o $@
 
 $(BUILD_DIR)/ext4-vfs-host-test: tools/ext4-vfs-host-test.c \

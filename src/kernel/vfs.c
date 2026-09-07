@@ -1070,7 +1070,7 @@ enum phipfs_status phipfs_create_mode(enum phipfs_volume volume,
     char canonical[PHIPFS_MAX_PATH];
     enum phipfs_status status = resolve_parent(volume, path, canonical);
 
-    if ((mode & (uint16_t)~UINT16_C(0777)) != 0U) {
+    if ((mode & (uint16_t)~UINT16_C(07777)) != 0U) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
     return status == PHIPFS_STATUS_OK ?

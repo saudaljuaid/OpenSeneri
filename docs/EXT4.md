@@ -538,6 +538,12 @@ retain mode 0755. Requested setuid/setgid bits are stripped for mkdir as in
 Linux; a setgid parent can still supply the directory's setgid bit. Pending
 mkdir retries bind both path and requested mode. This extension awaits Linux
 verification alongside the inherited-ACL fixtures.
+POSIX open with O_CREAT now carries its variadic mode through an optional
+native request flag to VFS creation; legacy requests retain mode 0644.
+Permissions and special bits enter the new inode's journal transaction before
+default-ACL masking. The native open/create retry sequence and complete SDK
+stat metadata remain unfinished; mode propagation alone does not close those
+application-access gates.
 The admitted explicit xattr mutation namespace is
 `user.*`, with names up to 255 bytes. Set/replace/remove journal the inode and
 any allocated, rewritten or released external attribute block. The writer

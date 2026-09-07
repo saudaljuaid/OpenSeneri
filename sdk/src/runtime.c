@@ -94,7 +94,7 @@ long phipia_memory_release(uint64_t address, uint64_t length)
     return phipia_syscall2(PHIPIA_SYS_MEMORY_UNMAP, address, length);
 }
 
-long phipia_file_open(uint16_t volume, const char *path, uint32_t flags)
+static long file_open_request(uint16_t volume, const char *path, uint32_t flags, uint16_t mode)
 {
     struct phipia_file_open_request request;
 
@@ -108,9 +108,20 @@ long phipia_file_open(uint16_t volume, const char *path, uint32_t flags)
     request.path.volume = volume;
     request.path.reserved = 0U;
     request.flags = flags;
-    request.reserved = 0U;
+    request.reserved = mode;
     return phipia_syscall1(PHIPIA_SYS_FILE_OPEN,
         (uint64_t)(uintptr_t)&request);
+}
+
+long phipia_file_open(uint16_t volume, const char *path, uint32_t flags)
+{
+    return file_open_request(volume, path, flags, 0U);
+}
+
+long phipia_file_open_mode(uint16_t volume, const char *path, uint32_t flags, uint16_t mode)
+{
+    if ((flags & PHIPIA_OPEN_CREATE) == 0U || (mode & ~07777U) != 0U) return -PHIPIA_EINVAL;
+    return file_open_request(volume, path, flags | PHIPIA_OPEN_MODE_PRESENT, mode);
 }
 
 static long file_io(
