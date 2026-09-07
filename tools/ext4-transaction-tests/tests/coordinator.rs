@@ -1658,6 +1658,115 @@ fn split_linked_truncate_retries_exact_request_and_preserves_old_or_new_prefix()
 }
 
 #[test]
+fn split_truncate_of_open_unlinked_inode_retains_handle_until_final_close() {
+    let Some(path) = fixture() else { return };
+    for large in [false, true] {
+        let name = b"system/open-split-truncate";
+        let mut mounted = mount_fixture(&path);
+        let free_before_file = ext4::free_bytes(&mounted).unwrap();
+        ext4::create_file_probe(&mut mounted, name, 0o640).unwrap();
+        ext4::transaction_probe(&mut mounted, name, 0, &[0x53; 8192]).unwrap();
+        let inode = ext4::stat(&mounted, name).unwrap().inode;
+        ext4::sync(&mut mounted).unwrap();
+        drop(mounted);
+        let image = path.with_extension(format!("coordinator-open-truncate-input-{large}.img"));
+        DEVICE.with_borrow(|device| std::fs::write(&image, &device.bytes).unwrap());
+        if large {
+            debugfs(&image, "fallocate /system/open-split-truncate 0 8193");
+            debugfs(&image, &format!("set_inode_field /system/open-split-truncate size {}", 8194u64 * 4096));
+        }
+        let initial = std::fs::read(&image).unwrap();
+        let prepare = || {
+            let mut mounted = mount_bytes(initial.clone());
+            ext4::unlink_file_guarded(&mut mounted, name, &[inode]).unwrap();
+            if !large { ext4::set_stage_block_limit(&mut mounted, 4).unwrap(); }
+            DEVICE.with_borrow_mut(|device| device.events.clear());
+            mounted
+        };
+        let check = |mounted: &ext4::Mounted| {
+            assert_eq!(ext4::stat(mounted, name), Err(Status::NotFound));
+            let metadata = ext4::stat_inode(mounted, inode).unwrap();
+            assert_eq!((metadata.inode, metadata.links, metadata.size), (inode, 0, 17));
+            assert_eq!(ext4::free_bytes(mounted), Ok(free_before_file - 4096));
+            let mut content = [0; 17];
+            assert_eq!(ext4::pread_inode(mounted, inode, 0, &mut content), Ok(17));
+            assert_eq!(content, [0x53; 17]);
+            assert!(ext4::unmount(mounted).is_err());
+        };
+        let mut reference = prepare();
+        let orphan_bytes = DEVICE.with_borrow(|device| device.bytes.clone());
+        ext4::truncate_inode(&mut reference, inode, 17).unwrap();
+        check(&reference);
+        let trace = DEVICE.with_borrow(|device| device.events.clone());
+        assert!(trace.iter().filter(|event| **event == Event::Flush(3)).count() >= 2);
+        ext4::sync_with_open_inodes(&mut reference, &[inode, inode]).unwrap();
+        check(&reference);
+        let retained_bytes = DEVICE.with_borrow(|device| device.bytes.clone());
+        ext4::sync(&mut reference).unwrap();
+        assert_eq!(ext4::stat_inode(&reference, inode), Err(Status::NotFound));
+        assert_eq!(ext4::free_bytes(&reference), Ok(free_before_file));
+        ext4::unmount(&reference).unwrap();
+        drop(reference);
+        for accept in [false, true] {
+            for fail in 0..trace.len() {
+                let mut mounted = prepare();
+                DEVICE.with_borrow_mut(|device| {
+                    device.fail_event = Some(fail); device.accept_failed_write = accept;
+                });
+                assert_eq!(ext4::truncate_inode(&mut mounted, inode, 17), Err(Status::Io));
+                assert_public_reads_refused(&mounted);
+                assert_eq!(ext4::truncate_inode(&mut mounted, inode, 18), Err(Status::Invalid));
+                DEVICE.with_borrow_mut(|device| {
+                    assert_eq!(device.events, trace[..=fail]);
+                    device.events.clear(); device.fail_event = None;
+                });
+                if accept { ext4::sync_with_open_inodes(&mut mounted, &[inode]).unwrap(); }
+                else { ext4::truncate_inode(&mut mounted, inode, 17).unwrap(); }
+                let start = trace[..fail].iter().rposition(|event|
+                    matches!(event, Event::Flush(4 | 5))).map_or(0, |index| index + 1);
+                DEVICE.with_borrow(|device| {
+                    assert_eq!(device.events, trace[start..]);
+                    assert!(device.bytes == retained_bytes);
+                });
+                check(&mounted);
+                ext4::sync(&mut mounted).unwrap();
+                assert_eq!(ext4::stat_inode(&mounted, inode), Err(Status::NotFound));
+                assert_eq!(ext4::free_bytes(&mounted), Ok(free_before_file));
+                ext4::unmount(&mounted).unwrap();
+            }
+        }
+        fsck(&path, &format!("coordinator-open-truncate-retry-{large}"));
+        let mut prefix = orphan_bytes;
+        for (cut, event) in trace.iter().enumerate() {
+            match event {
+                Event::Write(start, bytes) => prefix[*start as usize..*start as usize + bytes.len()].copy_from_slice(bytes),
+                Event::Flush(_) => {
+                    // Open handles do not survive reboot. Recovery releases
+                    // the zero-link inode regardless of the truncate prefix.
+                    let recovered = mount_bytes(prefix.clone());
+                    assert_eq!(ext4::stat_inode(&recovered, inode), Err(Status::NotFound));
+                    assert_eq!(ext4::free_bytes(&recovered), Ok(free_before_file));
+                    ext4::unmount(&recovered).unwrap();
+                    fsck(&path, &format!("coordinator-open-truncate-{large}-cut-{cut}"));
+                }
+            }
+        }
+        let mut mounted = prepare();
+        ext4::truncate_inode(&mut mounted, inode, 17).unwrap();
+        ext4::truncate_inode(&mut mounted, inode, 8192).unwrap();
+        let mut content = [0xa5; 8192];
+        assert_eq!(ext4::pread_inode(&mounted, inode, 0, &mut content), Ok(8192));
+        assert_eq!(&content[..17], &[0x53; 17]);
+        assert!(content[17..].iter().all(|byte| *byte == 0));
+        ext4::sync_with_open_inodes(&mut mounted, &[inode]).unwrap();
+        assert_eq!(ext4::stat_inode(&mounted, inode).unwrap().size, 8192);
+        ext4::sync(&mut mounted).unwrap();
+        ext4::unmount(&mounted).unwrap();
+        fsck(&path, &format!("coordinator-open-truncate-regrow-{large}"));
+    }
+}
+
+#[test]
 fn freed_checksummed_inode_bodies_do_not_authorize_inode_io() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);

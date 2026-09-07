@@ -173,6 +173,7 @@ struct PendingReclaim {
     path: Vec<u8>,
     argument: u64,
     inode: u64,
+    retain_unlinked: bool,
     namespace_committed: bool,
 }
 
@@ -1355,7 +1356,7 @@ fn truncate_target(mounted: &mut Mounted, absolute: Vec<u8>, size: u64) -> Resul
         let linked = file.inode().links_count() != 0;
         drop(file);
         discard_uncommitted_stage(mounted, true)?;
-        if capacity && linked && size < old_size && old_size <= MAX_SPLIT_ORPHAN_BYTES {
+        if capacity && size < old_size && old_size <= MAX_SPLIT_ORPHAN_BYTES {
             arm_recovery_marker(mounted)?;
             if let Err(error) = mounted.filesystem()?.begin_truncate_orphan(inode, size) {
                 discard_uncommitted_stage(mounted, true)?;
@@ -1363,7 +1364,7 @@ fn truncate_target(mounted: &mut Mounted, absolute: Vec<u8>, size: u64) -> Resul
             }
             mounted.pending_reclaim = Some(PendingReclaim {
                 kind: PendingMutationKind::Truncate, path: absolute, argument: size,
-                inode: u64::from(inode.get()), namespace_committed: false,
+                inode: u64::from(inode.get()), retain_unlinked: !linked, namespace_committed: false,
             });
             return resume_reclaim_request(mounted);
         }
@@ -1745,7 +1746,7 @@ pub(crate) fn unlink_file_guarded(
             }
             mounted.pending_reclaim = Some(PendingReclaim {
                 kind: PendingMutationKind::UnlinkFile,
-                path: absolute, argument: 0, inode, namespace_committed: false,
+                path: absolute, argument: 0, inode, retain_unlinked: false, namespace_committed: false,
             });
             return resume_reclaim_request(mounted);
         }
@@ -1777,7 +1778,14 @@ fn resume_reclaim_request(mounted: &mut Mounted) -> Result<(), Status> {
             }
             request.namespace_committed = true;
         }
-        finalize_orphan(mounted, request.inode)
+        if request.retain_unlinked {
+            let key = inode_key(request.inode)?;
+            if mounted.pending_mutation.is_some() {
+                resume_namespace_mutation(mounted, PendingMutationKind::FinalizeOrphan, &key)?;
+            }
+            while !complete_truncate_orphan_transaction(mounted, request.inode, &key, true)? {}
+            Ok(())
+        } else { finalize_orphan(mounted, request.inode) }
     })();
     if result.is_err() && (request.namespace_committed || mounted.pending_mutation.is_some()) {
         mounted.pending_reclaim = Some(request);
@@ -1799,7 +1807,7 @@ pub(crate) fn finalize_orphan(mounted: &mut Mounted, inode: u64) -> Result<(), S
             return Ok(());
         }
         if allocated_inode(mounted.filesystem()?, inode)?.links_count() != 0 {
-            if complete_linked_orphan_transaction(mounted, inode, &key)? { return Ok(()); }
+            if complete_truncate_orphan_transaction(mounted, inode, &key, false)? { return Ok(()); }
             continue;
         }
         arm_recovery_marker(mounted)?;
@@ -1824,12 +1832,13 @@ fn mutation_capacity_error(error: &Ext4Error) -> bool {
         Some(JournalMutationStageError::TooManyBlocks | JournalMutationStageError::TooManyRevocations)))
 }
 
-fn complete_linked_orphan_transaction(mounted: &mut Mounted, inode: u64, key: &[u8]) -> Result<bool, Status> {
+fn complete_truncate_orphan_transaction(mounted: &mut Mounted, inode: u64, key: &[u8],
+    retain_unlinked: bool) -> Result<bool, Status> {
     let index = inode_index(inode)?;
     let mut blocks = ext4plus::JOURNAL_TRANSACTION_MAX_REVOKED_BLOCKS as u32;
     loop {
         arm_recovery_marker(mounted)?;
-        let complete = match mounted.filesystem()?.complete_truncate_orphan(index, blocks) {
+        let complete = match mounted.filesystem()?.complete_truncate_orphan(index, blocks, retain_unlinked) {
             Ok(complete) => complete,
             Err(error) => {
                 let capacity = mutation_capacity_error(&error);
@@ -1838,6 +1847,9 @@ fn complete_linked_orphan_transaction(mounted: &mut Mounted, inode: u64, key: &[
                 return Err(map_error(error));
             }
         };
+        if mounted.stage.is_empty() {
+            return if complete && retain_unlinked { Ok(true) } else { Err(Status::Invalid) };
+        }
         commit_namespace_mutation(mounted, PendingMutationKind::FinalizeOrphan, Vec::from(key))?;
         return Ok(complete);
     }
@@ -2224,7 +2236,7 @@ fn rename_transaction(
             // The new name and the old target's orphan link become durable in
             // one transaction. Cleanup retries retain both pathname arguments.
             mounted.pending_reclaim = Some(PendingReclaim {
-                kind, path: pending_key, argument: 0, inode, namespace_committed: false,
+                kind, path: pending_key, argument: 0, inode, retain_unlinked: false, namespace_committed: false,
             });
             return resume_reclaim_request(mounted);
         }

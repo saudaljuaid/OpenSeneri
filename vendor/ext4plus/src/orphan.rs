@@ -183,21 +183,25 @@ impl Ext4 {
         if self.0.writer.is_none() { return Err(Ext4Error::Readonly); }
         self.validate_extent_reclaim(index, MAX_TRUNCATE_ORPHAN_BLOCKS).await?;
         let mut inode = Inode::read(self, index).await?;
-        if inode.links_count() == 0 || size >= inode.size_in_bytes()
+        if size >= inode.size_in_bytes()
             || inode.flags().intersects(InodeFlags::IMMUTABLE | InodeFlags::APPEND_ONLY) {
             return Err(Ext4Error::Readonly);
         }
         let chain = self.orphan_chain().await?;
-        if chain.len() == MAX_ORPHANS || chain.iter().any(|node| node.index == index) {
+        let present = chain.iter().any(|node| node.index == index);
+        if (inode.links_count() == 0) != present || (!present && chain.len() == MAX_ORPHANS) {
             return Err(CorruptKind::OrphanInode(index.get()).into());
         }
         self.zero_orphan_tail(&inode, size).await?;
         inode.set_size_in_bytes(size);
-        inode.set_dtime_val(self.0.superblock.last_orphan());
+        if !present { inode.set_dtime_val(self.0.superblock.last_orphan()); }
         if let Some(time) = self.mutation_time() { inode.set_mtime(time); }
         inode.write(self).await?;
-        self.0.superblock.set_last_orphan(index.get());
-        self.0.superblock.write(self).await
+        if !present {
+            self.0.superblock.set_last_orphan(index.get());
+            self.0.superblock.write(self).await?;
+        }
+        Ok(())
     }
 
     #[maybe_async::maybe_async]
@@ -217,16 +221,21 @@ impl Ext4 {
         Ok(())
     }
 
-    /// Continue a linked orphan's truncate without freeing its inode or xattrs.
+    /// Continue an orphan's truncate without freeing its inode or xattrs.
+    /// retain_unlinked requires a live zero-link inode whose EOF/tail were
+    /// committed by begin_truncate_orphan, and preserves its orphan record for
+    /// final close; mount recovery must never use that mode.
     /// False means a bounded suffix was staged; true means cleanup is complete.
     #[maybe_async::maybe_async]
     pub async fn complete_truncate_orphan(&self, index: InodeIndex,
-        max_blocks: u32) -> Result<bool, Ext4Error> {
+        max_blocks: u32, retain_unlinked: bool) -> Result<bool, Ext4Error> {
         if self.0.writer.is_none() { return Err(Ext4Error::Readonly); }
         let mut chain = self.orphan_chain().await?;
         let position = chain.iter().position(|inode| inode.index == index).ok_or(Ext4Error::NotFound)?;
         let inode = &mut chain[position];
-        if inode.links_count() == 0 || !inode.file_type().is_regular_file() { return Err(Ext4Error::Readonly); }
+        if (inode.links_count() == 0) != retain_unlinked || !inode.file_type().is_regular_file() {
+            return Err(Ext4Error::Readonly);
+        }
         let FileBlocks::ExtentTree(mut tree) = FileBlocks::from_inode(inode, self.clone())?
             else { return Err(Ext4Error::Readonly); };
         let block_size = self.superblock().block_size().to_u64();
@@ -236,6 +245,10 @@ impl Ext4 {
             tree.trim_orphan_suffix(inode, max_blocks, MAX_TRUNCATE_ORPHAN_BLOCKS, keep).await?;
             return Ok(false);
         }
+        // A live unlinked request already committed its partial tail with EOF.
+        // No final transaction is needed: keeping the orphan record makes an
+        // unchanged no-op completion safe after a retried last suffix plan.
+        if retain_unlinked { return Ok(true); }
         // Finish the partial block even if Linux had already published EOF.
         // This image and orphan removal share a journal transaction.
         self.zero_orphan_tail(inode, inode.size_in_bytes()).await?;
