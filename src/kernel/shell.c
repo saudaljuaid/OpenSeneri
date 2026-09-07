@@ -162,8 +162,8 @@ static void command_help(void)
     console_write("  linux     run measured echo, uname, or bounded cat userspace\n");
     console_write("  native    launch one native application manifest\n");
     console_write("  native-start/native-go  stage and run several native apps\n");
-    console_write("  drives    mounted FAT32 system and data volumes\n");
-    console_write("  mount     retry a recoverable FAT32 mount\n");
+    console_write("  drives    mounted system and data volumes\n");
+    console_write("  mount     retry a recoverable filesystem mount\n");
     console_write("  ls/cd/pwd  browse the writable data volume\n");
     console_write("  mkdir/touch create files and directories\n");
     console_write("  read      print one file\n");
@@ -1006,7 +1006,13 @@ static void print_fetch_drive(struct phipfs_drive_info drive)
     if (!drive.present || !drive.healthy || !drive.mounted) {
         console_write("unavailable");
     } else {
-        console_write(drive.read_only ? "fat32 ro" : "fat32 rw");
+        const bool ext4 = drive.volume == PHIPFS_VOLUME_DATA &&
+            phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA);
+        if (ext4) {
+            console_write(drive.read_only ? "ext4 ro" : "ext4 rw");
+        } else {
+            console_write(drive.read_only ? "fat32 ro" : "fat32 rw");
+        }
     }
 }
 
