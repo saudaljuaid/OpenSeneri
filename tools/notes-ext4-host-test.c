@@ -26,8 +26,15 @@ static size_t scratch_length;
 static uint16_t expected_mode;
 static bool pending_publication;
 static char scratch_name[PHIPFS_MAX_PATH + 1U];
-static uint8_t target_bytes[1536];
-static uint8_t scratch_bytes[1536];
+static uint8_t target_bytes[8192];
+static uint8_t scratch_bytes[8192];
+static uint8_t expected_bytes[8192];
+static size_t expected_length;
+static const char *expected_destination;
+static const char *expected_scratch;
+static unsigned fail_write_at;
+static bool fail_paint_row;
+static bool paint_saved;
 
 static void assert_handle(phipfs_handle handle)
 {
@@ -48,7 +55,7 @@ const char *phipfs_status_string(enum phipfs_status status)
 enum phipfs_status phipfs_stat_path(enum phipfs_volume volume, const char *path,
     struct phipfs_stat *result)
 {
-    assert(volume == PHIPFS_VOLUME_DATA && strcmp(path, note_path) == 0);
+    assert(volume == PHIPFS_VOLUME_DATA && strcmp(path, expected_destination) == 0);
     if (target_inode == 0U) return PHIPFS_STATUS_NOT_FOUND;
     memset(result, 0, sizeof(*result));
     result->object_id = target_inode;
@@ -75,8 +82,11 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     assert(flags == (PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE));
     assert(mode == expected_mode && live_handles == 0U);
     ++opens;
-    char expected[] = "folder/SNTMP1.TMP";
-    expected[12] = (char)('0' + opens);
+    char expected[PHIPFS_MAX_PATH + 1U];
+    strcpy(expected, expected_scratch);
+    char *digit = strchr(expected, '0');
+    assert(digit != NULL);
+    *digit = (char)('0' + opens);
     assert(strcmp(path, expected) == 0);
     if (opens <= occupied_names) return PHIPFS_STATUS_EXISTS;
     strcpy(scratch_name, path);
@@ -101,12 +111,12 @@ enum phipfs_status phipfs_write(phipfs_handle handle, const uint8_t *bytes,
     size_t length, size_t *written)
 {
     assert_handle(handle);
-    assert(syncs == 0U && publications == 0U && length == note_length);
+    assert(syncs == 0U && publications == 0U && scratch_length + length <= expected_length);
     ++writes;
-    if (fault == WRITE_FAIL) return PHIPFS_STATUS_IO;
+    if (fault == WRITE_FAIL || writes == fail_write_at) return PHIPFS_STATUS_IO;
     *written = fault == SHORT_WRITE ? length / 2U : length;
-    memcpy(scratch_bytes, bytes, *written);
-    scratch_length = *written;
+    memcpy(scratch_bytes + scratch_length, bytes, *written);
+    scratch_length += *written;
     return PHIPFS_STATUS_OK;
 }
 
@@ -138,9 +148,9 @@ enum phipfs_status phipfs_publish_file(phipfs_handle handle, const char *source,
     const char *destination)
 {
     assert_handle(handle);
-    assert(strcmp(source, scratch_name) == 0 && strcmp(destination, note_path) == 0);
-    assert(syncs == 1U && scratch_length == note_length);
-    assert(memcmp(scratch_bytes, note_buffer, note_length) == 0);
+    assert(strcmp(source, scratch_name) == 0 && strcmp(destination, expected_destination) == 0);
+    assert(syncs == 1U && scratch_length == expected_length);
+    assert(memcmp(scratch_bytes, expected_bytes, expected_length) == 0);
     ++publications;
     if (fault == PUBLISH_FAIL) return PHIPFS_STATUS_IO;
     if (fault == SOURCE_REPLACED) {
@@ -180,6 +190,12 @@ static void reset_save(enum save_fault next_fault)
     strcpy(note_path, "folder/NOTES.TXT");
     strcpy(note_buffer, "complete new note\n");
     note_length = strlen(note_buffer);
+    expected_length = note_length;
+    memcpy(expected_bytes, note_buffer, note_length);
+    expected_destination = note_path;
+    expected_scratch = "folder/SNTMP0.TMP";
+    fail_write_at = 0U;
+    fail_paint_row = paint_saved = false;
     note_dirty = true;
     note_savable = true;
 }
@@ -187,9 +203,77 @@ static void reset_save(enum save_fault next_fault)
 static void assert_saved(void)
 {
     assert(!note_dirty && live_handles == 0U && closes == 1U);
-    assert(target_inode == 20U && scratch_inode == 0U && target_length == note_length);
-    assert(memcmp(target_bytes, note_buffer, note_length) == 0);
+    assert(target_inode == 20U && scratch_inode == 0U && target_length == expected_length);
+    assert(memcmp(target_bytes, expected_bytes, expected_length) == 0);
     assert(syncs == 2U && publications == 1U);
+}
+
+const struct editor_item *editor_item(size_t index)
+{
+    assert(index < EDITOR_MAX_ITEMS);
+    return NULL;
+}
+
+struct paint_image_info paint_image(void)
+{
+    return (struct paint_image_info){ .width = 2U, .height = 2U, .row_stride = 8U, .dirty = true };
+}
+
+enum paint_status paint_copy_bgr24_row(uint32_t row, uint8_t *destination,
+    size_t capacity, size_t *written)
+{
+    assert(row < 2U && capacity >= 8U);
+    if (fail_paint_row && row == 0U) return PAINT_STATUS_SURFACE_FAILURE;
+    memset(destination, row == 0U ? 0x11 : 0x22, 6U);
+    destination[6] = destination[7] = 0U;
+    *written = 8U;
+    return PAINT_STATUS_OK;
+}
+
+void paint_mark_saved(void) { paint_saved = true; }
+void console_serial_write(const char *message) { (void)message; }
+
+enum phipfs_status phipfs_list(enum phipfs_volume volume, const char *path,
+    struct phipfs_list_entry *entries, size_t capacity, size_t *entry_count)
+{
+    (void)path; (void)entries; (void)capacity;
+    assert(volume == PHIPFS_VOLUME_DATA);
+    *entry_count = 0U;
+    return PHIPFS_STATUS_IO; /* Rendering and directory enumeration are separate tests. */
+}
+
+static void reset_app(unsigned app, enum save_fault next_fault)
+{
+    reset_save(next_fault);
+    if (app == 0U) {
+        expected_destination = "MEDIAEDT.PHI";
+        expected_scratch = "MSTMP0.PHI";
+        expected_length = UI_MEDIA_SOURCE_PROJECT_BYTES;
+        media_source_encode_project(expected_bytes);
+        media_source_dirty = true;
+    } else if (app == 1U) {
+        expected_destination = "PHIPMED.PHI";
+        expected_scratch = "METMP0.PHI";
+        expected_length = UI_MEDIA_PROJECT_BYTES;
+        media_editor_encode(expected_bytes);
+        media_editor_dirty = true;
+    } else {
+        expected_destination = "PAINT.BMP";
+        expected_scratch = "PNTMP0.BMP";
+        expected_length = 70U;
+        memset(expected_bytes, 0, expected_length);
+        expected_bytes[0] = 'B'; expected_bytes[1] = 'M';
+        expected_bytes[2] = 70U; expected_bytes[10] = 54U; expected_bytes[14] = 40U;
+        expected_bytes[18] = expected_bytes[22] = 2U;
+        expected_bytes[26] = 1U; expected_bytes[28] = 24U; expected_bytes[34] = 16U;
+        memset(expected_bytes + 54U, 0x22, 6U);
+        memset(expected_bytes + 62U, 0x11, 6U);
+    }
+}
+
+static enum phipfs_status save_app(unsigned app)
+{
+    return app == 0U ? media_source_save() : app == 1U ? media_editor_save_timeline() : paint_save();
 }
 
 int main(void)
@@ -202,6 +286,7 @@ int main(void)
     target_inode = 0U;
     expected_mode = 0644U;
     note_length = 0U;
+    expected_length = 0U;
     assert(note_save() == PHIPFS_STATUS_OK && writes == 0U);
     assert_saved();
     reset_save(PUBLISH_LOST);
@@ -233,6 +318,36 @@ int main(void)
     reset_save(SAVE_OK);
     note_savable = false;
     assert(note_save() == PHIPFS_STATUS_RANGE && opens == 0U && note_dirty);
-    puts("Notes ext4 save: exclusive ownership, complete publication, failure handling PASS");
+    for (unsigned app = 0U; app < 3U; ++app) {
+        const enum save_fault app_faults[] = { SAVE_OK, PUBLISH_LOST, CREATE_LOST, WRITE_FAIL,
+            FIRST_SYNC_FAIL, PUBLISH_FAIL, SOURCE_REPLACED, SECOND_SYNC_FAIL, CLOSE_FAIL };
+        for (size_t index = 0U; index < sizeof(app_faults) / sizeof(app_faults[0]); ++index) {
+            reset_app(app, app_faults[index]);
+            const bool success = fault == SAVE_OK || fault == PUBLISH_LOST;
+            assert((save_app(app) == PHIPFS_STATUS_OK) == success);
+            assert(live_handles == 0U);
+            assert((app == 0U ? !media_source_dirty : app == 1U ? !media_editor_dirty : paint_saved) == success);
+            if (success) {
+                assert(target_inode == 20U && scratch_inode == 0U && target_length == expected_length);
+                assert(memcmp(target_bytes, expected_bytes, expected_length) == 0);
+            }
+        }
+    }
+    for (unsigned boundary = 1U; boundary <= 3U; ++boundary) {
+        reset_app(2U, SAVE_OK);
+        fail_write_at = boundary;
+        assert(paint_save() == PHIPFS_STATUS_IO);
+        assert(!paint_saved && publications == 0U && closes == 1U && target_inode == 10U);
+    }
+    reset_app(2U, SAVE_OK);
+    fail_paint_row = true;
+    assert(paint_save() == PHIPFS_STATUS_IO && publications == 0U && live_handles == 0U);
+    /* Recovery must not promote either format's shared, incomplete legacy scratch. */
+    reset_app(0U, SAVE_OK);
+    assert(media_source_recover_project() == PHIPFS_STATUS_OK);
+    assert(media_editor_recover() == PHIPFS_STATUS_OK);
+    assert(paint_recover_save() == PHIPFS_STATUS_OK);
+    assert(opens == 0U && publications == 0U && syncs == 0U);
+    puts("Notes, Paint, Media ext4 save: ownership, complete publication, failure handling PASS");
     return 0;
 }

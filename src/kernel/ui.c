@@ -2803,7 +2803,7 @@ static enum phipfs_status note_load(void)
     return status;
 }
 
-static bool note_sibling_path(const char *leaf, char *path)
+static bool data_sibling_path(const char *original, const char *leaf, char *path)
 {
     size_t slash = SIZE_MAX;
     size_t source = 0U;
@@ -2812,8 +2812,8 @@ static bool note_sibling_path(const char *leaf, char *path)
     if (leaf == NULL || path == NULL) {
         return false;
     }
-    while (note_path[source] != '\0') {
-        if (note_path[source] == '/') {
+    while (original[source] != '\0') {
+        if (original[source] == '/') {
             slash = source;
         }
         ++source;
@@ -2824,7 +2824,7 @@ static bool note_sibling_path(const char *leaf, char *path)
                 path[0] = '\0';
                 return false;
             }
-            path[destination++] = note_path[index];
+            path[destination++] = original[index];
         }
     }
     for (size_t index = 0U; leaf[index] != '\0'; ++index) {
@@ -2835,7 +2835,12 @@ static bool note_sibling_path(const char *leaf, char *path)
         path[destination++] = leaf[index];
     }
     path[destination] = '\0';
-    return destination != 0U && !strings_equal(path, note_path);
+    return destination != 0U && !strings_equal(path, original);
+}
+
+static bool note_sibling_path(const char *leaf, char *path)
+{
+    return data_sibling_path(note_path, leaf, path);
 }
 
 static enum phipfs_status note_replacement_paths(
@@ -2935,57 +2940,92 @@ static enum phipfs_status note_restore_original(
     return status;
 }
 
-static enum phipfs_status note_save_journaled(void)
+struct data_publication {
+    phipfs_handle handle;
+    uint64_t inode;
+    const char *destination;
+    char temporary[PHIPFS_MAX_PATH + 1U];
+};
+
+static enum phipfs_status data_publication_begin(struct data_publication *save,
+    const char *destination, const char *scratch_template)
 {
     struct phipfs_stat original;
     struct phipfs_stat owned;
-    phipfs_handle handle = 0U;
-    char temporary[PHIPFS_MAX_PATH + 1U];
-    char leaf[] = "SNTMP1.TMP";
+    char leaf[11];
     uint16_t mode = 0644U;
-    if (!note_savable) return PHIPFS_STATUS_RANGE;
-    enum phipfs_status status = phipfs_stat_path(PHIPFS_VOLUME_DATA, note_path, &original);
+    save->handle = 0U;
+    save->destination = destination;
+    if (!copy_string(leaf, sizeof(leaf), scratch_template)) return PHIPFS_STATUS_PATH;
+    enum phipfs_status status = phipfs_stat_path(PHIPFS_VOLUME_DATA, destination, &original);
     if (status == PHIPFS_STATUS_OK) {
         if (original.directory) return PHIPFS_STATUS_IS_DIRECTORY;
         mode = original.mode & 07777U;
     } else if (status != PHIPFS_STATUS_NOT_FOUND) { return status; }
     for (uint32_t number = 1U; number <= 9U; ++number) {
         leaf[5] = (char)('0' + number);
-        if (!note_sibling_path(leaf, temporary)) return PHIPFS_STATUS_PATH;
-        status = phipfs_open_options(PHIPFS_VOLUME_DATA, temporary, PHIPFS_ACCESS_READ_WRITE,
-            PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, mode, &handle);
+        if (!data_sibling_path(destination, leaf, save->temporary)) return PHIPFS_STATUS_PATH;
+        status = phipfs_open_options(PHIPFS_VOLUME_DATA, save->temporary, PHIPFS_ACCESS_READ_WRITE,
+            PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, mode, &save->handle);
         if (status != PHIPFS_STATUS_EXISTS) break;
     }
     // A refused create may have an unknown durable result. It supplies no
     // ownership handle, so never unlink a name in this branch.
     if (status != PHIPFS_STATUS_OK) return status;
-    status = phipfs_fstat(handle, &owned);
-    size_t written = 0U;
-    if (status == PHIPFS_STATUS_OK && note_length != 0U)
-        status = phipfs_write(handle, (const uint8_t *)note_buffer, note_length, &written);
-    if (status == PHIPFS_STATUS_OK && written != note_length) status = PHIPFS_STATUS_WRITEBACK;
-    if (status == PHIPFS_STATUS_OK) status = phipfs_fsync(handle);
+    status = phipfs_fstat(save->handle, &owned);
+    if (status != PHIPFS_STATUS_OK) {
+        (void)phipfs_close(save->handle);
+        save->handle = 0U;
+        return status;
+    }
+    save->inode = owned.object_id;
+    return PHIPFS_STATUS_OK;
+}
+
+static enum phipfs_status data_publication_finish(struct data_publication *save,
+    uint64_t length, enum phipfs_status status)
+{
+    if (status == PHIPFS_STATUS_OK) status = phipfs_fsync(save->handle);
     if (status == PHIPFS_STATUS_OK) {
-        status = phipfs_publish_file(handle, temporary, note_path);
-        const enum phipfs_status synced = phipfs_fsync(handle);
+        status = phipfs_publish_file(save->handle, save->temporary, save->destination);
+        const enum phipfs_status synced = phipfs_fsync(save->handle);
         if (synced != PHIPFS_STATUS_OK) status = synced;
         else {
             struct phipfs_stat published;
             struct phipfs_stat scratch;
-            const enum phipfs_status target_status = phipfs_stat_path(PHIPFS_VOLUME_DATA, note_path, &published);
-            const enum phipfs_status scratch_status = phipfs_lstat_path(PHIPFS_VOLUME_DATA, temporary, &scratch);
+            const enum phipfs_status target_status = phipfs_stat_path(PHIPFS_VOLUME_DATA, save->destination, &published);
+            const enum phipfs_status scratch_status = phipfs_lstat_path(PHIPFS_VOLUME_DATA, save->temporary, &scratch);
             // Sync can finish a publish whose write/flush completion was lost.
             // Only this exact inode at the destination proves the save visible.
-            if (target_status == PHIPFS_STATUS_OK && published.object_id == owned.object_id &&
-                published.size == note_length && scratch_status == PHIPFS_STATUS_NOT_FOUND) status = PHIPFS_STATUS_OK;
+            if (target_status == PHIPFS_STATUS_OK && published.object_id == save->inode &&
+                published.size == length && scratch_status == PHIPFS_STATUS_NOT_FOUND) status = PHIPFS_STATUS_OK;
             else if (status == PHIPFS_STATUS_OK) status = target_status != PHIPFS_STATUS_OK ?
                 target_status : PHIPFS_STATUS_STALE_HANDLE;
         }
     }
     // On failure leave the scratch name for recovery/repair. It may be
     // incomplete or have been replaced; deleting it by name would be unsafe.
-    const enum phipfs_status closed = phipfs_close(handle);
+    const enum phipfs_status closed = phipfs_close(save->handle);
+    save->handle = 0U;
     return status == PHIPFS_STATUS_OK ? closed : status;
+}
+
+static enum phipfs_status data_publish_buffer(const char *destination,
+    const char *scratch_template, const uint8_t *bytes, size_t length)
+{
+    struct data_publication save;
+    enum phipfs_status status = data_publication_begin(&save, destination, scratch_template);
+    if (status != PHIPFS_STATUS_OK) return status;
+    size_t written = 0U;
+    if (length != 0U) status = phipfs_write(save.handle, bytes, length, &written);
+    if (status == PHIPFS_STATUS_OK && written != length) status = PHIPFS_STATUS_WRITEBACK;
+    return data_publication_finish(&save, length, status);
+}
+
+static enum phipfs_status note_save_journaled(void)
+{
+    if (!note_savable) return PHIPFS_STATUS_RANGE;
+    return data_publish_buffer(note_path, "SNTMP0.TMP", (const uint8_t *)note_buffer, note_length);
 }
 
 static enum phipfs_status note_save(void)
@@ -3254,6 +3294,7 @@ static enum phipfs_status media_source_regular_presence(
 
 static enum phipfs_status media_source_recover_project(void)
 {
+    if (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) return PHIPFS_STATUS_OK;
     static const char project[] = "MEDIAEDT.PHI";
     static const char scratch[] = "MEDTEMP.PHI";
     static const char backup[] = "MEDBACK.PHI";
@@ -3379,6 +3420,15 @@ static enum phipfs_status media_source_write_scratch(const uint8_t *bytes)
 
 static enum phipfs_status media_source_save(void)
 {
+    if (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) {
+        uint8_t project_bytes[UI_MEDIA_SOURCE_PROJECT_BYTES];
+        media_source_encode_project(project_bytes);
+        const enum phipfs_status result = data_publish_buffer("MEDIAEDT.PHI", "MSTMP0.PHI",
+            project_bytes, sizeof(project_bytes));
+        if (result == PHIPFS_STATUS_OK) media_source_dirty = false;
+        media_source_set_status(result == PHIPFS_STATUS_OK ? "Project saved" : "Save failed");
+        return result;
+    }
     static const char project[] = "MEDIAEDT.PHI";
     static const char scratch[] = "MEDTEMP.PHI";
     static const char backup[] = "MEDBACK.PHI";
@@ -3891,15 +3941,11 @@ static enum phipfs_status media_source_export(void)
     return status;
 }
 
-static enum phipfs_status paint_write_scratch(void)
+static enum phipfs_status paint_write_image(phipfs_handle handle, struct paint_image_info image)
 {
-    static const char scratch[] = "PNTTEMP.BMP";
-    const struct paint_image_info image = paint_image();
     uint8_t header[UI_PAINT_BMP_HEADER_BYTES] = { 0U };
     const uint32_t file_bytes = UI_PAINT_BMP_HEADER_BYTES +
         image.row_stride * image.height;
-    phipfs_handle handle = 0U;
-    enum phipfs_status status = media_source_remove_if_present(scratch);
 
     header[0U] = 'B';
     header[1U] = 'M';
@@ -3911,16 +3957,7 @@ static enum phipfs_status paint_write_scratch(void)
     media_source_store_u16(header, 26U, 1U);
     media_source_store_u16(header, 28U, 24U);
     media_source_store_u32(header, 34U, image.row_stride * image.height);
-    if (status == PHIPFS_STATUS_OK) {
-        status = phipfs_create(PHIPFS_VOLUME_DATA, scratch);
-    }
-    if (status == PHIPFS_STATUS_OK) {
-        status = phipfs_open(PHIPFS_VOLUME_DATA, scratch,
-            PHIPFS_ACCESS_WRITE, &handle);
-    }
-    if (status == PHIPFS_STATUS_OK) {
-        status = media_source_write_all(handle, header, sizeof(header));
-    }
+    enum phipfs_status status = media_source_write_all(handle, header, sizeof(header));
     for (uint32_t row = 0U; row < image.height &&
          status == PHIPFS_STATUS_OK; ++row) {
         size_t bytes = 0U;
@@ -3934,6 +3971,19 @@ static enum phipfs_status paint_write_scratch(void)
         }
         status = media_source_write_all(handle, paint_bmp_row, bytes);
     }
+    return status;
+}
+
+static enum phipfs_status paint_write_scratch(void)
+{
+    static const char scratch[] = "PNTTEMP.BMP";
+    const struct paint_image_info image = paint_image();
+    phipfs_handle handle = 0U;
+    enum phipfs_status status = media_source_remove_if_present(scratch);
+    if (status == PHIPFS_STATUS_OK) status = phipfs_create(PHIPFS_VOLUME_DATA, scratch);
+    if (status == PHIPFS_STATUS_OK)
+        status = phipfs_open(PHIPFS_VOLUME_DATA, scratch, PHIPFS_ACCESS_WRITE, &handle);
+    if (status == PHIPFS_STATUS_OK) status = paint_write_image(handle, image);
     if (handle != 0U) {
         const enum phipfs_status close_status = phipfs_close(handle);
 
@@ -3952,6 +4002,7 @@ static enum phipfs_status paint_write_scratch(void)
 
 static enum phipfs_status paint_recover_save(void)
 {
+    if (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) return PHIPFS_STATUS_OK;
     static const char output[] = "PAINT.BMP";
     static const char scratch[] = "PNTTEMP.BMP";
     static const char backup[] = "PNTBACK.BMP";
@@ -3989,6 +4040,22 @@ static enum phipfs_status paint_recover_save(void)
 
 static enum phipfs_status paint_save(void)
 {
+    if (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) {
+        const struct paint_image_info image = paint_image();
+        struct data_publication save;
+        enum phipfs_status result = data_publication_begin(&save, "PAINT.BMP", "PNTMP0.BMP");
+        if (result == PHIPFS_STATUS_OK) {
+            result = paint_write_image(save.handle, image);
+            result = data_publication_finish(&save,
+                UI_PAINT_BMP_HEADER_BYTES + (uint64_t)image.row_stride * image.height, result);
+        }
+        if (result == PHIPFS_STATUS_OK) {
+            paint_mark_saved();
+            (void)files_refresh();
+            console_serial_write("Phipia: Paint saved PAINT.BMP\n");
+        }
+        return result;
+    }
     static const char output[] = "PAINT.BMP";
     static const char scratch[] = "PNTTEMP.BMP";
     static const char backup[] = "PNTBACK.BMP";
@@ -4180,6 +4247,7 @@ static bool media_editor_decode(const uint8_t *bytes)
 
 static enum phipfs_status media_editor_recover(void)
 {
+    if (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) return PHIPFS_STATUS_OK;
     static const char project[] = "PHIPMED.PHI";
     static const char scratch[] = "MEDTEMP.PHI";
     static const char backup[] = "MEDBACK.PHI";
@@ -4299,6 +4367,15 @@ static enum phipfs_status media_editor_write_scratch(const uint8_t *bytes)
 
 static enum phipfs_status media_editor_save_timeline(void)
 {
+    if (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) {
+        uint8_t project_bytes[UI_MEDIA_PROJECT_BYTES];
+        media_editor_encode(project_bytes);
+        const enum phipfs_status result = data_publish_buffer("PHIPMED.PHI", "METMP0.PHI",
+            project_bytes, sizeof(project_bytes));
+        if (result == PHIPFS_STATUS_OK) media_editor_dirty = false;
+        media_source_set_status(result == PHIPFS_STATUS_OK ? "Media Editor project saved" : "Save failed");
+        return result;
+    }
     static const char project[] = "PHIPMED.PHI";
     static const char scratch[] = "MEDTEMP.PHI";
     static const char backup[] = "MEDBACK.PHI";
