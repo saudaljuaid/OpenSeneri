@@ -1828,12 +1828,15 @@ fn indexed_directory_moves_update_dotdot_checksum_and_refuse_hostile_counts() {
 
 #[test]
 fn final_orphan_release_retries_identical_bytes_without_a_live_handle() {
-    for directory in [false, true] { orphan_release_failure_case(directory); }
+    for (directory, large) in [(false, false), (true, false), (false, true)] {
+        orphan_release_failure_case(directory, large);
+    }
 }
 
-fn orphan_release_failure_case(directory: bool) {
+fn orphan_release_failure_case(directory: bool, large: bool) {
     let Some(path) = fixture() else { return };
     let mut baseline = mount_fixture(&path);
+    let free_before_file = ext4::free_bytes(&baseline).unwrap();
     let name = b"system/close-retry";
     if directory {
         ext4::create_directory_probe(&mut baseline, name).unwrap();
@@ -1843,8 +1846,22 @@ fn orphan_release_failure_case(directory: bool) {
     }
     let inode = ext4::stat(&baseline, name).unwrap().inode;
     ext4::sync(&mut baseline).unwrap();
-    let initial = DEVICE.with_borrow(|device| device.bytes.clone());
+    let mut initial = DEVICE.with_borrow(|device| device.bytes.clone());
     drop(baseline);
+    if large {
+        let image = path.with_extension("coordinator-large-orphan-input.img");
+        std::fs::write(&image, &initial).unwrap();
+        // One more allocated block than a transaction can revoke. Linux
+        // creates unwritten extents without constructing a large payload.
+        debugfs(&image, "fallocate /system/close-retry 0 8192");
+        debugfs(&image, &format!("set_inode_field /system/close-retry size {}", 8193u64 * 4096));
+        initial = std::fs::read(&image).unwrap();
+        let checked = mount_bytes(initial.clone());
+        assert_eq!(ext4::stat(&checked, name).unwrap().size, 8193 * 4096);
+        assert!(free_before_file - ext4::free_bytes(&checked).unwrap() >= 8193 * 4096);
+        ext4::unmount(&checked).unwrap();
+        fsck(&path, "coordinator-large-orphan-before");
+    }
     let prepare = || {
         let mut mounted = mount_bytes(initial.clone());
         if directory { ext4::remove_directory_guarded(&mut mounted, name, &[inode]).unwrap(); }
@@ -1853,8 +1870,11 @@ fn orphan_release_failure_case(directory: bool) {
         mounted
     };
     let mut reference = prepare();
+    let orphan_bytes = DEVICE.with_borrow(|device| device.bytes.clone());
     ext4::finalize_orphan(&mut reference, inode).unwrap();
     let expected = DEVICE.with_borrow(|device| device.events.clone());
+    if large { assert!(expected.iter().filter(|event| **event == Event::Flush(3)).count() >= 2); }
+    assert_eq!(ext4::free_bytes(&reference), Ok(free_before_file));
     ext4::sync(&mut reference).unwrap();
     let final_bytes = DEVICE.with_borrow(|device| device.bytes.clone());
     drop(reference);
@@ -1873,14 +1893,33 @@ fn orphan_release_failure_case(directory: bool) {
                 device.fail_event = None;
             });
             ext4::finalize_orphan(&mut mounted, inode).unwrap();
-            let start = if fail >= expected.len() - 2 { expected.len() - 2 } else { 0 };
+            let start = expected[..fail].iter().rposition(|event|
+                matches!(event, Event::Flush(4 | 5))).map_or(0, |index| index + 1);
             DEVICE.with_borrow(|device| assert_eq!(device.events, expected[start..]));
             ext4::sync(&mut mounted).unwrap();
             ext4::unmount(&mounted).unwrap();
             DEVICE.with_borrow(|device| assert!(device.bytes == final_bytes));
         }
     }
-    fsck(&path, &format!("coordinator-orphan-close-retry-directory-{directory}"));
+    fsck(&path, &format!("coordinator-orphan-close-retry-directory-{directory}-large-{large}"));
+    if large {
+        let mut prefix = orphan_bytes;
+        for (index, event) in expected.iter().enumerate() {
+            match event {
+                Event::Write(start, bytes) => prefix[*start as usize..*start as usize + bytes.len()].copy_from_slice(bytes),
+                Event::Flush(_) => {
+                    // Reboot every durable prefix, including the middle of
+                    // multi-transaction reclamation. No live handle survives.
+                    let recovered = mount_bytes(prefix.clone());
+                    assert_eq!(ext4::stat(&recovered, name), Err(Status::NotFound));
+                    assert_eq!(ext4::stat_inode(&recovered, inode), Err(Status::NotFound));
+                    assert_eq!(ext4::free_bytes(&recovered), Ok(free_before_file));
+                    ext4::unmount(&recovered).unwrap();
+                    fsck(&path, &format!("coordinator-large-orphan-cut-{index}"));
+                }
+            }
+        }
+    }
 }
 
 #[test]

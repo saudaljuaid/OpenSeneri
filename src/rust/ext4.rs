@@ -32,6 +32,7 @@ const MAX_VALIDATED_ENTRIES: usize = 8_192;
 const MAX_PENDING_DIRECTORIES: usize = 512;
 const MAX_PROBE_WRITE_BYTES: usize = 64 * JOURNAL_BLOCK_BYTES;
 const TRANSACTION_WRITE_BYTES: usize = 32 * JOURNAL_BLOCK_BYTES;
+const MAX_SPLIT_ORPHAN_BYTES: u64 = 64 * 1024 * 1024;
 
 /// A pointer-free identity copied from a validated ext4 superblock.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1672,19 +1673,59 @@ pub(crate) fn finalize_orphan(mounted: &mut Mounted, inode: u64) -> Result<(), S
     let key = inode_key(inode)?;
     if mounted.pending_write.is_some() { return Err(Status::Busy); }
     if mounted.pending_mutation.is_some() {
-        return resume_namespace_mutation(mounted, PendingMutationKind::FinalizeOrphan, &key);
+        resume_namespace_mutation(mounted, PendingMutationKind::FinalizeOrphan, &key)?;
     }
-    ensure_staged_view(mounted)?;
     let index = inode_index(inode)?;
-    if !mounted.readable_filesystem()?.orphan_inodes().map_err(map_error)?.contains(&index) {
-        return Ok(());
+    loop {
+        ensure_staged_view(mounted)?;
+        if !mounted.readable_filesystem()?.orphan_inodes().map_err(map_error)?.contains(&index) {
+            return Ok(());
+        }
+        arm_recovery_marker(mounted)?;
+        match mounted.filesystem()?.release_orphan(index) {
+            Ok(()) => return commit_namespace_mutation(mounted, PendingMutationKind::FinalizeOrphan, key),
+            Err(error) => {
+                let capacity = mutation_capacity_error(&error);
+                discard_uncommitted_stage(mounted, true)?;
+                if !capacity { return Err(map_error(error)); }
+            }
+        }
+        // The inode is unreachable and has no live handle. Keep it on the
+        // durable orphan chain while releasing a bounded suffix. A crash or
+        // failed checkpoint can resume either that exact plan or the next
+        // suffix; the inode number is freed only by the final transaction.
+        trim_orphan_for_release(mounted, inode, &key)?;
     }
-    arm_recovery_marker(mounted)?;
-    if let Err(error) = mounted.filesystem()?.release_orphan(index) {
-        discard_uncommitted_stage(mounted, true)?;
-        return Err(map_error(error));
+}
+
+fn mutation_capacity_error(error: &Ext4Error) -> bool {
+    matches!(error, Ext4Error::Io(cause) if matches!(cause.downcast_ref::<JournalMutationStageError>(),
+        Some(JournalMutationStageError::TooManyBlocks | JournalMutationStageError::TooManyRevocations)))
+}
+
+fn trim_orphan_for_release(mounted: &mut Mounted, inode: u64, key: &[u8]) -> Result<(), Status> {
+    let node = allocated_inode(mounted.filesystem()?, inode)?;
+    if !node.file_type().is_regular_file() || node.links_count() != 0 { return Err(Status::ReadOnly); }
+    let old_size = node.size_in_bytes();
+    if old_size == 0 || old_size > MAX_SPLIT_ORPHAN_BYTES { return Err(Status::Range); }
+    let old_blocks = old_size.div_ceil(BLOCK_BYTES);
+    let mut blocks = old_blocks.min(ext4plus::JOURNAL_TRANSACTION_MAX_REVOKED_BLOCKS as u64);
+    drop(node);
+    loop {
+        arm_recovery_marker(mounted)?;
+        let node = allocated_inode(mounted.filesystem()?, inode)?;
+        let mut file = ext4plus::file::File::open_inode(mounted.filesystem()?, node).map_err(map_error)?;
+        let size = (old_blocks - blocks) * BLOCK_BYTES;
+        if let Err(error) = file.truncate(size) {
+            let capacity = mutation_capacity_error(&error);
+            drop(file);
+            discard_uncommitted_stage(mounted, true)?;
+            if capacity && blocks > 1 { blocks /= 2; continue; }
+            return Err(map_error(error));
+        }
+        drop(file);
+        return commit_namespace_mutation(mounted, PendingMutationKind::FinalizeOrphan, Vec::from(key));
     }
-    commit_namespace_mutation(mounted, PendingMutationKind::FinalizeOrphan, key)
 }
 
 /// Hard-link a regular file or the final symbolic link without following it.
