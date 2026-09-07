@@ -3742,9 +3742,11 @@ static enum phipfs_status media_source_write_all(
         PHIPFS_STATUS_WRITEBACK : status;
 }
 
-static enum phipfs_status media_source_write_export_scratch(void)
+static enum phipfs_status media_source_write_export_image(
+    phipfs_handle handle,
+    uint32_t *file_bytes_out
+)
 {
-    static const char scratch[] = "STUOUT.BMP";
     uint8_t header[UI_MEDIA_SOURCE_BMP_HEADER_BYTES] = { 0U };
     const uint32_t row_stride =
         (media_source_preview_width * 3U + 3U) & ~UINT32_C(3);
@@ -3757,8 +3759,10 @@ static enum phipfs_status media_source_write_export_scratch(void)
     const uint32_t editor_y = stage.y +
         (stage.height > media_source_preview_height ?
             (stage.height - media_source_preview_height) / 2U : 0U);
-    phipfs_handle handle = 0U;
-    enum phipfs_status status = media_source_remove_if_present(scratch);
+    enum phipfs_status status = PHIPFS_STATUS_OK;
+
+    if (file_bytes_out == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    *file_bytes_out = file_bytes;
 
     header[0U] = 'B';
     header[1U] = 'M';
@@ -3771,16 +3775,7 @@ static enum phipfs_status media_source_write_export_scratch(void)
     media_source_store_u16(header, 28U, 24U);
     media_source_store_u32(header, 34U,
         row_stride * media_source_preview_height);
-    if (status == PHIPFS_STATUS_OK) {
-        status = phipfs_create(PHIPFS_VOLUME_DATA, scratch);
-    }
-    if (status == PHIPFS_STATUS_OK) {
-        status = phipfs_open(PHIPFS_VOLUME_DATA, scratch,
-            PHIPFS_ACCESS_WRITE, &handle);
-    }
-    if (status == PHIPFS_STATUS_OK) {
-        status = media_source_write_all(handle, header, sizeof(header));
-    }
+    status = media_source_write_all(handle, header, sizeof(header));
     for (uint32_t row = 0U; row < media_source_preview_height &&
          status == PHIPFS_STATUS_OK; ++row) {
         const uint32_t source_y = media_source_preview_height - 1U - row;
@@ -3814,24 +3809,32 @@ static enum phipfs_status media_source_write_export_scratch(void)
             status = media_source_write_all(handle, media_source_bmp_row, row_stride);
         }
     }
+    return status;
+}
+
+static enum phipfs_status media_source_write_export_scratch(void)
+{
+    static const char scratch[] = "STUOUT.BMP";
+    phipfs_handle handle = 0U;
+    uint32_t file_bytes = 0U;
+    enum phipfs_status status = media_source_remove_if_present(scratch);
+
+    if (status == PHIPFS_STATUS_OK) status = phipfs_create(PHIPFS_VOLUME_DATA, scratch);
+    if (status == PHIPFS_STATUS_OK)
+        status = phipfs_open(PHIPFS_VOLUME_DATA, scratch, PHIPFS_ACCESS_WRITE, &handle);
+    if (status == PHIPFS_STATUS_OK) status = media_source_write_export_image(handle, &file_bytes);
     if (handle != 0U) {
         const enum phipfs_status close_status = phipfs_close(handle);
-
-        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
-            status = close_status;
-        }
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) status = close_status;
     }
-    if (status == PHIPFS_STATUS_OK) {
-        status = phipfs_sync(PHIPFS_VOLUME_DATA);
-    }
-    if (status != PHIPFS_STATUS_OK) {
-        (void)media_source_remove_if_present(scratch);
-    }
+    if (status == PHIPFS_STATUS_OK) status = phipfs_sync(PHIPFS_VOLUME_DATA);
+    if (status != PHIPFS_STATUS_OK) (void)media_source_remove_if_present(scratch);
     return status;
 }
 
 static enum phipfs_status media_source_recover_export(void)
 {
+    if (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) return PHIPFS_STATUS_OK;
     static const char output[] = "EXPORT.BMP";
     static const char scratch[] = "STUOUT.BMP";
     static const char backup[] = "OUTBACK.BMP";
@@ -3881,6 +3884,19 @@ static enum phipfs_status media_source_export(void)
     if (!media_source_preview_loaded) {
         media_source_set_status("Import a BMP before export");
         return PHIPFS_STATUS_NOT_FOUND;
+    }
+    if (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) {
+        struct data_publication save;
+        uint32_t file_bytes = 0U;
+        status = data_publication_begin(&save, output, "MEXTP0.BMP");
+        if (status == PHIPFS_STATUS_OK)
+            status = media_source_write_export_image(save.handle, &file_bytes);
+        if (save.handle != 0U)
+            status = data_publication_finish(&save, file_bytes, status);
+        media_source_set_status(status == PHIPFS_STATUS_OK ?
+            "EXPORT.BMP written to data" : "Export failed");
+        if (status == PHIPFS_STATUS_OK) (void)files_refresh();
+        return status;
     }
     status = media_source_recover_export();
     if (status == PHIPFS_STATUS_OK) {
