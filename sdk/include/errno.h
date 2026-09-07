@@ -2,6 +2,18 @@
 #ifndef PHIPIA_ERRNO_H
 #define PHIPIA_ERRNO_H
 
+#if defined(__MINGW32__) || defined(__MINGW64__)
+/* MinGW's stddef.h exports errno as a CRT accessor.  The SDK owns errno as
+ * thread-local storage, so reserve the CRT guard and remove that macro before
+ * declaring and using the SDK symbol. */
+#ifndef _CRT_ERRNO_DEFINED
+#define _CRT_ERRNO_DEFINED
+#endif
+#ifdef errno
+#undef errno
+#endif
+#endif
+
 extern _Thread_local int errno;
 
 #define EPERM 1
