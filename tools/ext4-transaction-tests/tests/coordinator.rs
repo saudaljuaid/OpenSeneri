@@ -1325,6 +1325,85 @@ fn duplicate_extent_release_refuses_and_rolls_back_bitmap_and_namespace() {
 }
 
 #[test]
+fn legacy_indirect_mapping_ownership_is_checked_before_writes_or_recovery() {
+    let Some(path) = fixture() else { return };
+    let image = path.with_extension("coordinator-legacy-map.img");
+    let input = path.with_extension("coordinator-legacy-map.bin");
+    let mut payload = vec![0; 1038 * 4096 + 11];
+    payload[..6].copy_from_slice(b"direct");
+    payload[12 * 4096..12 * 4096 + 6].copy_from_slice(b"single");
+    payload[1038 * 4096..].copy_from_slice(b"double-tail");
+    std::fs::write(&input, &payload).unwrap();
+    std::fs::copy(&path, &image).unwrap();
+    // Create only this inode with Linux's legacy block mapping; restore the
+    // filesystem feature before any Phipia admission or e2fsck validation.
+    debugfs(&image, "feature ^extents");
+    debugfs(&image, &format!("write \"{}\" /system/legacy-map", input.display()));
+    debugfs(&image, "feature extents");
+    let pristine = std::fs::read(&image).unwrap();
+    let mut mounted = mount_bytes(pristine.clone());
+    fsck(&path, "coordinator-legacy-map-before");
+    let inode = ext4::stat(&mounted, b"system/legacy-map").unwrap().inode;
+    let mut read = vec![0xa5; payload.len()];
+    read_exact(&mounted, b"system/legacy-map", &mut read);
+    assert_eq!(read, payload);
+    let raw = ext4plus::Ext4::load(Box::new(pristine.clone())).unwrap();
+    let node = ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(inode as u32).unwrap()).unwrap();
+    assert!(!node.flags().contains(ext4plus::inode::InodeFlags::EXTENTS));
+    let ipg = u32::from_le_bytes(pristine[1064..1068].try_into().unwrap());
+    let descriptor = 4096 + ((inode as u32 - 1) / ipg) as usize * 64;
+    let table = u32::from_le_bytes(pristine[descriptor + 8..descriptor + 12].try_into().unwrap());
+    let inode_start = table as usize * 4096 + ((inode as u32 - 1) % ipg) as usize * 256;
+    let single = u32::from_le_bytes(pristine[inode_start + 0x58..inode_start + 0x5c].try_into().unwrap());
+    let double = u32::from_le_bytes(pristine[inode_start + 0x5c..inode_start + 0x60].try_into().unwrap());
+    assert_ne!(single, 0);
+    assert_ne!(double, 0);
+    // Ordinary mutation still uses the existing block-map writer/coordinator.
+    let previous_time = MUTATION_TIME.with(|time| time.replace(1_780_000_500));
+    assert_eq!(ext4::transaction_probe(&mut mounted, b"system/legacy-map", 0, b"DIRECT"), Ok(6));
+    let snapshot = ext4plus::Ext4::load(Box::new(DEVICE.with_borrow(|device| device.bytes.clone()))).unwrap();
+    assert_eq!(snapshot.metadata("/system/legacy-map").unwrap().mtime.as_secs(), 1_780_000_500);
+    MUTATION_TIME.with(|time| time.set(previous_time));
+    assert_eq!(ext4::transaction_probe(&mut mounted, b"system/legacy-map", 4093, b"legacy-write"), Ok(12));
+    ext4::truncate_probe(&mut mounted, b"system/legacy-map", 17).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-legacy-map-truncated");
+    drop(mounted);
+    for case in 0..4 {
+        for orphan in [false, true] {
+            std::fs::write(&image, &pristine).unwrap();
+            match case {
+                0 => debugfs(&image, &format!("freeb {single}")),
+                1 => debugfs(&image, &format!("set_inode_field <{inode}> block[0] {single}")),
+                2 => debugfs(&image, &format!("set_inode_field <{inode}> block[13] {single}")),
+                _ => {
+                    // Legacy indirect records have no CRC. An allocated
+                    // self-reference must be caught before recursive reads.
+                    let mut bytes = pristine.clone();
+                    bytes[double as usize * 4096..double as usize * 4096 + 4].copy_from_slice(&double.to_le_bytes());
+                    std::fs::write(&image, bytes).unwrap();
+                }
+            }
+            debugfs(&image, &format!("set_inode_field <{inode}> size 0"));
+            if orphan {
+                debugfs(&image, &format!("set_inode_field <{inode}> links_count 0"));
+                debugfs(&image, "unlink /system/legacy-map");
+                debugfs(&image, &format!("set_super_value last_orphan {inode}"));
+                debugfs(&image, "feature needs_recovery");
+            }
+            let hostile = std::fs::read(&image).unwrap();
+            DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+            assert!(ext4::mount(1, hostile.len() as u64).is_err());
+            DEVICE.with_borrow(|device| {
+                assert!(device.events.is_empty());
+                assert_eq!(device.bytes, hostile);
+            });
+        }
+    }
+}
+
+#[test]
 fn extent_data_and_nodes_cannot_be_shared_between_live_or_orphan_inodes() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);

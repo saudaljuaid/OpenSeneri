@@ -106,8 +106,6 @@ impl<'a> BlockAllocationSnapshot<'a> {
 
     #[maybe_async::maybe_async]
     async fn validate_internal_journal_inner(&mut self) -> Result<(), Ext4Error> {
-        #[cfg(not(feature = "sync"))]
-        use crate::iters::AsyncIterator;
         if self.invalid { return Err(Ext4Error::Readonly); }
         let Some(index) = self.filesystem.superblock().journal_inode() else { return Ok(()) };
         if self.validated_inodes.contains(&index) { return Ok(()); }
@@ -115,19 +113,38 @@ impl<'a> BlockAllocationSnapshot<'a> {
             return Err(CorruptKind::ExtentBlock(index).into());
         }
         let inode = crate::inode::Inode::read(self.filesystem, index).await?;
-        if inode.flags().contains(crate::inode::InodeFlags::EXTENTS) {
-            return self.validate_inode_extents(&inode).await;
+        self.validate_inode_extents(&inode).await
+    }
+
+    /// Walk nonzero legacy pointers instead of expanding sparse logical holes.
+    /// Depth is at most three; claiming before each read catches cycles and
+    /// data/indirect aliases. The shared range budget bounds hostile trees.
+    #[maybe_async::maybe_async]
+    async fn validate_legacy_mapping(&mut self, inode: &crate::inode::Inode) -> Result<(), Ext4Error> {
+        if inode.file_type().is_symlink() && inode.size_in_bytes() < 60 {
+            return Ok(()); // i_block contains the fast symlink's literal bytes
         }
-        let mut blocks = crate::iters::file_blocks::FileBlocks::new(self.filesystem.clone(), &inode)?;
-        while let Some(block) = blocks.next().await {
-            let block = block?;
+        if !inode.file_type().is_regular_file() && !inode.file_type().is_dir() && !inode.file_type().is_symlink() {
+            return Err(Ext4Error::Readonly);
+        }
+        let mut pending = Vec::new();
+        for index in 0..15usize {
+            let block = u64::from(crate::util::read_u32le(&inode.inline_data(), index * 4));
+            if block != 0 { pending.push((block, index.saturating_sub(11) as u8)); }
+        }
+        while let Some((block, depth)) = pending.pop() {
             if !self.range_is_allocated(block, 1).await? {
-                return Err(CorruptKind::ExtentBlock(index).into());
+                return Err(CorruptKind::BlockMap(block as u32).into());
             }
-            self.claim_extent_range(block, 1, index)?;
+            self.claim_extent_range(block, 1, inode.index)?;
+            if depth != 0 {
+                let bytes = self.filesystem.read_block(block).await?;
+                for entry in bytes.chunks_exact(4) {
+                    let child = u64::from(crate::util::read_u32le(entry, 0));
+                    if child != 0 { pending.push((child, depth - 1)); }
+                }
+            }
         }
-        self.validate_xattr_reference(&inode).await?;
-        self.validated_inodes.insert(index);
         Ok(())
     }
 
@@ -189,15 +206,19 @@ impl<'a> BlockAllocationSnapshot<'a> {
         Ok(true)
     }
 
-    /// Validate allocation and exclusive extent-node/data ownership among the
+    /// Validate allocation and exclusive mapping-node/data ownership among the
     /// inodes in this pass. Discard this snapshot after any error or mutation.
     /// Shared external xattrs have checked allocation and reference counts;
-    /// call finish after visiting all inodes. Fixed metadata and non-extent
-    /// mappings have separate validators.
+    /// call finish after visiting all inodes. Reserve fixed metadata before
+    /// validating the namespace or journal.
     #[maybe_async::maybe_async]
     pub async fn validate_inode_extents(&mut self, inode: &crate::inode::Inode) -> Result<(), Ext4Error> {
         if self.invalid { return Err(CorruptKind::ExtentBlock(inode.index).into()); }
         if self.validated_inodes.contains(&inode.index) { return Ok(()); }
+        if inode.flags().contains(crate::inode::InodeFlags::INLINE_DATA) {
+            self.invalid = true;
+            return Err(Ext4Error::Readonly);
+        }
         if inode.flags().contains(crate::inode::InodeFlags::EXTENTS) {
             let result = match crate::iters::extents::Extents::new(self.filesystem.clone(), inode) {
                 Ok(extents) => extents.validate_allocation(self).await,
@@ -207,6 +228,9 @@ impl<'a> BlockAllocationSnapshot<'a> {
                 self.invalid = true;
                 return Err(error);
             }
+        } else if let Err(error) = self.validate_legacy_mapping(inode).await {
+            self.invalid = true;
+            return Err(error);
         }
         if let Err(error) = self.validate_xattr_reference(inode).await {
             self.invalid = true;

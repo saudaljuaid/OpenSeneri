@@ -6,6 +6,7 @@ use crate::util::{read_u32le, u64_from_usize, usize_from_u32};
 use crate::{Ext4, Ext4Error, Inode};
 
 use crate::error::CorruptKind;
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::num::{NonZeroU32, NonZeroUsize};
@@ -458,16 +459,78 @@ impl BlockMap {
             return Ok(Vec::new());
         }
 
-        let end_usize =
+        let end =
             start.checked_add(count).ok_or(Ext4Error::FileTooLarge)?;
-        let mut removed_blocks = Vec::with_capacity(usize_from_u32(count));
-
-        for i in start..end_usize {
-            let block = self.get_block(i).await?;
-            if block != 0 {
-                removed_blocks.push(block);
+        let (start, end) = (u64::from(start), u64::from(end));
+        // The checked layout bounds every following subtree base/span sum.
+        let layout = get_block_map_layout(&self.fs)?;
+        let mut removed_blocks = Vec::new();
+        for (index, block) in self.direct_blocks.iter_mut().enumerate() {
+            if start <= index as u64 && (index as u64) < end && *block != 0 {
+                removed_blocks.push(u64::from(*block));
+                *block = 0;
             }
-            self.set_block(i, 0).await?;
+        }
+        // Walk only existing indirect nodes intersecting the range. Calling
+        // set_block(..., 0) for logical holes used to allocate new metadata.
+        let per_node = u64_from_usize(layout.blocks_per_block.get());
+        let roots = [
+            (self.single_indirect_block.block_index.value(), 1u8, 12u64),
+            (self.double_indirect_block.block_index.value(), 2, u64_from_usize(layout.single_indirect_limit)),
+            (self.triple_indirect_block.block_index.value(), 3, u64_from_usize(layout.double_indirect_limit)),
+        ];
+        let mut pending = Vec::new();
+        for (block, depth, base) in roots {
+            let span = per_node.pow(u32::from(depth));
+            if block != 0 && base < end && base + span > start {
+                pending.push((block, depth, base, false));
+            }
+        }
+        let mut visited = BTreeSet::new();
+        let mut empty = BTreeSet::new();
+        while let Some((block, depth, base, finish)) = pending.pop() {
+            if !finish && (!visited.insert(block) || visited.len() > 65_536) {
+                return Err(CorruptKind::BlockMap(block).into());
+            }
+            let mut bytes = self.fs.read_block(u64::from(block)).await?;
+            let span = per_node.pow(u32::from(depth - 1));
+            if depth > 1 && !finish {
+                pending.push((block, depth, base, true));
+                for (index, entry) in bytes.chunks_exact(4).enumerate() {
+                    let child = read_u32le(entry, 0);
+                    let logical = base + index as u64 * span;
+                    if child != 0 && logical < end && logical + span > start {
+                        pending.push((child, depth - 1, logical, false));
+                    }
+                }
+                continue;
+            }
+            let mut changed = false;
+            for (index, entry) in bytes.chunks_exact_mut(4).enumerate() {
+                let child = read_u32le(entry, 0);
+                let logical = base + index as u64 * span;
+                if child != 0 && ((depth == 1 && logical >= start && logical < end)
+                    || (depth > 1 && empty.contains(&child))) {
+                    if depth == 1 { removed_blocks.push(u64::from(child)); }
+                    entry.fill(0);
+                    changed = true;
+                }
+            }
+            if bytes.iter().all(|byte| *byte == 0) {
+                empty.insert(block);
+                removed_blocks.push(u64::from(block));
+            } else if changed {
+                self.fs.write_to_block(u64::from(block), 0, &bytes).await?;
+            }
+        }
+        if empty.contains(&self.single_indirect_block.block_index.value()) {
+            self.single_indirect_block.block_index = BlockIndex(0);
+        }
+        if empty.contains(&self.double_indirect_block.block_index.value()) {
+            self.double_indirect_block.block_index = BlockIndex(0);
+        }
+        if empty.contains(&self.triple_indirect_block.block_index.value()) {
+            self.triple_indirect_block.block_index = BlockIndex(0);
         }
         Ok(removed_blocks)
     }
@@ -615,8 +678,8 @@ impl BlockMap {
                 .await?;
             if new_size > inode.size_in_bytes() {
                 inode.set_size_in_bytes(new_size);
-                inode.write(&self.fs).await?;
             }
+            inode.write(&self.fs).await?;
             Ok(to_write)
         } else {
             let to_write = core::cmp::min(buf.len(), block_size_usize);
@@ -645,8 +708,8 @@ impl BlockMap {
             self.fs.write_to_block(fs_block, 0, write_buf).await?;
             if new_size > inode.size_in_bytes() {
                 inode.set_size_in_bytes(new_size);
-                inode.write(&self.fs).await?;
             }
+            inode.write(&self.fs).await?;
             Ok(write_buf.len())
         }
     }
@@ -752,5 +815,38 @@ mod tests {
         block_map.free_all().await.unwrap();
 
         assert_eq!(fs.0.superblock.free_blocks_count(), free_blocks_before);
+    }
+
+    #[maybe_async::test(
+        feature = "sync",
+        async(not(feature = "sync"), tokio::test)
+    )]
+    async fn test_sparse_truncate_prunes_all_indirect_levels_without_allocating_holes() {
+        let (fs, _) = load_compressed_filesystem_rw("test_disk_ext2.bin.zst").await;
+        let mut inode = fs.create_inode(InodeCreationOptions {
+            file_type: FileType::Regular, mode: InodeMode::S_IFREG | InodeMode::S_IRUSR | InodeMode::S_IWUSR,
+            uid: 0, gid: 0, time: Default::default(), flags: InodeFlags::empty(),
+        }).await.unwrap();
+        let mut map = BlockMap::from_inode(&inode, fs.clone());
+        let block_size = fs.superblock().block_size().to_u64();
+        let per_node = block_size / 4;
+        let free = fs.superblock().free_blocks_count();
+        let last = 12 + per_node + per_node * per_node + 3;
+        for logical in [0, 12, 12 + per_node + 3, last] {
+            map.write_at(&mut inode, b"allocated", logical * block_size).await.unwrap();
+        }
+        assert_eq!(inode.fs_blocks(&fs).unwrap(), 10);
+        map.truncate(&mut inode, 17).await.unwrap();
+        assert_eq!(inode.fs_blocks(&fs).unwrap(), 1);
+        assert_eq!(fs.superblock().free_blocks_count(), free - 1);
+        assert_eq!(map.single_indirect_block.block_index.value(), 0);
+        assert_eq!(map.double_indirect_block.block_index.value(), 0);
+        assert_eq!(map.triple_indirect_block.block_index.value(), 0);
+        map.truncate(&mut inode, last * block_size + 17).await.unwrap();
+        map.truncate(&mut inode, 17).await.unwrap();
+        assert_eq!(fs.superblock().free_blocks_count(), free - 1);
+        map.truncate(&mut inode, 0).await.unwrap();
+        assert_eq!(inode.fs_blocks(&fs).unwrap(), 0);
+        assert_eq!(fs.superblock().free_blocks_count(), free);
     }
 }
