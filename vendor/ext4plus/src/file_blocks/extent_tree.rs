@@ -2261,16 +2261,23 @@ impl ExtentTree {
     }
 
     #[maybe_async::maybe_async]
+    pub(crate) async fn reclaim_extent_end(&self, max_logical_blocks: u32) -> Result<u32, Ext4Error> {
+        let mut extents = self.collect_extents().await?;
+        self.normalize_extents(&mut extents)?;
+        let end = extents.last().map(|extent| extent_end(extent, self.inode))
+            .transpose()?.ok_or(Ext4Error::FileTooLarge)?;
+        if end > max_logical_blocks { return Err(Ext4Error::FileTooLarge); }
+        Ok(end)
+    }
+
+    #[maybe_async::maybe_async]
     pub(crate) async fn trim_orphan_suffix(
         &mut self,
         inode: &mut Inode,
         max_blocks: u32,
         max_logical_blocks: u32,
     ) -> Result<(), Ext4Error> {
-        let mut extents = self.collect_extents().await?;
-        self.normalize_extents(&mut extents)?;
-        let end = extents.last().map(|extent| extent_end(extent, self.inode))
-            .transpose()?.ok_or(Ext4Error::FileTooLarge)?;
+        let end = self.reclaim_extent_end(max_logical_blocks).await?;
         let block_size = self.ext4.superblock().block_size().to_u64();
         let old_size = inode.size_in_bytes();
         if max_blocks == 0 || end > max_logical_blocks

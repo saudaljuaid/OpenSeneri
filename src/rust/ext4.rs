@@ -90,6 +90,7 @@ pub(crate) struct Mounted {
     stage: Rc<JournalMutationStage>,
     pending_mutation: Option<PendingMutation>,
     pending_write: Option<PendingWrite>,
+    pending_unlink: Option<PendingUnlink>,
     context: usize,
     image_bytes: u64,
 }
@@ -102,7 +103,7 @@ impl Mounted {
     fn readable_filesystem(&self) -> Result<&Ext4, Status> {
         // A retained transaction may contain uncommitted namespace and allocator
         // updates. Only the reloaded checkpointed view is public.
-        if self.pending_write.is_some() || self.pending_mutation.is_some()
+        if self.pending_write.is_some() || self.pending_mutation.is_some() || self.pending_unlink.is_some()
             || !self.stage.is_empty() || self.stage.is_sealed() {
             return Err(Status::Io);
         }
@@ -165,6 +166,12 @@ struct PendingWrite {
     completed: usize,
     append: bool,
     chunk_bytes: usize,
+}
+
+struct PendingUnlink {
+    path: Vec<u8>,
+    inode: u64,
+    namespace_committed: bool,
 }
 
 enum WriteTransactionOutcome {
@@ -340,6 +347,7 @@ pub(crate) fn set_stage_block_limit(mounted: &mut Mounted, block_limit: usize) -
 }
 
 fn ensure_staged_view(mounted: &mut Mounted) -> Result<(), Status> {
+    if mounted.pending_unlink.is_some() { return Err(Status::Busy); }
     if mounted.filesystem.is_none() {
         let needs_recovery = mounted.journal.filesystem_recovery_marker_is_durable()
             .map_err(|_| Status::Invalid)?;
@@ -723,6 +731,7 @@ pub(crate) fn mount(context: usize, media_bytes: u64) -> Result<(Box<Mounted>, I
             stage,
             pending_mutation: None,
             pending_write: None,
+            pending_unlink: None,
             context,
             image_bytes,
         });
@@ -775,6 +784,7 @@ fn resume_pending_mutation(
     offset: u64,
     source: &[u8],
 ) -> Result<usize, Status> {
+    if mounted.pending_unlink.is_some() { return Err(Status::Busy); }
     let pending = mounted.pending_mutation.as_ref().ok_or(Status::Invalid)?;
     if pending.kind != kind
         || pending.path != path
@@ -1621,6 +1631,10 @@ pub(crate) fn unlink_file_guarded(
     open_inodes: &[u64],
 ) -> Result<(), Status> {
     let absolute = absolute_path(path)?;
+    if let Some(pending) = &mounted.pending_unlink {
+        if pending.path != absolute { return Err(Status::Invalid); }
+        return resume_unlink_request(mounted);
+    }
     if mounted.pending_mutation.is_some() {
         return resume_namespace_mutation(mounted, PendingMutationKind::UnlinkFile, &absolute);
     }
@@ -1634,25 +1648,54 @@ pub(crate) fn unlink_file_guarded(
     arm_recovery_marker(mounted)?;
     let (parent, name) = parent_and_name(&absolute)?;
     let filesystem = mounted.filesystem()?;
+    let path = Path::try_from(absolute.as_slice()).map_err(|_| Status::Invalid)?;
+    let mut reclaim = None;
     let mutation = (|| {
-        let path = Path::try_from(absolute.as_slice())
-            .map_err(|_| Status::Invalid)?;
         let inode = filesystem
-            .path_to_inode(path, FollowSymlinks::ExcludeFinalComponent).map_err(map_error)?;
+            .path_to_inode(path, FollowSymlinks::ExcludeFinalComponent)?;
         if !inode.file_type().is_regular_file() && !inode.file_type().is_symlink() {
-            return Err(Status::IsDirectory);
+            return Err(Ext4Error::IsADirectory);
         }
         let retain = inode.file_type().is_regular_file()
             && open_inodes.contains(&u64::from(inode.index.get()));
+        if !retain && inode.file_type().is_regular_file() && inode.links_count() == 1
+            && inode.size_in_bytes() <= MAX_SPLIT_ORPHAN_BYTES {
+            reclaim = Some(u64::from(inode.index.get()));
+        }
         let parent_inode = filesystem
-            .path_to_inode(parent, FollowSymlinks::All).map_err(map_error)?;
-        let mut directory = Dir::open_inode(filesystem, parent_inode).map_err(map_error)?;
+            .path_to_inode(parent, FollowSymlinks::All)?;
+        let mut directory = Dir::open_inode(filesystem, parent_inode)?;
         if retain { directory.unlink_open(name, inode) } else { directory.unlink(name, inode) }
-            .map(|_| ()).map_err(map_error)
+            .map(|_| ())
     })();
     if let Err(error) = mutation {
+        let capacity = mutation_capacity_error(&error);
         discard_uncommitted_stage(mounted, true)?;
-        return Err(error);
+        if let Some(inode) = reclaim.filter(|_| capacity) {
+            // Publish the final unlink and durable orphan link atomically,
+            // then reclaim its allocation in bounded transactions. Retain the
+            // original pathname/phase across failures so retry never looks up
+            // an already removed name or unlinks a newly created replacement.
+            arm_recovery_marker(mounted)?;
+            let filesystem = mounted.filesystem()?;
+            filesystem.validate_extent_reclaim(inode_index(inode)?,
+                (MAX_SPLIT_ORPHAN_BYTES / BLOCK_BYTES) as u32).map_err(map_error)?;
+            let node = allocated_inode(filesystem, inode)?;
+            let (parent, name) = parent_and_name(&absolute)?;
+            let mutation = (|| {
+                let parent_inode = filesystem.path_to_inode(parent, FollowSymlinks::All)?;
+                Dir::open_inode(filesystem, parent_inode)?.unlink_open(name, node)
+            })();
+            if let Err(error) = mutation {
+                discard_uncommitted_stage(mounted, true)?;
+                return Err(map_error(error));
+            }
+            mounted.pending_unlink = Some(PendingUnlink {
+                path: absolute, inode, namespace_committed: false,
+            });
+            return resume_unlink_request(mounted);
+        }
+        return Err(map_error(error));
     }
     /*
      * Dropping the final link legitimately frees every data/extent block in
@@ -1666,6 +1709,25 @@ pub(crate) fn unlink_file_guarded(
         return Err(Status::Invalid);
     }
     commit_namespace_mutation(mounted, PendingMutationKind::UnlinkFile, absolute)
+}
+
+fn resume_unlink_request(mounted: &mut Mounted) -> Result<(), Status> {
+    let mut request = mounted.pending_unlink.take().ok_or(Status::Invalid)?;
+    let result = (|| {
+        if !request.namespace_committed {
+            if mounted.pending_mutation.is_some() {
+                resume_namespace_mutation(mounted, PendingMutationKind::UnlinkFile, &request.path)?;
+            } else {
+                commit_namespace_mutation(mounted, PendingMutationKind::UnlinkFile, request.path.clone())?;
+            }
+            request.namespace_committed = true;
+        }
+        finalize_orphan(mounted, request.inode)
+    })();
+    if result.is_err() && (request.namespace_committed || mounted.pending_mutation.is_some()) {
+        mounted.pending_unlink = Some(request);
+    }
+    result
 }
 
 /// Finalize one orphan through the same retryable coordinator used by unlink.
@@ -2069,7 +2131,9 @@ pub(crate) fn prepare_unmount(mounted: &mut Mounted) -> Result<(), Status> {
 /// Drain durable mutations and reclaim only orphans with no live C handle.
 /// Live orphans keep the recovery marker set even after a successful sync.
 pub(crate) fn sync_with_open_inodes(mounted: &mut Mounted, open_inodes: &[u64]) -> Result<(), Status> {
-    if mounted.pending_write.is_some() {
+    if mounted.pending_unlink.is_some() {
+        resume_unlink_request(mounted)?;
+    } else if mounted.pending_write.is_some() {
         let _ = resume_write_request(mounted)?;
     } else if mounted.pending_mutation.is_some() {
         let _ = resume_pending_mutation_inner(mounted)?;
@@ -2132,6 +2196,7 @@ pub(crate) fn sync(mounted: &mut Mounted) -> Result<(), Status> {
 pub(crate) fn unmount(mounted: &Mounted) -> Result<(), Status> {
     if mounted.filesystem.is_none()
         || mounted.pending_write.is_some()
+        || mounted.pending_unlink.is_some()
         || mounted.pending_mutation.is_some()
         || !mounted.stage.is_empty()
         || mounted.stage.is_sealed()

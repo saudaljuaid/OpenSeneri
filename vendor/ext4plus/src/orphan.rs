@@ -133,6 +133,21 @@ impl Ext4 {
         self.0.superblock.write(self).await
     }
 
+    /// Check the logical allocation bound before publishing a split unlink.
+    /// This does not mutate the inode or claim complete block ownership proof.
+    #[maybe_async::maybe_async]
+    pub async fn validate_extent_reclaim(&self, index: InodeIndex,
+        max_logical_blocks: u32) -> Result<(), Ext4Error> {
+        self.validate_orphan_allocation(index).await?;
+        let inode = Inode::read(self, index).await?;
+        if !inode.file_type().is_regular_file() { return Err(Ext4Error::Readonly); }
+        if inode.size_in_bytes().div_ceil(self.superblock().block_size().to_u64())
+            > u64::from(max_logical_blocks) { return Err(Ext4Error::FileTooLarge); }
+        let FileBlocks::ExtentTree(tree) = FileBlocks::from_inode(&inode, self.clone())?
+            else { return Err(Ext4Error::Readonly); };
+        tree.reclaim_extent_end(max_logical_blocks).await.map(|_| ())
+    }
+
     /// Reclaim a bounded extent suffix without releasing the orphan inode.
     /// The caller must journal or roll back the entire staged operation.
     #[maybe_async::maybe_async]

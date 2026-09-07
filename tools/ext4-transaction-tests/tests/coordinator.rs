@@ -1832,11 +1832,52 @@ fn final_orphan_release_retries_identical_bytes_without_a_live_handle() {
         (false, false, false), (true, false, false),
         (false, true, false), (false, true, true),
     ] {
-        orphan_release_failure_case(directory, large, zero_size);
+        orphan_release_failure_case(directory, large, zero_size, false);
     }
 }
 
-fn orphan_release_failure_case(directory: bool, large: bool, zero_size: bool) {
+#[test]
+fn oversized_quiescent_unlink_retries_namespace_and_reclamation_as_one_request() {
+    orphan_release_failure_case(false, false, false, true);
+    for zero_size in [false, true] {
+        orphan_release_failure_case(false, true, zero_size, true);
+    }
+}
+
+#[test]
+fn oversized_unlink_refuses_out_of_profile_extents_before_namespace_publication() {
+    let Some(path) = fixture() else { return };
+    let name = b"system/beyond-reclaim";
+    let mut mounted = mount_fixture(&path);
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    drop(mounted);
+    let image = path.with_extension("coordinator-beyond-reclaim-input.img");
+    DEVICE.with_borrow(|device| std::fs::write(&image, &device.bytes).unwrap());
+    // Size zero does not bound fallocate(KEEP_SIZE) extents. This allocation
+    // exceeds both one transaction's revokes and the split logical profile.
+    debugfs(&image, "fallocate /system/beyond-reclaim 16384 24576");
+    debugfs(&image, "set_inode_field /system/beyond-reclaim size 0");
+    let initial = std::fs::read(&image).unwrap();
+    let mut mounted = mount_bytes(initial.clone());
+    let metadata = ext4::stat(&mounted, name).unwrap();
+    let free = ext4::free_bytes(&mounted).unwrap();
+    fsck(&path, "coordinator-beyond-reclaim-before");
+    assert_eq!(ext4::unlink_file_probe(&mut mounted, name), Err(Status::Range));
+    assert_eq!(ext4::stat(&mounted, name), Ok(metadata));
+    assert_eq!(ext4::free_bytes(&mounted), Ok(free));
+    DEVICE.with_borrow(|device| {
+        assert_eq!(device.events.len(), 2);
+        assert!(matches!(device.events[0], Event::Write(1024, _)));
+        assert_eq!(device.events[1], Event::Flush(0));
+    });
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    DEVICE.with_borrow(|device| assert!(device.bytes == initial));
+    fsck(&path, "coordinator-beyond-reclaim-refused");
+}
+
+fn orphan_release_failure_case(directory: bool, large: bool, zero_size: bool, quiescent: bool) {
     let Some(path) = fixture() else { return };
     let mut baseline = mount_fixture(&path);
     let free_before_file = ext4::free_bytes(&baseline).unwrap();
@@ -1868,18 +1909,29 @@ fn orphan_release_failure_case(directory: bool, large: bool, zero_size: bool) {
         ext4::unmount(&checked).unwrap();
         fsck(&path, &format!("coordinator-large-orphan-before-zero-{zero_size}"));
     }
+    let initial_view = mount_bytes(initial.clone());
+    let initial_metadata = ext4::stat(&initial_view, name).unwrap();
+    let initial_free = ext4::free_bytes(&initial_view).unwrap();
+    drop(initial_view);
     let prepare = || {
         let mut mounted = mount_bytes(initial.clone());
-        if directory { ext4::remove_directory_guarded(&mut mounted, name, &[inode]).unwrap(); }
-        else { ext4::unlink_file_guarded(&mut mounted, name, &[inode]).unwrap(); }
+        if quiescent && !large { ext4::set_stage_block_limit(&mut mounted, 5).unwrap(); }
+        if !quiescent {
+            if directory { ext4::remove_directory_guarded(&mut mounted, name, &[inode]).unwrap(); }
+            else { ext4::unlink_file_guarded(&mut mounted, name, &[inode]).unwrap(); }
+        }
         DEVICE.with_borrow_mut(|device| device.events.clear());
         mounted
     };
+    let perform = |mounted: &mut ext4::Mounted| {
+        if quiescent { ext4::unlink_file_probe(mounted, name) }
+        else { ext4::finalize_orphan(mounted, inode) }
+    };
     let mut reference = prepare();
     let orphan_bytes = DEVICE.with_borrow(|device| device.bytes.clone());
-    ext4::finalize_orphan(&mut reference, inode).unwrap();
+    perform(&mut reference).unwrap();
     let expected = DEVICE.with_borrow(|device| device.events.clone());
-    if large { assert!(expected.iter().filter(|event| **event == Event::Flush(3)).count() >= 2); }
+    if large || quiescent { assert!(expected.iter().filter(|event| **event == Event::Flush(3)).count() >= 2); }
     assert_eq!(ext4::free_bytes(&reference), Ok(free_before_file));
     ext4::sync(&mut reference).unwrap();
     let final_bytes = DEVICE.with_borrow(|device| device.bytes.clone());
@@ -1891,24 +1943,38 @@ fn orphan_release_failure_case(directory: bool, large: bool, zero_size: bool) {
                 device.fail_event = Some(fail);
                 device.accept_failed_write = accept;
             });
-            assert_eq!(ext4::finalize_orphan(&mut mounted, inode), Err(Status::Io));
-            assert_public_reads_refused(&mounted);
+            assert_eq!(perform(&mut mounted), Err(Status::Io));
+            if !quiescent || fail >= 2 {
+                assert_public_reads_refused(&mounted);
+                if quiescent {
+                    let events = DEVICE.with_borrow(|device| device.events.len());
+                    assert!(ext4::unlink_file_probe(&mut mounted, b"system/README.TXT").is_err());
+                    assert!(ext4::create_file_probe(&mut mounted, name, 0o600).is_err());
+                    assert!(ext4::truncate_inode(&mut mounted, inode, 0).is_err());
+                    DEVICE.with_borrow(|device| assert_eq!(device.events.len(), events));
+                }
+            }
             DEVICE.with_borrow_mut(|device| {
                 assert_eq!(device.events, expected[..=fail]);
                 device.events.clear();
                 device.fail_event = None;
             });
-            ext4::finalize_orphan(&mut mounted, inode).unwrap();
+            let finish_with_sync = quiescent && accept && fail >= 2;
+            if finish_with_sync { ext4::sync(&mut mounted).unwrap(); }
+            else { perform(&mut mounted).unwrap(); }
             let start = expected[..fail].iter().rposition(|event|
-                matches!(event, Event::Flush(4 | 5))).map_or(0, |index| index + 1);
-            DEVICE.with_borrow(|device| assert_eq!(device.events, expected[start..]));
+                matches!(event, Event::Flush(0 | 4 | 5))).map_or(0, |index| index + 1);
+            DEVICE.with_borrow(|device| {
+                if finish_with_sync { assert!(device.events.starts_with(&expected[start..])); }
+                else { assert_eq!(device.events, expected[start..]); }
+            });
             ext4::sync(&mut mounted).unwrap();
             ext4::unmount(&mounted).unwrap();
             DEVICE.with_borrow(|device| assert!(device.bytes == final_bytes));
         }
     }
-    fsck(&path, &format!("coordinator-orphan-close-retry-directory-{directory}-large-{large}-zero-{zero_size}"));
-    if large {
+    fsck(&path, &format!("coordinator-orphan-close-retry-directory-{directory}-large-{large}-zero-{zero_size}-quiescent-{quiescent}"));
+    if large || quiescent {
         let mut prefix = orphan_bytes;
         for (index, event) in expected.iter().enumerate() {
             match event {
@@ -1917,11 +1983,21 @@ fn orphan_release_failure_case(directory: bool, large: bool, zero_size: bool) {
                     // Reboot every durable prefix, including the middle of
                     // multi-transaction reclamation. No live handle survives.
                     let recovered = mount_bytes(prefix.clone());
-                    assert_eq!(ext4::stat(&recovered, name), Err(Status::NotFound));
-                    assert_eq!(ext4::stat_inode(&recovered, inode), Err(Status::NotFound));
-                    assert_eq!(ext4::free_bytes(&recovered), Ok(free_before_file));
+                    if quiescent && ext4::stat(&recovered, name).is_ok() {
+                        assert_eq!(ext4::stat(&recovered, name), Ok(initial_metadata));
+                        assert_eq!(ext4::free_bytes(&recovered), Ok(initial_free));
+                        if !zero_size {
+                            let mut data = [0; 8192];
+                            read_exact(&recovered, name, &mut data);
+                            assert_eq!(data, [0x53; 8192]);
+                        }
+                    } else {
+                        assert_eq!(ext4::stat(&recovered, name), Err(Status::NotFound));
+                        assert_eq!(ext4::stat_inode(&recovered, inode), Err(Status::NotFound));
+                        assert_eq!(ext4::free_bytes(&recovered), Ok(free_before_file));
+                    }
                     ext4::unmount(&recovered).unwrap();
-                    fsck(&path, &format!("coordinator-large-orphan-zero-{zero_size}-cut-{index}"));
+                    fsck(&path, &format!("coordinator-large-orphan-zero-{zero_size}-quiescent-{quiescent}-cut-{index}"));
                 }
             }
         }
