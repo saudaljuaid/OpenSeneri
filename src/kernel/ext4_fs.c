@@ -737,6 +737,18 @@ static enum phipfs_status handle_state(
     return PHIPFS_STATUS_OK;
 }
 
+static enum phipfs_status leased_handle_state(phipfs_handle handle,
+    struct ext4_mount_state *mount, struct ext4_handle_state **state)
+{
+    /* Acquisition can yield or invoke storage callbacks. The initial lookup
+     * does not authorize a closed/reused handle in the now-owned operation. */
+    enum phipfs_status status = handle_state(handle, state);
+    if (status == PHIPFS_STATUS_OK && &ext4_mounts[(*state)->volume] != mount) {
+        status = PHIPFS_STATUS_STALE_HANDLE;
+    }
+    return status;
+}
+
 static enum phipfs_status allocate_handle(enum phipfs_volume volume,
     const char *path, uint64_t inode, uint64_t size,
     enum phipfs_access access, bool directory, uintptr_t snapshot, phipfs_handle *handle)
@@ -1213,9 +1225,12 @@ static enum phipfs_status read_handle(phipfs_handle handle,
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
-    if (advance) offset = state->offset;
-    status = map_status(phipia_ext4_pread_inode(mount->rust_mount, state->inode, offset,
-        destination, capacity, read_bytes));
+    status = leased_handle_state(handle, mount, &state);
+    if (status == PHIPFS_STATUS_OK) {
+        if (advance) offset = state->offset;
+        status = map_status(phipia_ext4_pread_inode(mount->rust_mount, state->inode, offset,
+            destination, capacity, read_bytes));
+    }
     if (status == PHIPFS_STATUS_OK) {
         if (*read_bytes > capacity || *read_bytes > UINT64_MAX - offset) {
             status = PHIPFS_STATUS_CORRUPT;
@@ -1493,8 +1508,16 @@ enum phipfs_status ext4_backend_write(phipfs_handle handle,
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
-    status = map_status(phipia_ext4_write_inode(mount->rust_mount, state->inode, state->offset,
-        source, source_bytes, written_bytes));
+    status = leased_handle_state(handle, mount, &state);
+    if (status == PHIPFS_STATUS_OK &&
+        (state->offset > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES ||
+         source_bytes > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES - state->offset)) {
+        status = PHIPFS_STATUS_RANGE;
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = map_status(phipia_ext4_write_inode(mount->rust_mount, state->inode, state->offset,
+            source, source_bytes, written_bytes));
+    }
     if (status == PHIPFS_STATUS_OK) {
         if (*written_bytes > source_bytes || *written_bytes > UINT64_MAX - state->offset) {
             status = PHIPFS_STATUS_CORRUPT;
@@ -1530,8 +1553,11 @@ enum phipfs_status ext4_backend_append(phipfs_handle handle,
     mount = &ext4_mounts[state->volume];
     status = begin_operation(mount, true);
     if (status != PHIPFS_STATUS_OK) return status;
-    status = map_status(phipia_ext4_append_inode(mount->rust_mount, state->inode, source,
-        source_bytes, PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES, &start, written_bytes));
+    status = leased_handle_state(handle, mount, &state);
+    if (status == PHIPFS_STATUS_OK) {
+        status = map_status(phipia_ext4_append_inode(mount->rust_mount, state->inode, source,
+            source_bytes, PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES, &start, written_bytes));
+    }
     if (status == PHIPFS_STATUS_OK) {
         if (*written_bytes > source_bytes || start > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES ||
             *written_bytes > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES - start) {
@@ -1573,6 +1599,8 @@ enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
         if (status != PHIPFS_STATUS_OK) return status;
         mount = candidate;
         storage_lease = true;
+        status = leased_handle_state(handle, mount, &state);
+        if (status != PHIPFS_STATUS_OK) goto done;
         zero_bytes(&metadata, sizeof(metadata));
         status = map_status(phipia_ext4_stat_inode(mount->rust_mount, state->inode, &metadata));
         if (status != PHIPFS_STATUS_OK) goto done;
@@ -1586,6 +1614,8 @@ enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
         status = reserve_operation(candidate);
         if (status != PHIPFS_STATUS_OK) return status;
         mount = candidate;
+        status = leased_handle_state(handle, mount, &state);
+        if (status != PHIPFS_STATUS_OK) goto done;
     }
     base = origin == PHIPFS_SEEK_START ? 0U :
         (origin == PHIPFS_SEEK_CURRENT ? state->offset :
@@ -1736,7 +1766,8 @@ enum phipfs_status ext4_backend_directory_read(phipfs_handle handle,
     struct ext4_mount_state *mount = &ext4_mounts[state->volume];
     status = reserve_operation(mount);
     if (status != PHIPFS_STATUS_OK) return status;
-    status = indexed_entry(state, state->offset, entry, present);
+    status = leased_handle_state(handle, mount, &state);
+    if (status == PHIPFS_STATUS_OK) status = indexed_entry(state, state->offset, entry, present);
     if (status == PHIPFS_STATUS_OK && *present) {
         ++state->offset;
     }
@@ -1870,7 +1901,8 @@ enum phipfs_status ext4_backend_ftruncate(phipfs_handle handle, uint64_t size)
     struct ext4_mount_state *mount = &ext4_mounts[state->volume];
     status = begin_operation(mount, true);
     if (status != PHIPFS_STATUS_OK) return status;
-    status = map_status(phipia_ext4_truncate_inode(mount->rust_mount, state->inode, size));
+    status = leased_handle_state(handle, mount, &state);
+    if (status == PHIPFS_STATUS_OK) status = map_status(phipia_ext4_truncate_inode(mount->rust_mount, state->inode, size));
     if (status == PHIPFS_STATUS_OK) update_open_sizes(state->volume, state->inode, size);
     enum phipfs_status close_status = end_operation(mount, NULL);
     return status != PHIPFS_STATUS_OK ? status : close_status;

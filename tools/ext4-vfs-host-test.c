@@ -37,6 +37,7 @@ static unsigned live_mounts = 1U;
 static uint32_t logical_block_bytes = 4096U;
 static phipfs_handle callback_handle;
 static unsigned close_callback_kind;
+static phipfs_handle moved_cursor_handle;
 
 static void close_from_callback(unsigned kind)
 {
@@ -205,6 +206,15 @@ enum nvme_status nvme_volume_open(struct nvme_volume_session *session,
         assert(ext4_backend_sync(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_BUSY);
     }
     close_from_callback(3U);
+    close_from_callback(6U);
+    if (moved_cursor_handle != 0U) {
+        struct ext4_handle_state *cursor;
+        assert(handle_state(moved_cursor_handle, &cursor) == PHIPFS_STATUS_OK);
+        /* Model a cursor publication between the initial range check and the
+         * storage call. The owned check must use this current cursor. */
+        cursor->offset = PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES;
+        moved_cursor_handle = 0U;
+    }
     if (open_reports_failure) return NVME_STATUS_TEARDOWN_FAILURE;
     memset(session, 0, sizeof(*session));
     session->namespace_blocks = 32768U;
@@ -553,6 +563,10 @@ int main(void)
     assert(ext4_backend_append(second, (const uint8_t *)"z", 1U, &written) == PHIPFS_STATUS_RANGE && written == 0U);
     assert(disk_size == maximum && opens == closes);
     assert(ext4_backend_ftruncate(second, maximum) == PHIPFS_STATUS_OK);
+    assert(ext4_backend_seek(second, 0, PHIPFS_SEEK_START, &position) == PHIPFS_STATUS_OK);
+    moved_cursor_handle = second;
+    assert(ext4_backend_write(second, (const uint8_t *)"z", 1U, &written) == PHIPFS_STATUS_RANGE && written == 0U);
+    assert(moved_cursor_handle == 0U && disk_size == maximum && opens == closes);
     assert(ext4_backend_ftruncate(second, 5U) == PHIPFS_STATUS_OK);
     assert(ext4_backend_close(first) == PHIPFS_STATUS_OK);
     assert(last_sync_open_count == 1U);
@@ -669,6 +683,30 @@ int main(void)
         open_reports_failure = false;
         close_reports_failure = false;
         assert(ext4_backend_sync(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK);
+    }
+    for (unsigned operation = 0U; operation < 5U; ++operation) {
+        assert(allocate_handle(PHIPFS_VOLUME_DATA, "file", 42U, disk_size,
+            PHIPFS_ACCESS_READ_WRITE, false, 0U, &callback_handle) == PHIPFS_STATUS_OK);
+        close_callback_kind = 6U;
+        const uint64_t unchanged_size = disk_size;
+        const unsigned old_truncates = truncates;
+        const unsigned old_appends = appends;
+        uint8_t output = 0xa5U;
+        size_t count = 99U;
+        uint64_t end_position = 99U;
+        enum phipfs_status status;
+        switch (operation) {
+        case 0U: status = ext4_backend_read(callback_handle, &output, 1U, &count); break;
+        case 1U: status = ext4_backend_write(callback_handle, (const uint8_t *)"x", 1U, &count); break;
+        case 2U: status = ext4_backend_append(callback_handle, (const uint8_t *)"x", 1U, &count); break;
+        case 3U: status = ext4_backend_ftruncate(callback_handle, 1U); break;
+        default: status = ext4_backend_seek(callback_handle, 0, PHIPFS_SEEK_END, &end_position); break;
+        }
+        assert(status == PHIPFS_STATUS_STALE_HANDLE && close_callback_kind == 0U);
+        assert(disk_size == unchanged_size && truncates == old_truncates && appends == old_appends);
+        assert(output == 0xa5U && (operation >= 3U || count == 0U));
+        assert(!volume_has_open_handles(PHIPFS_VOLUME_DATA) && opens == closes);
+        assert(handle_state(callback_handle, &state) == PHIPFS_STATUS_STALE_HANDLE);
     }
     assert(ext4_backend_directory_open(PHIPFS_VOLUME_DATA, "file", &callback_handle) == PHIPFS_STATUS_OK);
     close_callback_kind = 5U;
