@@ -19,10 +19,11 @@ generation-authenticated C file/directory cookies. It implements root and nested
 lookup, open, read, offset-preserving pread, 64-bit seek/stat, and directory
 enumeration, journaled regular-file writes and truncation, file and directory
 creation/removal, hard links, regular-file no-overwrite rename across parents,
-and non-indexed directory rename across parents. Directory moves journal the
+and directory rename across parents. Directory moves journal the
 `..` entry and both parent link counts with the namespace changes; ancestry is
 checked by inode identity, including symlink aliases, with a 1,024-ancestor
-refusal bound. Moving an indexed directory across parents remains refused.
+refusal bound. Indexed directory moves preserve their htree checksum and
+passed Linux fixture verification at `7b47c59`.
 File handles perform reads, writes, append and sync refresh by inode identity.
 No-replace file/directory rename can therefore preserve open handles, including
 descendants of moved directories; directory iterators own their snapshots. Hard-linked
@@ -53,7 +54,7 @@ destination is retained on the orphan chain, while source handles keep their
 inode identity. Empty directory destinations and rmdir targets with open
 snapshots now use the same retention path. Their inode numbers stay reserved
 until the last snapshot closes; captured entries remain readable. Directory
-retention and kernel-recovery fixtures are pending Linux verification. The existing image/revoke limits still
+retention and Linux-kernel recovery fixtures passed `make verify` at `f9ae36e`. The existing image/revoke limits still
 apply. Open-file replacement and Linux-kernel recovery/roundtrip fixtures
 passed Linux verification at f61d344.
 The existing native `PATH_REPLACE` syscall selects this
@@ -61,7 +62,9 @@ operation when ext4 is admitted, and SDK `rename()` uses that syscall. Errors
 from the ext4 transaction return directly; they never trigger the multi-step
 backup-name replacement used by backends without atomic replacement.
 
-C never leaves an NVMe filesystem session open. Ordinary reads acquire a
+C normally closes each NVMe filesystem session before returning. Failed
+teardown retains the ownership cookie and freezes ordinary I/O; explicit sync
+or unmount can retry teardown before resuming the journal coordinator. Ordinary reads acquire a
 read-only session and each synchronous mutation acquires a writable session.
 Mount also acquires a writable session so validated JBD2 recovery can checkpoint
 before the volume becomes visible. Rust points to the
@@ -81,8 +84,12 @@ incompat-recovery marker. The declared block count must
 fit the NVMe namespace and all free/total geometry is checked. Legacy orphan
 cleanup is bounded to 128 allocated, zero-link regular inodes or empty
 directories. Retained directories must have valid dot records, checksummed
-blocks, a nonzero block-aligned size, and at most 8192 blocks. Zero-size Linux
-directory orphans and linked Linux truncation orphans remain refused. Cycles,
+blocks, a block-aligned size, and at most 8192 blocks. Zero-size Linux directory
+orphans are admitted only with an inline extent root and a contiguous,
+initialized logical prefix whose remaining blocks validate as empty. A fully
+data-free root must have zero allocation accounting and no external xattr.
+These states passed recovery/failure fixtures at `7b39693`; multi-level
+zero-size trees and linked Linux truncation orphans remain refused. Cycles,
 invalid allocation/checksum state, and reachable
 zero-link inodes are refused before recovery home writes. Recovery validates
 the post-replay view, checkpoints the journal while retaining the marker,
@@ -104,9 +111,9 @@ space rather than unused bytes at the end of the NVMe namespace.
 Phipia's VFS currently admits ASCII mount-relative paths shorter than 128 bytes
 and at most 16 components. Directory names may be 255 bytes on disk; entries
 that cannot fit the current VFS path contract can be enumerated but cannot be
-opened through ABI v1. Indexed directory reads are intentionally bounded and
-stateless at the Rust boundary, so advancing an iterator rescans to its checked
-index; this is correct but quadratic for large directories.
+opened through ABI v1. VFS directory handles own bounded snapshots of up to
+8192 entries, retaining captured inode identities and order across mutations.
+The legacy ordinal probe remains separate from snapshot iteration.
 
 ## Ownership and lock order
 
@@ -115,7 +122,15 @@ order is VFS object/generation state, ext4 backend handle state, ext4plus's
 internal synchronous read lock, native byte callback, active NVMe volume
 session. Code must not call back into VFS while it owns an ext4plus object or an
 NVMe session. Heap allocation may occur inside ext4plus, but no allocation
-survives a rejected mount and no NVMe lease survives an operation. This lock
+survives a successfully cleaned-up rejected mount. Failed NVMe teardown retains
+its session until cleanup succeeds. File cursor changes and shared EOF updates
+occur under the operation guard. Close makes a handle stale immediately and
+defers backing-state/snapshot destruction when an active operation still uses
+it. Snapshot reads and seek also reserve this guard without opening storage
+unless SEEK_END needs a checked inode refresh. Reentrant-callback tests passed
+locally before the final guard-release adjustment; Windows Application Control
+blocked that rebuilt binary. Final Linux verification is pending at `d2affe4`.
+This lock
 order applies to the current single-core execution model.
 
 ## Read-write admission
@@ -335,7 +350,11 @@ superblock write after an allocation-bearing upstream mutation, then at the
 ordered-data flush while retrying that same pending request. Only the third,
 byte-identical attempt is allowed to complete. Requests up to the existing
 256 KiB limit now split into transactions touching at most 32 file-data blocks
-each, leaving stage space for metadata. The coordinator retains the full
+each. When fragmented metadata exceeds the shared stage budget, an explicit
+capacity refusal discards the entire attempt and halves the touched-block
+count. The reduced chunk size survives storage retries. Real fixtures tested
+12-image pressure, byte-identical suffix retries, and one-image rollback at
+`7b39693`. The coordinator retains the full
 request and its checkpointed byte count across a storage refusal; the identical
 request or sync resumes only the unfinished chunk and remaining suffix. A
 precommit refusal such as ENOSPC after completed chunks returns their durable

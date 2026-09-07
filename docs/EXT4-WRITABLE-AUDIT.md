@@ -4,7 +4,11 @@
 
 Baseline: `804c6ac065d92813e604b971f912383c3addf350` (PR #72).
 This is a source audit of the existing writable implementation, not a release
-certification. Stage 1 remains open until its host and real e2fsprogs gates pass.
+certification. The matrix below preserves that baseline, not current status.
+Stage 1 subsequently passed its host/e2fsprogs gates at `771ab6c`; milestone
+status remains **1/5 verified**. Stage 2 implementation continues. See
+[the current ext4 boundary](EXT4.md) for the tested feature profile and later
+Linux evidence; stages 2–5 and release/review completion remain unproven.
 The acceptance contract is everyday VFS semantics for the exact profile below;
 neither upstream APIs nor synthetic journal tests alone establish that contract.
 

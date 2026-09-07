@@ -297,13 +297,32 @@ orphan chain instead of freeing its inode while snapshots exist. The parent
 link decrement and orphan head commit together. Cleanup validates both dot
 records and rejects other entries before freeing any directory; the admitted
 retained size is nonzero, block aligned, and at most 8192 blocks. Phipia keeps
-the original size for validating the retained directory, so zero-size Linux
-directory orphans are still refused. Linux-kernel recovery fixtures cover
-Phipia rmdir/open-directory replacement cuts and await execution.
+the original size for validating its retained directories. Linux-kernel recovery
+fixtures for Phipia rmdir/open-directory replacement cuts passed `f9ae36e`.
+Zero-size Linux directories additionally admit bounded inline-root extents with
+a contiguous initialized logical prefix and validated empty directory blocks,
+or an empty root with zero allocation accounting and no external xattr. Recovery
+and repeated-failure fixtures for both states passed `7b39693`; multi-level
+zero-size trees and linked truncation orphans remain refused.
 
 Inode allocation rejects reserved/out-of-range inode numbers before setting a
 bitmap bit. Free validates global/group counters and directory counts before
 changing the inode bitmap; coordinator rollback also discards earlier staged
 data/extent frees. Phipia admission requires inode count = group count times
 inodes per group, matching Linux v6.12 ext4_check_geometry, and first_ino=11.
-Checksummed hostile-geometry and counter-overflow fixtures await Linux execution.
+Checksummed hostile-geometry and counter-overflow fixtures passed `f9ae36e`.
+
+All extent child traversals require depth to decrease by exactly one, including
+read iterators, lookup, neighbor search and mutation collection. A checksummed
+self-cycle fixture passed `7b39693` without writes or unbounded traversal.
+Mutation stages support smaller caller budgets within the fixed 64-image bound;
+the coordinator preserves that budget on reload and adaptively splits writes
+only after an explicit capacity failure has been fully rolled back. Real
+12-image and one-image budget fixtures passed `7b39693`.
+
+The coordinator refuses fixed allocator metadata as ordered file data or as a
+freed/revoked block. `is_fixed_metadata_block` covers bitmap blocks, inode tables,
+and primary/backup superblock and descriptor tables in the non-flex/non-resize
+profile. This is not a complete ownership census for directory/extent/xattr
+blocks shared across inodes. The corrupt-alias fixtures await Linux verification
+at `d2affe4`; they require byte-identical refusal, not clean fsck of corrupt input.
