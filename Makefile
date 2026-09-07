@@ -74,6 +74,9 @@ endif
 HOST_EXEEXT := $(if $(filter Windows_NT,$(OS)),.exe,)
 HOST_SOCKET_LIBS := $(if $(filter Windows_NT,$(OS)),-lws2_32,)
 HOST_THREAD_FLAGS := $(if $(filter Windows_NT,$(OS)),,-pthread)
+# MSYS2 cannot pass GNU make's descriptor jobserver to native Cargo. Clear
+# MAKEFLAGS for Cargo tests on Windows while retaining it on Linux CI.
+CARGO_TEST_ENV := $(if $(filter Windows_NT,$(OS)),MAKEFLAGS=,)
 QEMU_ACCEL ?= tcg
 GRUB_MKRESCUE ?= grub-mkrescue
 GRUB_MODULE_DIR ?=
@@ -1280,13 +1283,13 @@ ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesys
 	PHIPIA_EXT4_RUST_FIXTURE='$(CURDIR)/$(BUILD_DIR)/ext4-rust-fixture.img' \
 		$(PYTHON) -u tools/ext4_host_test.py
 	if test -f '$(BUILD_DIR)/ext4-rust-fixture.img'; then \
-		PHIPIA_EXT4_RUST_FIXTURE='$(CURDIR)/$(BUILD_DIR)/ext4-rust-fixture.img' \
+		PHIPIA_EXT4_RUST_FIXTURE='$(CURDIR)/$(BUILD_DIR)/ext4-rust-fixture.img' $(CARGO_TEST_ENV) \
 		CARGO_TARGET_DIR='$(CURDIR)/$(BUILD_DIR)/ext4-transaction-target' \
 		$(CARGO) test \
 		--manifest-path tools/ext4-transaction-tests/Cargo.toml \
 		--locked --offline -- --nocapture; \
 	else \
-		CARGO_TARGET_DIR='$(CURDIR)/$(BUILD_DIR)/ext4-transaction-target' \
+		$(CARGO_TEST_ENV) CARGO_TARGET_DIR='$(CURDIR)/$(BUILD_DIR)/ext4-transaction-target' \
 		$(CARGO) test \
 		--manifest-path tools/ext4-transaction-tests/Cargo.toml \
 		--locked --offline -- --nocapture; \
