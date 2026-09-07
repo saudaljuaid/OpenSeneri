@@ -154,7 +154,6 @@ PHIPIA_PROOF_CAPTURE_DIR := $(BUILD_DIR)/phipia-proof-captures
 PHIPIA_PROOF_BOOT_VIDEO := assets/phipia-proof-boot-20s.mp4
 PHIPIA_CAPTURE_DIR := $(BUILD_DIR)/phipia-captures
 PHIPIA_IMAGE := assets/phipia.png
-PHIPIA_DOCK_IMAGE := assets/phipia-dock.png
 PHIPIA_FILES_IMAGE := assets/phipia-files.png
 PHIPIA_NOTES_IMAGE := assets/phipia-notes.png
 PHIPIA_MEDIA_EDITOR_IMAGE := assets/phipia-media-editor.png
@@ -163,7 +162,6 @@ SETTINGS_DESKTOP_IMAGE := assets/phipia-settings-desktop.png
 SETTINGS_LIGHT_IMAGE := assets/phipia-settings-appearance-light.png
 SETTINGS_DARK_IMAGE := assets/phipia-settings-appearance-dark.png
 MULTITASK_IMAGE := assets/phipia-multitasking.png
-UI_FINAL_DOCK_IMAGE := assets/phipia-ui-redesign-final-dock.png
 PHIPIA_VIDEO := assets/phipia-ui-redesign-25s.mp4
 NETWORK_CAPTURE_DIR := $(BUILD_DIR)/networking-capture
 NVME_FIXTURE := $(TEST_BUILD_DIR)/nvme/nvme-fixture.raw
@@ -2225,8 +2223,6 @@ capture-phipia: iso $(FAT32_SYSTEM_IMAGE) $(FAT32_DATA_IMAGE)
 		--output $(PHIPIA_CAPTURE_DIR) --ffmpeg $(FFMPEG)
 	cp $(PHIPIA_CAPTURE_DIR)/phipia.png \
 		$(PHIPIA_IMAGE)
-	cp $(PHIPIA_CAPTURE_DIR)/phipia-dock.png \
-		$(PHIPIA_DOCK_IMAGE)
 	cp $(PHIPIA_CAPTURE_DIR)/phipia-files.png \
 		$(PHIPIA_FILES_IMAGE)
 	cp $(PHIPIA_CAPTURE_DIR)/phipia-notes.png \
@@ -2243,8 +2239,6 @@ capture-phipia: iso $(FAT32_SYSTEM_IMAGE) $(FAT32_DATA_IMAGE)
 		$(SETTINGS_DARK_IMAGE)
 	cp $(PHIPIA_CAPTURE_DIR)/phipia-multitasking.png \
 		$(MULTITASK_IMAGE)
-	cp $(PHIPIA_CAPTURE_DIR)/phipia-ui-redesign-final-dock.png \
-		$(UI_FINAL_DOCK_IMAGE)
 	cp $(PHIPIA_CAPTURE_DIR)/phipia-ui-redesign-25s.mp4 \
 		$(PHIPIA_VIDEO)
 
@@ -2858,7 +2852,7 @@ qemu-test-%: $(TEST_BUILD_DIR)/%/phipia.iso
 			grep -Fxq 'Phipia: Boot Ledger installed proof passed' "$$log" || \
 				diagnostics_ok=false ;; \
 		phipia-proof) \
-		grep -Eq '^ST PHIPIA_PROOF geometry 1024x768 dock 8 events [1-9][0-9]* panels [1-9][0-9]* cursor [1-9][0-9]* damage [1-9][0-9]* glyphs [1-9][0-9]* fingerprint 0x[0-9A-F]{16}$$' "$$log" && \
+		grep -Eq '^ST PHIPIA_PROOF geometry 1024x768 taskbar 8 events [1-9][0-9]* panels [1-9][0-9]* cursor [1-9][0-9]* damage [1-9][0-9]* glyphs [1-9][0-9]* fingerprint 0x[0-9A-F]{16}$$' "$$log" && \
 			grep -Fxq 'Phipia: installed proof passed' "$$log" || \
 				diagnostics_ok=false ;; \
 		device-substrate) \

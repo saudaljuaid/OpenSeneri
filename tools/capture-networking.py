@@ -271,7 +271,7 @@ def main() -> int:
             while time.monotonic() - started < args.seconds:
                 elapsed = time.monotonic() - started
                 if elapsed >= 0.50 and "terminal_hover" not in events:
-                    # Dock artwork magnifies and eases, but input uses the
+                    # Taskbar artwork animates, but input uses the
                     # fixed resting lane shared with the Phipia capture.
                     pointer.move_to(
                         support.dock_item_center(support.DOCK_TERMINAL),
@@ -280,7 +280,7 @@ def main() -> int:
                     events.add("terminal_hover")
                 elif elapsed >= 1.50 and "terminal_open" not in events:
                     # Keyboard activation is deterministic even while the
-                    # magnified Dock is still settling after the hover.  The
+                    # animated Taskbar is still settling after the hover.  The
                     # installed focus starts on Files, so Tab selects Terminal
                     # and Enter opens it through the ordinary PS/2 path.
                     qmp.hmp("sendkey tab 15")

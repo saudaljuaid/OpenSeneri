@@ -369,7 +369,7 @@ def record_live_window(args, qmp, pointer, work, output, durable_data, video,
     try:
         wait_until(started, 0.25)
         pointer.prime_terminal()
-        capture_png(qmp, work, output, "phipia-foundation-dock")
+        capture_png(qmp, work, output, "phipia-foundation-taskbar")
         wait_until(started, 1.00)
         pointer.move_to(dock_item_center(DOCK_SETTINGS), DOCK_POINTER_Y)
         pointer.click()
@@ -381,7 +381,7 @@ def record_live_window(args, qmp, pointer, work, output, durable_data, video,
         pointer.move_to(600, 188)
         pointer.click()
         pointer.settle_guest(0.20)
-        capture_png(qmp, work, output, "phipia-settings-dock-controls")
+        capture_png(qmp, work, output, "phipia-settings-taskbar-controls")
         # Prove the switch is live in the recording, then restore the default.
         pointer.move_to(512, 190)
         pointer.click()
@@ -1000,7 +1000,7 @@ def main():
                     record_live_window(args, qmp, pointer, work, output,
                                        durable_data, video, live_crop)
                     events = {
-                        "dock_hover", "settings_open", "appearance_open",
+                        "taskbar_hover", "settings_open", "appearance_open",
                         "wallpaper_open", "wallpaper_selected",
                         "appearance_dark",
                         "files_open", "multitask_proof", "file_open",
@@ -1021,16 +1021,16 @@ def main():
                 while time.monotonic() - started < args.seconds + 30.0:
                     elapsed = time.monotonic() - started
 
-                    if elapsed >= 0.10 and "dock_hover" not in events:
+                    if elapsed >= 0.10 and "taskbar_hover" not in events:
                         pointer.prime_terminal()
                         capture_png(qmp, work, output,
-                                    "phipia-foundation-dock")
+                                    "phipia-foundation-taskbar")
                         for dock_index in (*range(DOCK_ITEM_COUNT),
                                            DOCK_CANVAS):
                             pointer.move_to(dock_item_center(dock_index),
                                             DOCK_POINTER_Y)
                             time.sleep(0.08)
-                        events.add("dock_hover")
+                        events.add("taskbar_hover")
                     elif elapsed >= 0.30 and "settings_open" not in events:
                         pointer.move_to(dock_item_center(DOCK_SETTINGS),
                                         DOCK_POINTER_Y)
@@ -1047,7 +1047,7 @@ def main():
                         pointer.click()
                         pointer.settle_guest(0.20)
                         capture_png(qmp, work, output,
-                                    "phipia-settings-dock-controls")
+                                    "phipia-settings-taskbar-controls")
                         pointer.move_to(512, 190)
                         pointer.click()
                         pointer.click()
@@ -1161,7 +1161,7 @@ def main():
                                             DOCK_POINTER_Y)
                             time.sleep(0.12)
                         capture_png(qmp, work, output,
-                                    "phipia-ui-showcase-final-dock")
+                                    "phipia-ui-showcase-final-taskbar")
                         events.add("fluid_hover")
                     elif elapsed >= 6.40 and "store_restored" not in events:
                         pointer.rehome()
@@ -1238,7 +1238,7 @@ def main():
                     )
 
             required = PHIPIA_REQUIRED_EVENTS if not args.live_window else {
-                "dock_hover", "settings_open", "appearance_open",
+                "taskbar_hover", "settings_open", "appearance_open",
                 "wallpaper_open", "wallpaper_selected", "appearance_dark",
                 "files_open", "multitask_proof", "file_open", "note_saved",
                 "media_editor_open", "media_editor_new", "media_editor_import", "media_editor_trim",

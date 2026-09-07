@@ -345,7 +345,7 @@ def record_live_window(args, qmp, pointer, work, output, durable_data, video,
     try:
         wait_until(started, 0.25)
         pointer.prime_terminal()
-        capture_png(qmp, work, output, "phipia-dock")
+        capture_png(qmp, work, output, "phipia-taskbar")
         wait_until(started, 1.00)
         pointer.move_to(dock_item_center(DOCK_SETTINGS), DOCK_POINTER_Y)
         pointer.click()
@@ -357,7 +357,7 @@ def record_live_window(args, qmp, pointer, work, output, durable_data, video,
         pointer.move_to(600, 188)
         pointer.click()
         pointer.settle_guest(0.20)
-        capture_png(qmp, work, output, "phipia-settings-dock-controls")
+        capture_png(qmp, work, output, "phipia-settings-taskbar-controls")
         # Prove the switch is live in the recording, then restore the default.
         pointer.move_to(512, 190)
         pointer.click()
@@ -428,7 +428,7 @@ def record_live_window(args, qmp, pointer, work, output, durable_data, video,
         for index in (*range(DOCK_ITEM_COUNT), DOCK_CANVAS):
             pointer.move_to(dock_item_center(index), DOCK_POINTER_Y)
             time.sleep(0.12)
-        capture_png(qmp, work, output, "phipia-ui-redesign-final-dock")
+        capture_png(qmp, work, output, "phipia-ui-redesign-final-taskbar")
         wait_until(started, args.seconds)
         finish_recording(recording)
 
@@ -474,7 +474,7 @@ def record_fast_demo(args, qmp, pointer, work, output, video, crop):
                       DOCK_MEDIA_EDITOR):
             pointer.move_to(dock_item_center(index), DOCK_POINTER_Y)
             time.sleep(0.05)
-        capture_png(qmp, work, output, "phipia-fast-dock-hover")
+        capture_png(qmp, work, output, "phipia-fast-taskbar-hover")
 
         wait_until(started, 3.20)
         pointer.move_to(dock_item_center(DOCK_SETTINGS), DOCK_POINTER_Y)
@@ -746,7 +746,7 @@ def main():
                     record_live_window(args, qmp, pointer, work, output,
                                        durable_data, video, live_crop)
                     events = {
-                        "dock_hover", "settings_open", "appearance_open",
+                        "taskbar_hover", "settings_open", "appearance_open",
                         "wallpaper_open", "wallpaper_selected",
                         "appearance_dark",
                         "files_open", "multitask_proof", "file_open",
@@ -767,16 +767,16 @@ def main():
                 while time.monotonic() - started < args.seconds + 30.0:
                     elapsed = time.monotonic() - started
 
-                    if elapsed >= 0.10 and "dock_hover" not in events:
+                    if elapsed >= 0.10 and "taskbar_hover" not in events:
                         pointer.prime_terminal()
                         capture_png(qmp, work, output,
-                                    "phipia-dock")
+                                    "phipia-taskbar")
                         for dock_index in (*range(DOCK_ITEM_COUNT),
                                            DOCK_CANVAS):
                             pointer.move_to(dock_item_center(dock_index),
                                             DOCK_POINTER_Y)
                             time.sleep(0.08)
-                        events.add("dock_hover")
+                        events.add("taskbar_hover")
                     elif elapsed >= 0.30 and "settings_open" not in events:
                         pointer.move_to(dock_item_center(DOCK_SETTINGS),
                                         DOCK_POINTER_Y)
@@ -793,7 +793,7 @@ def main():
                         pointer.click()
                         pointer.settle_guest(0.20)
                         capture_png(qmp, work, output,
-                                    "phipia-settings-dock-controls")
+                                    "phipia-settings-taskbar-controls")
                         pointer.move_to(512, 190)
                         pointer.click()
                         pointer.click()
@@ -907,7 +907,7 @@ def main():
                                             DOCK_POINTER_Y)
                             time.sleep(0.12)
                         capture_png(qmp, work, output,
-                                    "phipia-ui-redesign-final-dock")
+                                    "phipia-ui-redesign-final-taskbar")
                         events.add("fluid_hover")
                     elif elapsed >= 6.40 and "store_restored" not in events:
                         pointer.rehome()
@@ -979,7 +979,7 @@ def main():
                 events.add("media_editor_export")
 
             required = {
-                "dock_hover", "settings_open", "appearance_open",
+                "taskbar_hover", "settings_open", "appearance_open",
                 "wallpaper_open", "wallpaper_selected",
                 "appearance_dark",
                 "files_open", "multitask_proof", "file_open", "note_saved",

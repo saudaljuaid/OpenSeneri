@@ -6272,9 +6272,9 @@ _Noreturn void kernel_test_complete_phipia_proof(void)
     const struct ui_state *ui = ui_get_state();
     const struct ui_render_counters initial_renders = ui->renders;
     struct ui_point trail_probe;
-    uint32_t dock_rim;
-    uint32_t dock_rim_x;
-    uint32_t dock_rim_y;
+    uint32_t taskbar_rim;
+    uint32_t taskbar_rim_x;
+    uint32_t taskbar_rim_y;
     uint32_t trail_under;
     struct ui_proof proof;
     enum ui_status proof_status;
@@ -6332,7 +6332,7 @@ _Noreturn void kernel_test_complete_phipia_proof(void)
 
         if (item->id != ids[index] || item->action != actions[index] ||
             item->panel != panels[index]) {
-            kernel_test_fail("Phipia dock typed action is incorrect");
+            kernel_test_fail("Phipia Taskbar typed action is incorrect");
         }
     }
 
@@ -6344,23 +6344,21 @@ _Noreturn void kernel_test_complete_phipia_proof(void)
             ui->layout.menu_bar.y) == wallpaper_probe) {
         kernel_test_fail("Phipia menu bar is not integrated");
     }
-    /*
-     * The native 3D shelf has a centre-hot blended specular line rather than
-     * the old flat white rectangle.  Derive its back edge from the resting
-     * icon baseline and prove the line is visibly distinct on both sides.
-     */
-    dock_rim_x = ui->layout.surface.width / 2U;
-    dock_rim_y = ui->layout.dock_items[0U].icon_bounds.y +
+    /* The Taskbar has a centre-hot blended edge.  Derive its back edge from
+     * the first icon baseline and prove the line is visibly distinct on both
+     * sides. */
+    taskbar_rim_x = ui->layout.surface.width / 2U;
+    taskbar_rim_y = ui->layout.dock_items[0U].icon_bounds.y +
         ui->layout.dock_items[0U].icon_bounds.height;
-    if (dock_rim_y == 0U || dock_rim_y + 1U >=
+    if (taskbar_rim_y == 0U || taskbar_rim_y + 1U >=
             ui->layout.surface.height) {
-        kernel_test_fail("Phipia dock rim geometry is invalid");
+        kernel_test_fail("Phipia Taskbar edge geometry is invalid");
     }
-    dock_rim = phipia_proof_pixel(dock_rim_x, dock_rim_y);
-    if (dock_rim == 0U ||
-        dock_rim == phipia_proof_pixel(dock_rim_x, dock_rim_y - 1U) ||
-        dock_rim == phipia_proof_pixel(dock_rim_x, dock_rim_y + 1U)) {
-        kernel_test_fail("Phipia dock rim is not integrated");
+    taskbar_rim = phipia_proof_pixel(taskbar_rim_x, taskbar_rim_y);
+    if (taskbar_rim == 0U ||
+        taskbar_rim == phipia_proof_pixel(taskbar_rim_x, taskbar_rim_y - 1U) ||
+        taskbar_rim == phipia_proof_pixel(taskbar_rim_x, taskbar_rim_y + 1U)) {
+        kernel_test_fail("Phipia Taskbar edge is not integrated");
     }
 
     trail_under = phipia_proof_pixel(20U, 100U);
@@ -6554,7 +6552,7 @@ _Noreturn void kernel_test_complete_phipia_proof(void)
     console_write_u64(proof.width);
     console_putc('x');
     console_write_u64(proof.height);
-    console_write(" dock ");
+    console_write(" taskbar ");
     console_write_u64(proof.dock_items);
     console_write(" events ");
     console_write_u64(proof.events);

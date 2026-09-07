@@ -124,19 +124,6 @@ only to regenerate that source sprite, never by the ordinary build.
 `tools/verify-ui-assets.py` pins every selected SVG, the license, and the
 committed raster resources by SHA-256.
 
-## Phipia Taskbar
-
-Phipia's Taskbar interaction and glass-shelf geometry are a native fixed-point
-port of [`saudaljuaid/3d-dock`](https://github.com/saudaljuaid/3d-dock) at
-commit `8ab14d0c372ab797475e49b8a658d54f30f706bc`. The original implementation is
-written in C with Cairo and X11. Phipia preserves its raised-cosine hover
-curve, pointer-anchored layout, eased panel width, press squash, decaying
-bounce, trapezoidal shelf flare, warped reflection strips, running lights, and
-tooltip fades, while replacing those hosted dependencies with bounded Q16.16
-math and direct cached-framebuffer drawing. Only Phipia's eight applications are
-present. The upstream MIT license is committed as
-`docs/third-party/3d-dock-LICENSE`.
-
 ## Phipia photographic scenes
 
 The fourteen wallpaper sources are real photographs downloaded from Unsplash

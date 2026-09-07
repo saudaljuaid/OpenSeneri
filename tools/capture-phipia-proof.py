@@ -239,7 +239,7 @@ def main():
         clean = capture(qmp, output, "phipia-proof")
 
         # Focus remains on Terminal while the real PS/2 cursor hovers the
-        # second tile in the vertical Workspace dock.
+        # second tile in the vertical Workspace Taskbar.
         for dx, dy in ((230, -226), (235, -227)):
             qmp.hmp(f"mouse_move {dx} {dy}")
             time.sleep(0.08)

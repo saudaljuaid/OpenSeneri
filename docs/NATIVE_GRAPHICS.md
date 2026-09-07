@@ -9,10 +9,10 @@ handle, and a process-local RW/NX surface address with explicit width, height,
 and byte stride.
 
 The application owns only content pixels. Phipia owns chrome, focus, stacking,
-movement, close/maximize/minimize controls, Dock behavior, animation, and
+movement, close/maximize/minimize controls, Taskbar behavior, animation, and
 composition. A maximized native surface is scaled into the larger content
 area and pointer coordinates are mapped back into its original geometry. The
-same compositor snapshots a completed native window for the bounded Dock genie
+same compositor snapshots a completed native window for the Taskbar launch
 animation; the process surface remains unchanged and is never writable by the
 animation path. The surface is never a mapping of physical framebuffer memory.
 Presentation names

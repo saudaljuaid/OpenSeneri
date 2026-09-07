@@ -21,7 +21,7 @@ VARIABLE_REGIONS = {
 }
 STABLE_REGIONS = {
     "clean": ((0, 0, WIDTH, HEIGHT, "clean desktop"),),
-    "focus": ((0, 0, WIDTH, HEIGHT, "focused and hovered dock"),),
+    "focus": ((0, 0, WIDTH, HEIGHT, "focused and hovered Taskbar"),),
     "terminal": ((0, 0, WIDTH, HEIGHT, "terminal ledger result"),),
 }
 
