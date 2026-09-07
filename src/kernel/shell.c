@@ -695,9 +695,7 @@ static void command_write_line(const char *arguments, bool append)
         opened = status == PHIPFS_STATUS_OK;
     }
     if (status == PHIPFS_STATUS_OK && append) {
-        uint64_t position;
-
-        status = phipfs_seek(handle, 0, PHIPFS_SEEK_END, &position);
+        status = phipfs_set_append(handle, true);
     }
     if (status == PHIPFS_STATUS_OK) {
         status = phipfs_write(handle, content, content_bytes, &written);
