@@ -360,6 +360,8 @@ fn validate_profile(context: usize, media_bytes: u64) -> Result<u64, Status> {
         | (u64::from(read_u32(&superblock, 0x158).ok_or(Status::Invalid)?) << 32);
     let inodes = read_u32(&superblock, 0x00).ok_or(Status::Invalid)?;
     let free_inodes = read_u32(&superblock, 0x10).ok_or(Status::Invalid)?;
+    let blocks_per_group = read_u32(&superblock, 0x20).ok_or(Status::Invalid)?;
+    let inodes_per_group = read_u32(&superblock, 0x28).ok_or(Status::Invalid)?;
     let image_bytes = blocks.checked_mul(BLOCK_BYTES).ok_or(Status::Invalid)?;
 
     if magic != 0xef53
@@ -375,9 +377,14 @@ fn validate_profile(context: usize, media_bytes: u64) -> Result<u64, Status> {
         || free_blocks > blocks
         || inodes == 0
         || free_inodes > inodes
-        || read_u32(&superblock, 0x20) == Some(0)
-        || read_u32(&superblock, 0x28) == Some(0)
+        || blocks_per_group == 0 || u64::from(blocks_per_group) > BLOCK_BYTES * 8
+        || inodes_per_group == 0 || u64::from(inodes_per_group) > BLOCK_BYTES * 8
+        || read_u32(&superblock, 0x54) != Some(11)
     {
+        return Err(Status::Invalid);
+    }
+    // Match Linux ext4_check_geometry before any inode-table or journal load.
+    if blocks.div_ceil(u64::from(blocks_per_group)).checked_mul(u64::from(inodes_per_group)) != Some(u64::from(inodes)) {
         return Err(Status::Invalid);
     }
     let orphan = read_u32(&superblock, 0xe8).ok_or(Status::Invalid)?;

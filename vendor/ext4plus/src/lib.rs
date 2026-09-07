@@ -741,6 +741,14 @@ impl Ext4 {
                 else {
                     return Err(CorruptKind::BlockGroupDescriptor(bg_id).into());
                 };
+                let number = self.0.superblock.inodes_per_block_group().get()
+                    .checked_mul(bg_id).and_then(|base| base.checked_add(inode_num))
+                    .and_then(|value| value.checked_add(1))
+                    .filter(|value| *value >= self.0.superblock.first_allocatable_inode()
+                        && self.0.superblock.first_allocatable_inode() >= 11
+                        && *value <= self.0.superblock.inodes_count())
+                    .and_then(InodeIndex::new)
+                    .ok_or(CorruptKind::BlockGroupDescriptor(bg_id))?;
                 inode_bitmap_handle.set(inode_num, true, self).await?;
                 self.update_inode_bitmap_checksum(bg_id, inode_bitmap_handle)
                     .await?;
@@ -781,21 +789,7 @@ impl Ext4 {
                 );
                 self.0.superblock.write(self).await?;
 
-                return Ok(InodeIndex::try_from(
-                    inode_num
-                        .checked_add(
-                            self.0
-                                .superblock
-                                .inodes_per_block_group()
-                                .get()
-                                .checked_mul(bg_id)
-                                .unwrap(),
-                        )
-                        .unwrap()
-                        .checked_add(1)
-                        .unwrap(),
-                )
-                .unwrap());
+                return Ok(number);
             }
 
             // Will never overflow
@@ -811,6 +805,18 @@ impl Ext4 {
     ) -> Result<(), Ext4Error> {
         let (block_group_index, inode_offset) =
             get_inode_block_group_location(&self.0.superblock, inode.index)?;
+        let bad = || CorruptKind::BlockGroupDescriptor(block_group_index);
+        if inode.index.get() < self.0.superblock.first_allocatable_inode()
+            || self.0.superblock.first_allocatable_inode() < 11
+            || inode.index.get() > self.0.superblock.inodes_count() { return Err(bad().into()); }
+        let bg = self.0.block_group_descriptors.get(block_group_index as usize).ok_or_else(bad)?;
+        let free_inodes = bg.free_inodes_count().checked_add(1)
+            .filter(|count| *count <= self.0.superblock.inodes_per_block_group().get()).ok_or_else(bad)?;
+        let total_free_inodes = self.0.superblock.free_inodes_count().checked_add(1)
+            .filter(|count| *count <= self.0.superblock.inodes_count()).ok_or_else(bad)?;
+        let used_dirs = if inode.file_type().is_dir() {
+            bg.used_dirs_count().checked_sub(1).ok_or_else(bad)?
+        } else { bg.used_dirs_count() };
         let inode_bitmap_handle =
             self.get_inode_bitmap_handle(block_group_index).await?;
         if !inode_bitmap_handle.query(inode_offset, self).await? {
@@ -823,21 +829,13 @@ impl Ext4 {
         )
         .await?;
         // Set number of free inodes in block group
-        let bg = self.get_block_group_descriptor(block_group_index);
-        let free_inodes = bg.free_inodes_count();
-        bg.set_free_inodes_count(free_inodes.checked_add(1)
-            .filter(|count| *count <= self.0.superblock.inodes_per_block_group().get())
-            .ok_or(CorruptKind::BlockGroupDescriptor(block_group_index))?);
-        if inode.file_type().is_dir() {
-            let used_dirs = bg.used_dirs_count();
-            bg.set_used_dirs_count(used_dirs.checked_sub(1).ok_or(CorruptKind::BlockGroupDescriptor(block_group_index))?);
-        }
+        bg.set_free_inodes_count(free_inodes);
+        bg.set_used_dirs_count(used_dirs);
         bg.write(self).await?;
         // Set number of free inodes in superblock
-        let total_free_inodes = self.0.superblock.free_inodes_count();
         self.0
             .superblock
-            .set_free_inodes_count(total_free_inodes.checked_add(1).ok_or(CorruptKind::BlockGroupDescriptor(block_group_index))?);
+            .set_free_inodes_count(total_free_inodes);
         self.0.superblock.write(self).await?;
         Ok(())
     }

@@ -300,3 +300,10 @@ retained size is nonzero, block aligned, and at most 8192 blocks. Phipia keeps
 the original size for validating the retained directory, so zero-size Linux
 directory orphans are still refused. Linux-kernel recovery fixtures cover
 Phipia rmdir/open-directory replacement cuts and await execution.
+
+Inode allocation rejects reserved/out-of-range inode numbers before setting a
+bitmap bit. Free validates global/group counters and directory counts before
+changing the inode bitmap; coordinator rollback also discards earlier staged
+data/extent frees. Phipia admission requires inode count = group count times
+inodes per group, matching Linux v6.12 ext4_check_geometry, and first_ino=11.
+Checksummed hostile-geometry and counter-overflow fixtures await Linux execution.

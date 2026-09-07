@@ -449,6 +449,10 @@ impl Superblock {
     /// Number of inodes in the filesystem, including reserved inodes.
     pub fn inodes_count(&self) -> u32 { read_u32le(&self.data, 0) }
 
+    pub(crate) fn first_allocatable_inode(&self) -> u32 {
+        if read_u32le(&self.data, 0x4c) == 0 { 11 } else { read_u32le(&self.data, 0x54) }
+    }
+
     /// Head of ext4's legacy on-disk orphan chain (zero means empty).
     pub fn last_orphan(&self) -> u32 { self.last_orphan.load(Ordering::Relaxed) }
 

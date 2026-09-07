@@ -1082,6 +1082,64 @@ fn allocation_bitmap_corruption_is_not_rechecksummed_into_a_transaction() {
 }
 
 #[test]
+fn inode_geometry_reserved_allocations_and_free_counter_overflow_are_refused() {
+    let Some(path) = fixture() else { return };
+    let original = std::fs::read(&path).unwrap();
+    let inodes = u32::from_le_bytes(original[1024..1028].try_into().unwrap());
+    let image = path.with_extension("inode-geometry.img");
+    for (field, offset, value) in [
+        ("inodes_count", 0, inodes - 1), ("inodes_count", 0, inodes + 1),
+        ("first_ino", 0x54, 10), ("inodes_per_group", 0x28, 32769),
+        ("blocks_per_group", 0x20, 32769),
+    ] {
+        std::fs::write(&image, &original).unwrap();
+        debugfs(&image, &format!("set_super_value {field} {value}"));
+        let hostile = std::fs::read(&image).unwrap();
+        assert_eq!(u32::from_le_bytes(hostile[1024 + offset..1028 + offset].try_into().unwrap()), value);
+        DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+        assert!(ext4::mount(1, hostile.len() as u64).is_err(), "admitted {field}={value}");
+        DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert!(device.bytes == hostile); });
+    }
+    let mut mounted = mount_fixture(&path);
+    let file = b"system/free-counter-file";
+    let directory = b"system/free-counter-dir";
+    ext4::create_file_probe(&mut mounted, file, 0o600).unwrap();
+    ext4::transaction_probe(&mut mounted, file, 0, b"preserved").unwrap();
+    ext4::create_directory_probe(&mut mounted, directory).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    drop(mounted);
+    DEVICE.with_borrow(|device| std::fs::write(&image, &device.bytes).unwrap());
+    debugfs(&image, &format!("set_super_value free_inodes_count {inodes}"));
+    let hostile = std::fs::read(&image).unwrap();
+    for remove_directory in [false, true] {
+        let mut mounted = mount_bytes(hostile.clone());
+        let name: &[u8] = if remove_directory { directory } else { file };
+        let before = ext4::stat(&mounted, name).unwrap();
+        let result = if remove_directory { ext4::remove_directory_probe(&mut mounted, name) }
+            else { ext4::unlink_file_probe(&mut mounted, name) };
+        assert_eq!(result, Err(Status::Invalid));
+        assert_eq!(ext4::stat(&mounted, name), Ok(before));
+        let mut data = [0; 9];
+        read_exact(&mounted, file, &mut data);
+        assert_eq!(&data, b"preserved");
+        ext4::sync(&mut mounted).unwrap();
+        DEVICE.with_borrow(|device| assert!(device.bytes == hostile));
+        ext4::unmount(&mounted).unwrap();
+    }
+    std::fs::write(&image, &original).unwrap();
+    debugfs(&image, "freei <1>");
+    let hostile = std::fs::read(&image).unwrap();
+    let bitmap = u32::from_le_bytes(hostile[4100..4104].try_into().unwrap()) as usize * 4096;
+    assert_eq!(hostile[bitmap] & 1, 0);
+    let mut mounted = mount_bytes(hostile.clone());
+    assert_eq!(ext4::create_file_probe(&mut mounted, b"system/reserved-inode", 0o600), Err(Status::Invalid));
+    ext4::sync(&mut mounted).unwrap();
+    DEVICE.with_borrow(|device| assert!(device.bytes == hostile));
+    ext4::unmount(&mounted).unwrap();
+}
+
+#[test]
 fn duplicate_extent_release_refuses_and_rolls_back_bitmap_and_namespace() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);
