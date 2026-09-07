@@ -2537,6 +2537,19 @@ static void files_up(void)
     (void)files_refresh();
 }
 
+static enum phipfs_status explorer_create_file(const char *path)
+{
+    if (!phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) {
+        return phipfs_create(PHIPFS_VOLUME_DATA, path);
+    }
+    phipfs_handle handle = 0U;
+    enum phipfs_status status = phipfs_open_options(PHIPFS_VOLUME_DATA, path,
+        PHIPFS_ACCESS_READ_WRITE, PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE,
+        0644U, &handle);
+    if (status == PHIPFS_STATUS_OK) status = phipfs_close(handle);
+    return status;
+}
+
 static void files_create(bool directory)
 {
     char name[13U];
@@ -2567,7 +2580,7 @@ static void files_create(bool directory)
             continue;
         }
         status = directory ? phipfs_mkdir(PHIPFS_VOLUME_DATA, path) :
-            phipfs_create(PHIPFS_VOLUME_DATA, path);
+            explorer_create_file(path);
         if (status == PHIPFS_STATUS_OK) {
             set_app_status(directory ? "created folder" : "created file",
                 PHIPFS_STATUS_OK);
@@ -2720,7 +2733,7 @@ static void phipia_apply_explorer_action(void)
     case EXPLORER_ACTION_CREATE:
         status = action.item_kind == EXPLORER_FOLDER ?
             phipfs_mkdir(PHIPFS_VOLUME_DATA, destination) :
-            phipfs_create(PHIPFS_VOLUME_DATA, destination);
+            explorer_create_file(destination);
         break;
     case EXPLORER_ACTION_RENAME:
     case EXPLORER_ACTION_MOVE:
