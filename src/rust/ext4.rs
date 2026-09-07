@@ -912,6 +912,16 @@ fn commit_staged_mutation(
             return Err(Status::Invalid);
         }
     };
+    for block in transaction.revoked_blocks() {
+        match mounted.filesystem()?.is_fixed_metadata_block(*block) {
+            Ok(false) => {}
+            result => {
+                let error = result.err().map(map_error).unwrap_or(Status::Invalid);
+                discard_uncommitted_stage(mounted, true)?;
+                return Err(error);
+            }
+        }
+    }
     if let Some(block) = expected_revoke {
         if !transaction.revokes_block(block) {
             discard_uncommitted_stage(mounted, true)?;

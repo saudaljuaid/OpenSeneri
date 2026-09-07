@@ -1263,7 +1263,7 @@ fn checksummed_extent_cycles_are_refused_before_traversal_or_mutation() {
 }
 
 #[test]
-fn file_extents_cannot_classify_fixed_metadata_as_ordered_data() {
+fn file_extents_cannot_overwrite_or_free_fixed_metadata() {
     let Some(path) = fixture() else { return };
     let name = b"system/metadata-alias";
     let mut mounted = mount_fixture(&path);
@@ -1303,6 +1303,21 @@ fn file_extents_cannot_classify_fixed_metadata_as_ordered_data() {
         ext4::sync(&mut mounted).unwrap();
         ext4::unmount(&mounted).unwrap();
         DEVICE.with_borrow(|device| assert_eq!(device.bytes, hostile));
+        for unlink in [false, true] {
+            let mut mounted = mount_bytes(hostile.clone());
+            let result = if unlink { ext4::unlink_file_probe(&mut mounted, name) }
+                else { ext4::truncate_probe(&mut mounted, name, 0) };
+            assert_eq!(result, Err(Status::Invalid), "free fixed block {target}, unlink={unlink}");
+            assert_eq!(ext4::stat(&mounted, name).unwrap(), metadata);
+            DEVICE.with_borrow(|device| {
+                assert_eq!(device.events.len(), 2);
+                assert!(matches!(&device.events[0], Event::Write(1024, data) if data.len() == 1024));
+                assert_eq!(device.events[1], Event::Flush(0));
+            });
+            ext4::sync(&mut mounted).unwrap();
+            ext4::unmount(&mounted).unwrap();
+            DEVICE.with_borrow(|device| assert_eq!(device.bytes, hostile));
+        }
         // The input deliberately contains an invalid ownership alias; do not
         // present it as a clean-fsck result. Refusal preserves it byte-for-byte.
     }
