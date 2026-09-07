@@ -14,6 +14,7 @@ static bool pending;
 static uint64_t disk_size = 8192U;
 static int32_t permanent_status = PHIPIA_EXT4_STATUS_OK;
 static uint8_t file_type = PHIPIA_EXT4_FILE_REGULAR;
+static uint16_t inode_links = 3U;
 static unsigned renames;
 static uint64_t pending_size;
 static unsigned sync_refusals;
@@ -303,7 +304,7 @@ int32_t phipia_ext4_stat(uintptr_t mounted, const uint8_t *path,
     metadata->mode = 0100640U;
     metadata->uid = 70000U;
     metadata->gid = 90000U;
-    metadata->links = 3U;
+    metadata->links = inode_links;
     metadata->atime_seconds = -1;
     metadata->atime_nanos = 123U;
     metadata->mtime_seconds = INT64_C(2147483648);
@@ -828,6 +829,14 @@ int main(void)
     assert(!pending && disk_size == 321U && last_sync_open_count == 2U && opens == closes);
     assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->size == 321U && state->offset == 3U);
     assert(handle_state(second, &state) == PHIPFS_STATUS_OK && state->size == 321U);
+    inode_links = 0U; // An unlinked inode is still held by both descriptors.
+    assert(ext4_backend_fstat(first, &path_metadata) == PHIPFS_STATUS_OK);
+    assert(path_metadata.object_id == 42U && path_metadata.links == 0U && path_metadata.size == 321U);
+    assert(path_metadata.atime_seconds == -1 && path_metadata.uid == 70000U);
+    stat_refusals = 1U;
+    assert(ext4_backend_fstat(first, &path_metadata) == PHIPFS_STATUS_IO);
+    assert(path_metadata.object_id == 0U && path_metadata.size == 0U);
+    inode_links = 3U;
     callback_handle = first;
     close_callback_kind = 3U;
     const unsigned sync_before_stale = file_sync_calls;
@@ -835,6 +844,11 @@ int main(void)
     assert(close_callback_kind == 0U && file_sync_calls == sync_before_stale && opens == closes);
     assert(ext4_backend_close(second) == PHIPFS_STATUS_OK);
     assert(ext4_backend_fsync(second) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);
+    callback_handle = first;
+    close_callback_kind = 3U;
+    assert(ext4_backend_fstat(first, &path_metadata) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(path_metadata.object_id == 0U && path_metadata.mode == 0U && opens == closes);
     assert(!volume_has_open_handles(PHIPFS_VOLUME_DATA));
     unmount_refusals = 1U;
     assert(ext4_backend_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_CORRUPT);

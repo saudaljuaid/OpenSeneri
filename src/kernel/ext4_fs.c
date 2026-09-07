@@ -1096,6 +1096,26 @@ enum phipfs_status ext4_backend_sync(enum phipfs_volume volume)
     return sync_volume_handle(volume, 0U);
 }
 
+enum phipfs_status ext4_backend_fstat(phipfs_handle handle, struct phipfs_stat *stat)
+{
+    struct ext4_handle_state *state;
+    struct phipia_ext4_metadata metadata;
+    if (stat == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    zero_bytes(stat, sizeof(*stat));
+    enum phipfs_status status = handle_state(handle, &state);
+    if (status != PHIPFS_STATUS_OK) return status;
+    struct ext4_mount_state *mount = &ext4_mounts[state->volume];
+    status = begin_operation(mount, false);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = leased_handle_state(handle, mount, &state);
+    if (status == PHIPFS_STATUS_OK) status = map_status(phipia_ext4_stat_inode(mount->rust_mount, state->inode, &metadata));
+    if (status == PHIPFS_STATUS_OK && metadata.inode != state->inode) status = PHIPFS_STATUS_STALE_HANDLE;
+    const enum phipfs_status close_status = end_operation(mount, NULL);
+    if (status == PHIPFS_STATUS_OK) status = close_status;
+    if (status == PHIPFS_STATUS_OK) fill_stat(&metadata, stat);
+    return status;
+}
+
 enum phipfs_status ext4_backend_fsync(phipfs_handle handle)
 {
     struct ext4_handle_state *state;

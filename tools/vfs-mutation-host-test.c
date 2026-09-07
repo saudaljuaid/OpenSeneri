@@ -19,6 +19,19 @@ static uint16_t expected_file_mode = 0644U;
 static unsigned prepared_calls;
 static uint8_t expected_prepared_flags = PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE;
 static unsigned file_sync_calls;
+static unsigned file_stat_calls;
+
+static enum phipfs_status file_stat(phipfs_handle handle, struct phipfs_stat *result)
+{
+    assert(handle == 77U && live_backend_handles == 1U);
+    ++file_stat_calls;
+    if (mutation_result == PHIPFS_STATUS_OK) {
+        result->object_id = 500U;
+        result->size = 777U;
+        result->mode = 0100600U;
+    }
+    return mutation_result;
+}
 
 static enum phipfs_status file_sync(phipfs_handle handle)
 {
@@ -318,6 +331,7 @@ int main(void)
         PHIPFS_OPEN_EXCLUSIVE, 01720U, &opened) == PHIPFS_STATUS_INVALID_ARGUMENT);
     assert(opened == 0U && prepared_calls == 3U);
     backend.fsync = file_sync;
+    backend.fstat = file_stat;
     mutation_result = PHIPFS_STATUS_OK;
     assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,
         expected_prepared_flags, 01720U, &opened) == PHIPFS_STATUS_OK);
@@ -325,11 +339,18 @@ int main(void)
     assert(phipfs_fsync(opened) == PHIPFS_STATUS_IO);
     mutation_result = PHIPFS_STATUS_OK;
     assert(phipfs_fsync(opened) == PHIPFS_STATUS_OK && file_sync_calls == 2U);
+    const unsigned before_file_stat = stats;
+    assert(phipfs_fstat(opened, &metadata) == PHIPFS_STATUS_OK);
+    assert(metadata.object_id == 500U && metadata.size == 777U && metadata.mode == 0100600U);
+    assert(stats == before_file_stat && file_stat_calls == 1U);
     ++mounts[PHIPFS_VOLUME_DATA].generation;
     assert(phipfs_fsync(opened) == PHIPFS_STATUS_STALE_HANDLE && file_sync_calls == 2U);
+    assert(phipfs_fstat(opened, &metadata) == PHIPFS_STATUS_STALE_HANDLE && file_stat_calls == 1U);
+    assert(metadata.object_id == 0U);
     --mounts[PHIPFS_VOLUME_DATA].generation;
     assert(phipfs_close(opened) == PHIPFS_STATUS_OK);
     assert(phipfs_fsync(opened) == PHIPFS_STATUS_STALE_HANDLE && file_sync_calls == 2U);
+    assert(phipfs_fstat(opened, &metadata) == PHIPFS_STATUS_STALE_HANDLE && file_stat_calls == 1U);
     assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
     for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) assert(!vnodes[index].active);
     puts("VFS journal mutation retries, backend errors, path bounds and vnode census: PASS");

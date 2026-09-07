@@ -24,6 +24,8 @@ static int closing_descriptor;
 static long close_result;
 static long sync_result;
 static unsigned file_sync_calls;
+static unsigned file_stat_calls;
+static long metadata_result;
 
 long phipia_syscall1(uint64_t number, uint64_t address)
 {
@@ -61,6 +63,12 @@ long phipia_syscall1(uint64_t number, uint64_t address)
 
 long phipia_syscall2(uint64_t number, uint64_t address, uint64_t value)
 {
+    if (number == PHIPIA_SYS_FILE_METADATA) {
+        if (address != 42U) invalid_request = 1;
+        ++file_stat_calls;
+        if (metadata_result >= 0) memcpy((void *)(uintptr_t)value, &returned_metadata, sizeof(returned_metadata));
+        return metadata_result;
+    }
     const struct phipia_path *request = (const struct phipia_path *)(uintptr_t)address;
     ++calls;
     if (number != PHIPIA_SYS_PATH_MKDIR || value != (PHIPIA_MKDIR_MODE_PRESENT | expected_mode) ||
@@ -195,5 +203,21 @@ int main(void)
     syscall_result = -PHIPIA_ENAMETOOLONG;
     if (open("nested", O_RDONLY) != -1 || errno != ENAMETOOLONG) return 41;
     if (open_calls != 50U || close_calls != 43U || invalid_request) return 42;
+    syscall_result = 42;
+    descriptor = open("nested", O_RDONLY);
+    returned_metadata.size = sizeof(returned_metadata);
+    returned_metadata.mode = 0100620U;
+    returned_metadata.links = 0U;
+    returned_metadata.atime_seconds = -1;
+    returned_metadata.atime_nanos = 123U;
+    if (fstat(descriptor, &metadata) != 0 || metadata.st_ino != 1234U || metadata.st_nlink != 0U ||
+        metadata.st_uid != 70000U || metadata.st_mode != 0100620U ||
+        metadata.st_atime != -1 || metadata.st_atim.tv_nsec != 123L) return 43;
+    const struct stat before_failed_stat = metadata;
+    metadata_result = -PHIPIA_EIO;
+    if (fstat(descriptor, &metadata) != -1 || errno != EIO ||
+        memcmp(&before_failed_stat, &metadata, sizeof(metadata)) != 0) return 44;
+    if (close(descriptor) != 0 || fstat(descriptor, &metadata) != -1 || errno != EBADF) return 45;
+    if (file_stat_calls != 2U || open_calls != 51U || close_calls != 44U || invalid_request) return 46;
     return 0;
 }

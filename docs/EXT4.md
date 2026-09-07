@@ -574,6 +574,11 @@ timestamp bytes are ignored, and declared invalid nanoseconds refuse admission
 before recovery writes. Backends without Unix metadata retain their old mode
 projection and omit the native Unix-fields validity flag. Linux verification of
 this metadata extension is pending.
+FILE_METADATA supplies SDK fstat through a checked native handle and VFS
+generation to the backend's inode lookup. It shares stat/lstat field conversion
+and preserves metadata for an unlinked inode while its file remains open.
+The C tests cover zero-link metadata, refusal outputs, closure during storage
+acquisition and stale mount rejection; the new SDK route awaits Linux testing.
 The admitted explicit xattr mutation namespace is
 `user.*`, with names up to 255 bytes. Set/replace/remove journal the inode and
 any allocated, rewritten or released external attribute block. The writer

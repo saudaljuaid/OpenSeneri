@@ -30,6 +30,7 @@ struct stat {
 #define S_ISLNK(mode) (((mode) & S_IFMT) == S_IFLNK)
 int stat(const char *path, struct stat *result);
 int lstat(const char *path, struct stat *result);
+int fstat(int number, struct stat *result);
 int mkdir(const char *path, mode_t mode);
 int chmod(const char *path, mode_t mode);
 int ftruncate(int descriptor, int64_t length);

@@ -101,6 +101,7 @@ static const struct vfs_backend_ops fat32_backend_ops = {
 static const struct vfs_backend_ops ext4_backend_ops = {
     .open_options = ext4_backend_open_options,
     .fsync = ext4_backend_fsync,
+    .fstat = ext4_backend_fstat,
     .mount = ext4_backend_mount,
     .unmount = ext4_backend_unmount,
     .sync = ext4_backend_sync,
@@ -831,6 +832,21 @@ enum phipfs_status phipfs_close(phipfs_handle handle)
     // the backend inode number during a subsequent namespace operation.
     vnode_release(vnode_index, vnode_generation);
     return backend->close(backend_handle);
+}
+
+enum phipfs_status phipfs_fstat(phipfs_handle handle, struct phipfs_stat *stat)
+{
+    struct vfs_open_file_state *state;
+    if (stat == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    zero_bytes(stat, sizeof(*stat));
+    const enum phipfs_status status = open_file_state(handle, &state);
+    if (status != PHIPFS_STATUS_OK) return status;
+    const struct vfs_vnode_state *vnode = &vnodes[state->vnode_index];
+    if (!vnode->active || vnode->generation != state->vnode_generation ||
+        !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
+        return PHIPFS_STATUS_STALE_HANDLE;
+    return state->backend->fstat != NULL ? state->backend->fstat(state->backend_handle, stat) :
+        state->backend->stat_path(vnode->volume, vnode->path, stat);
 }
 
 enum phipfs_status phipfs_fsync(phipfs_handle handle)

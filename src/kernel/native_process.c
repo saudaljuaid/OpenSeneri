@@ -3443,23 +3443,9 @@ static int64_t syscall_path_stat(
         0 : -PHIPIA_EFAULT;
 }
 
-static int64_t syscall_path_metadata(struct native_process *process,
-    uint64_t path_address, uint64_t output_address, uint64_t flags)
+static struct phipia_path_metadata native_metadata(struct phipfs_stat stat)
 {
-    struct phipia_path request;
     struct phipia_path_metadata output = {.size = sizeof(output), .version = PHIPIA_ABI_VERSION};
-    struct phipfs_stat stat;
-    char path[PHIPFS_MAX_PATH];
-    enum phipfs_volume volume;
-    if ((flags & ~(uint64_t)PHIPIA_METADATA_NOFOLLOW) != 0U) return -PHIPIA_EINVAL;
-    if (!copy_from_user(process, &request, path_address, sizeof(request)) ||
-        !validate_user_range(process, output_address, sizeof(output), true)) return -PHIPIA_EFAULT;
-    if (!path_from_user(process, &request, path, &volume)) return -PHIPIA_EINVAL;
-    cpu_interrupt_enable();
-    const enum phipfs_status status = (flags & PHIPIA_METADATA_NOFOLLOW) != 0U ?
-        phipfs_lstat_path(volume, path, &stat) : phipfs_stat_path(volume, path, &stat);
-    cpu_interrupt_disable();
-    if (status != PHIPFS_STATUS_OK) return filesystem_error(status);
     output.byte_length = stat.size;
     output.object_id = stat.object_id;
     output.uid = stat.uid;
@@ -3478,6 +3464,44 @@ static int64_t syscall_path_metadata(struct native_process *process,
         // metadata; the validity flag keeps it distinct in the native ABI.
         output.mode = (stat.directory ? 0040000U : 0100000U) | 0400U | (stat.read_only ? 0U : 0200U);
     }
+    return output;
+}
+
+static int64_t syscall_file_metadata(struct native_process *process, phipia_handle_t handle, uint64_t output_address)
+{
+    struct native_resource *resource;
+    struct phipfs_stat stat;
+    if (!validate_user_range(process, output_address, sizeof(struct phipia_path_metadata), true)) return -PHIPIA_EFAULT;
+    const enum native_handle_status handle_status = native_handle_resolve(
+        &process->handles, handle, PHIPIA_HANDLE_FILE, &resource);
+    if (handle_status != NATIVE_HANDLE_OK) return handle_error(handle_status);
+    const phipfs_handle file = (phipfs_handle)resource->words[0];
+    cpu_interrupt_enable();
+    const enum phipfs_status status = phipfs_fstat(file, &stat);
+    cpu_interrupt_disable();
+    if (status != PHIPFS_STATUS_OK) return filesystem_error(status);
+    const struct phipia_path_metadata output = native_metadata(stat);
+    return copy_to_user(process, output_address, &output, sizeof(output)) ? 0 : -PHIPIA_EFAULT;
+}
+
+static int64_t syscall_path_metadata(struct native_process *process,
+    uint64_t path_address, uint64_t output_address, uint64_t flags)
+{
+    struct phipia_path request;
+    struct phipia_path_metadata output = {.size = sizeof(output), .version = PHIPIA_ABI_VERSION};
+    struct phipfs_stat stat;
+    char path[PHIPFS_MAX_PATH];
+    enum phipfs_volume volume;
+    if ((flags & ~(uint64_t)PHIPIA_METADATA_NOFOLLOW) != 0U) return -PHIPIA_EINVAL;
+    if (!copy_from_user(process, &request, path_address, sizeof(request)) ||
+        !validate_user_range(process, output_address, sizeof(output), true)) return -PHIPIA_EFAULT;
+    if (!path_from_user(process, &request, path, &volume)) return -PHIPIA_EINVAL;
+    cpu_interrupt_enable();
+    const enum phipfs_status status = (flags & PHIPIA_METADATA_NOFOLLOW) != 0U ?
+        phipfs_lstat_path(volume, path, &stat) : phipfs_stat_path(volume, path, &stat);
+    cpu_interrupt_disable();
+    if (status != PHIPFS_STATUS_OK) return filesystem_error(status);
+    output = native_metadata(stat);
     return copy_to_user(process, output_address, &output, sizeof(output)) ? 0 : -PHIPIA_EFAULT;
 }
 
@@ -5998,6 +6022,8 @@ static int64_t dispatch_syscall(
         return syscall_file_truncate(process, frame->rdi, frame->rsi);
     case PHIPIA_SYS_FILE_SYNC:
         return syscall_file_sync(process, frame->rdi);
+    case PHIPIA_SYS_FILE_METADATA:
+        return syscall_file_metadata(process, frame->rdi, frame->rsi);
     case PHIPIA_SYS_PATH_SET_TIMES:
         return syscall_set_times(process, frame->rdi);
     case PHIPIA_SYS_PATH_XATTR:

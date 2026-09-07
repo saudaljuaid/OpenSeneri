@@ -131,14 +131,8 @@ int close(int number)
     return phipia_result(result);
 }
 
-static int path_metadata(const char *path, struct stat *result, uint32_t flags)
+static int finish_metadata(long status, struct phipia_path_metadata native, struct stat *result)
 {
-    struct phipia_runtime_path parsed;
-    struct phipia_path_metadata native = {0};
-    long status;
-    if (result == NULL) { errno = EFAULT; return -1; }
-    if (phipia_runtime_path(path, &parsed) != 0) return -1;
-    status = phipia_path_metadata(parsed.volume, parsed.text, flags, &native);
     if (status < 0) { errno = (int)-status; return -1; }
     if (native.size != sizeof(native) || native.version != PHIPIA_ABI_VERSION ||
         native.atime_nanos >= 1000000000U || native.mtime_nanos >= 1000000000U ||
@@ -154,6 +148,26 @@ static int path_metadata(const char *path, struct stat *result, uint32_t flags)
     result->st_mtim = (struct timespec){native.mtime_seconds, (long)native.mtime_nanos};
     result->st_ctim = (struct timespec){native.ctime_seconds, (long)native.ctime_nanos};
     return 0;
+}
+
+static int path_metadata(const char *path, struct stat *result, uint32_t flags)
+{
+    struct phipia_runtime_path parsed;
+    struct phipia_path_metadata native = {0};
+    if (result == NULL) { errno = EFAULT; return -1; }
+    if (phipia_runtime_path(path, &parsed) != 0) return -1;
+    const long status = phipia_path_metadata(parsed.volume, parsed.text, flags, &native);
+    return finish_metadata(status, native, result);
+}
+
+int fstat(int number, struct stat *result)
+{
+    struct descriptor_record record;
+    struct phipia_path_metadata native = {0};
+    if (result == NULL) { errno = EFAULT; return -1; }
+    if (!descriptor_snapshot(number, &record, 0)) { errno = EBADF; return -1; }
+    const long status = phipia_file_metadata(record.handle, &native);
+    return finish_metadata(status, native, result);
 }
 
 int stat(const char *path, struct stat *result) { return path_metadata(path, result, 0U); }
