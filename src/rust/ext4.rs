@@ -705,7 +705,7 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
     if linked_orphans.iter().any(|(_, links, seen)| *seen != usize::from(*links)) {
         return Err(Status::Invalid);
     }
-    Ok(())
+    blocks.finish().map_err(map_error)
 }
 
 /// Load and validate the exact Phipia ext4 profile and reachable namespace.

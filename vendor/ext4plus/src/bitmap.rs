@@ -25,17 +25,18 @@ pub struct BlockAllocationSnapshot<'a> {
     groups: BTreeMap<u32, Vec<u8>>,
     extent_ranges: BTreeMap<u64, u64>,
     validated_inodes: BTreeSet<crate::inode::InodeIndex>,
+    xattr_references: BTreeMap<u64, (u32, u32, crate::inode::InodeIndex)>,
     invalid: bool,
 }
 
 impl<'a> BlockAllocationSnapshot<'a> {
     pub(crate) fn new(filesystem: &'a Ext4) -> Self {
         Self { filesystem, groups: BTreeMap::new(), extent_ranges: BTreeMap::new(),
-            validated_inodes: BTreeSet::new(), invalid: false }
+            validated_inodes: BTreeSet::new(), xattr_references: BTreeMap::new(), invalid: false }
     }
 
-    /// Extent data and tree blocks have exactly one claim, including within
-    /// one inode. Hard links are handled by validating each inode only once.
+    /// Data and tree blocks have exactly one claim. Shared xattr blocks enter
+    /// this map once, with their reference counts recorded separately.
     pub(crate) fn claim_extent_range(&mut self, start: u64, count: u32,
         inode: crate::inode::InodeIndex) -> Result<(), Ext4Error> {
         let end = start.checked_add(u64::from(count)).ok_or(CorruptKind::ExtentBlock(inode))?;
@@ -80,7 +81,36 @@ impl<'a> BlockAllocationSnapshot<'a> {
             }
             self.claim_extent_range(block, 1, index)?;
         }
+        self.validate_xattr_reference(&inode).await?;
         self.validated_inodes.insert(index);
+        Ok(())
+    }
+
+    #[maybe_async::maybe_async]
+    async fn validate_xattr_reference(&mut self, inode: &crate::inode::Inode) -> Result<(), Ext4Error> {
+        let Some((block, expected)) = inode.external_xattr_reference(self.filesystem).await? else { return Ok(()) };
+        if let Some((previous_expected, seen, _)) = self.xattr_references.get_mut(&block) {
+            if *previous_expected != expected || *seen >= expected {
+                return Err(CorruptKind::Xattr(inode.index).into());
+            }
+            *seen += 1;
+        } else {
+            if !self.range_is_allocated(block, 1).await? {
+                return Err(CorruptKind::Xattr(inode.index).into());
+            }
+            self.claim_extent_range(block, 1, inode.index)?;
+            self.xattr_references.insert(block, (expected, 1, inode.index));
+        }
+        Ok(())
+    }
+
+    /// Finish a complete reachable/orphan ownership pass. A stored xattr
+    /// count must equal its distinct inode references before any release.
+    pub fn finish(self) -> Result<(), Ext4Error> {
+        if self.invalid { return Err(Ext4Error::Readonly); }
+        for (_, (expected, seen, inode)) in self.xattr_references {
+            if expected != seen { return Err(CorruptKind::Xattr(inode).into()); }
+        }
         Ok(())
     }
 
@@ -116,7 +146,9 @@ impl<'a> BlockAllocationSnapshot<'a> {
 
     /// Validate allocation and exclusive extent-node/data ownership among the
     /// inodes in this pass. Discard this snapshot after any error or mutation.
-    /// Xattr, fixed metadata and non-extent mappings have separate validators.
+    /// Shared external xattrs have checked allocation and reference counts;
+    /// call finish after visiting all inodes. Fixed metadata and non-extent
+    /// mappings have separate validators.
     #[maybe_async::maybe_async]
     pub async fn validate_inode_extents(&mut self, inode: &crate::inode::Inode) -> Result<(), Ext4Error> {
         if self.invalid { return Err(CorruptKind::ExtentBlock(inode.index).into()); }
@@ -130,6 +162,10 @@ impl<'a> BlockAllocationSnapshot<'a> {
                 self.invalid = true;
                 return Err(error);
             }
+        }
+        if let Err(error) = self.validate_xattr_reference(inode).await {
+            self.invalid = true;
+            return Err(error);
         }
         self.validated_inodes.insert(inode.index);
         Ok(())

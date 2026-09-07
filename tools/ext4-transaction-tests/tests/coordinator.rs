@@ -847,6 +847,9 @@ fn external_xattr_checksums_shared_release_and_final_free() {
     let mut mounted = mount_fixture(&path);
     ext4::create_file_probe(&mut mounted, b"system/ea-first", 0o600).unwrap();
     ext4::create_file_probe(&mut mounted, b"system/ea-second", 0o600).unwrap();
+    ext4::create_file_probe(&mut mounted, b"system/ea-data", 0o600).unwrap();
+    ext4::transaction_probe(&mut mounted, b"system/ea-data", 0, b"separate allocation").unwrap();
+    let data_inode = ext4::stat(&mounted, b"system/ea-data").unwrap().inode;
     ext4::sync(&mut mounted).unwrap();
     drop(mounted);
     let image = path.with_extension("coordinator-xattr-input.img");
@@ -864,16 +867,64 @@ fn external_xattr_checksums_shared_release_and_final_free() {
     debugfs(&image, "set_inode_field /system/ea-second blocks 8");
     let mut initial = std::fs::read(&image).unwrap();
     let start = block as usize * 4096;
-    initial[start + 4..start + 8].copy_from_slice(&2u32.to_le_bytes());
-    initial[start + 16..start + 20].fill(0);
-    let mut crc = u32::from_le_bytes(initial[1024 + 0x270..1024 + 0x274].try_into().unwrap());
-    for byte in block.to_le_bytes().iter().chain(&initial[start..start + 4096]) {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 { crc = (crc >> 1) ^ (0x82f6_3b78u32 & 0u32.wrapping_sub(crc & 1)); }
+    let set_references = |bytes: &mut [u8], references: u32| {
+        bytes[start + 4..start + 8].copy_from_slice(&references.to_le_bytes());
+        bytes[start + 16..start + 20].fill(0);
+        let mut crc = u32::from_le_bytes(bytes[1648..1652].try_into().unwrap());
+        for byte in block.to_le_bytes().iter().chain(&bytes[start..start + 4096]) {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 { crc = (crc >> 1) ^ (0x82f6_3b78u32 & 0u32.wrapping_sub(crc & 1)); }
+        }
+        bytes[start + 16..start + 20].copy_from_slice(&crc.to_le_bytes());
+    };
+    set_references(&mut initial, 2);
+    for count in [1, 3] {
+        let mut hostile = initial.clone();
+        set_references(&mut hostile, count);
+        DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+        assert!(ext4::mount(1, hostile.len() as u64).is_err());
+        DEVICE.with_borrow(|device| {
+            assert!(device.events.is_empty());
+            assert_eq!(device.bytes, hostile);
+        });
     }
-    initial[start + 16..start + 20].copy_from_slice(&crc.to_le_bytes());
+    for orphan in [false, true] {
+        std::fs::write(&image, &initial).unwrap();
+        debugfs(&image, &format!("set_inode_field <{data_inode}> block[5] {block}"));
+        if orphan {
+            debugfs(&image, &format!("set_inode_field <{data_inode}> links_count 0"));
+            debugfs(&image, "unlink /system/ea-data");
+            debugfs(&image, &format!("set_super_value last_orphan {data_inode}"));
+            debugfs(&image, "feature needs_recovery");
+        }
+        let hostile = std::fs::read(&image).unwrap();
+        DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+        assert!(ext4::mount(1, hostile.len() as u64).is_err());
+        DEVICE.with_borrow(|device| {
+            assert!(device.events.is_empty());
+            assert_eq!(device.bytes, hostile);
+        });
+    }
+    std::fs::write(&image, &initial).unwrap();
+    let raw = ext4plus::Ext4::load(Box::new(initial.clone())).unwrap();
+    let first_inode = raw.path_to_inode(ext4plus::path::Path::try_from("/system/ea-first").unwrap(),
+        ext4plus::FollowSymlinks::All).unwrap().index.get();
+    debugfs(&image, &format!("set_inode_field <{first_inode}> links_count 0"));
+    debugfs(&image, "unlink /system/ea-first");
+    debugfs(&image, &format!("set_super_value last_orphan {first_inode}"));
+    debugfs(&image, "feature needs_recovery");
+    let mut recovered = mount_bytes(std::fs::read(&image).unwrap());
+    let mut attribute = [0; 300];
+    assert_eq!(ext4::get_xattr(&recovered, b"system/ea-second", b"user.large", &mut attribute), Ok(300));
+    assert_eq!(attribute, [b'q'; 300]);
+    ext4::sync(&mut recovered).unwrap();
+    ext4::unmount(&recovered).unwrap();
+    fsck(&path, "coordinator-xattr-shared-orphan");
+    drop(recovered);
     let mut mounted = mount_bytes(initial.clone());
     fsck(&path, "coordinator-xattr-shared-input");
+    ext4::link_file_probe(&mut mounted, b"system/ea-first", b"system/ea-hardlink").unwrap();
+    ext4::unlink_file_probe(&mut mounted, b"system/ea-hardlink").unwrap();
     let free = ext4::free_bytes(&mounted).unwrap();
     ext4::unlink_file_probe(&mut mounted, b"system/ea-first").unwrap();
     assert_eq!(ext4::free_bytes(&mounted), Ok(free));

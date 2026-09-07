@@ -309,6 +309,15 @@ impl Inode {
         Ok(block)
     }
 
+    /// Checked external block reference for a read-only ownership census.
+    #[maybe_async::maybe_async]
+    pub(crate) async fn external_xattr_reference(&self, ext4: &Ext4)
+        -> Result<Option<(u64, u32)>, Ext4Error> {
+        if self.file_acl() == 0 { return Ok(None); }
+        let block = self.read_xattr_block(ext4).await?;
+        Ok(Some((self.file_acl(), read_u32le(&block, 4))))
+    }
+
     /// Detach an external attribute block, preserving other inode references.
     /// All writes and any final free are captured by the caller's transaction.
     #[maybe_async::maybe_async]
