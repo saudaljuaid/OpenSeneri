@@ -1262,6 +1262,57 @@ fn checksummed_extent_cycles_are_refused_before_traversal_or_mutation() {
     });
 }
 
+#[test]
+fn file_extents_cannot_classify_fixed_metadata_as_ordered_data() {
+    let Some(path) = fixture() else { return };
+    let name = b"system/metadata-alias";
+    let mut mounted = mount_fixture(&path);
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    ext4::transaction_probe(&mut mounted, name, 0, b"original").unwrap();
+    let inode = ext4::stat(&mounted, name).unwrap().inode;
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-metadata-alias-before");
+    drop(mounted);
+    let pristine = DEVICE.with_borrow(|device| device.bytes.clone());
+    let block_bitmap = u32::from_le_bytes(pristine[4096..4100].try_into().unwrap());
+    let inode_bitmap = u32::from_le_bytes(pristine[4100..4104].try_into().unwrap());
+    let inode_table = u32::from_le_bytes(pristine[4104..4108].try_into().unwrap());
+    let image = path.with_extension("coordinator-metadata-alias-input.img");
+    for target in [1, block_bitmap, inode_bitmap, inode_table, 8192, 8193] {
+        std::fs::write(&image, &pristine).unwrap();
+        // i_block[5] is ee_start_lo in this one-extent inline root. debugfs
+        // recomputes the inode checksum, so checksum refusal cannot mask an
+        // incorrect ordered-data classification of fixed filesystem metadata.
+        debugfs(&image, &format!("set_inode_field <{inode}> block[5] {target}"));
+        let hostile = std::fs::read(&image).unwrap();
+        let mut mounted = mount_bytes(hostile.clone());
+        let metadata = ext4::stat(&mounted, name).unwrap();
+        let mut before = [0; 8];
+        read_exact(&mounted, name, &mut before);
+        assert_eq!(ext4::transaction_probe(&mut mounted, name, 0, b"new-data"), Err(Status::Invalid), "block {target}");
+        assert_eq!(ext4::stat(&mounted, name).unwrap(), metadata);
+        let mut after = [0; 8];
+        read_exact(&mounted, name, &mut after);
+        assert_eq!(after, before);
+        DEVICE.with_borrow(|device| {
+            assert_eq!(device.events.len(), 2, "classification escaped rollback for {target}");
+            assert!(matches!(&device.events[0], Event::Write(1024, data) if data.len() == 1024));
+            assert_eq!(device.events[1], Event::Flush(0));
+        });
+        ext4::sync(&mut mounted).unwrap();
+        ext4::unmount(&mounted).unwrap();
+        DEVICE.with_borrow(|device| assert_eq!(device.bytes, hostile));
+        // The input deliberately contains an invalid ownership alias; do not
+        // present it as a clean-fsck result. Refusal preserves it byte-for-byte.
+    }
+    let mut mounted = mount_bytes(pristine);
+    assert_eq!(ext4::transaction_probe(&mut mounted, name, 0, b"new-data"), Ok(8));
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-metadata-alias-valid-write");
+}
+
 fn orphan_recovery_failure_case(case: u8) {
     let directory = case != 0;
     let Some(path) = fixture() else { return };

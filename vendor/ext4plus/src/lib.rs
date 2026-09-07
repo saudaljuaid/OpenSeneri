@@ -636,6 +636,42 @@ impl Ext4 {
             .ok_or_else(|| CorruptKind::BlockGroupDescriptor(group).into())
     }
 
+    /// Identify fixed allocator metadata in the non-flex, non-resize profile.
+    /// Directory, extent-tree, xattr and journal blocks require their own
+    /// ownership checks; false alone does not prove a block belongs to a file.
+    pub fn is_fixed_metadata_block(&self, block: u64) -> Result<bool, Ext4Error> {
+        let sb = &self.0.superblock;
+        if sb.incompatible_features().intersects(IncompatibleFeatures::META_BLOCK_GROUPS | IncompatibleFeatures::FLEXIBLE_BLOCK_GROUPS)
+            || sb.compatible_features().contains(features::CompatibleFeatures::RESIZE_INODE)
+            || sb.compatible_features().bits() & 0x200 != 0 {
+            return Err(Ext4Error::Readonly);
+        }
+        if block >= sb.blocks_count() { return Err(CorruptKind::BlockGroupDescriptor(0).into()); }
+        let first = u64::from(sb.first_data_block());
+        if block < first { return Ok(true); }
+        let group = u32::try_from((block - first) / u64::from(sb.blocks_per_group().get()))
+            .map_err(|_| CorruptKind::BlockGroupDescriptor(0))?;
+        let power = |mut value: u32, base: u32| {
+            while value > 1 && value % base == 0 { value /= base; }
+            value == 1
+        };
+        let has_super = !sb.read_only_compatible_features().contains(ReadOnlyCompatibleFeatures::SPARSE_SUPERBLOCKS)
+            || group == 0 || group == 1 || power(group, 3) || power(group, 5) || power(group, 7);
+        let group_start = first + u64::from(group) * u64::from(sb.blocks_per_group().get());
+        let descriptor_blocks = (u64::from(sb.num_block_groups()) * u64::from(sb.block_group_descriptor_size()))
+            .div_ceil(sb.block_size().to_u64());
+        if has_super && block - group_start <= descriptor_blocks { return Ok(true); }
+        let table_blocks = (u64::from(sb.inodes_per_block_group().get()) * u64::from(sb.inode_size()))
+            .div_ceil(sb.block_size().to_u64());
+        for descriptor in &self.0.block_group_descriptors {
+            if block == descriptor.block_bitmap_block() || block == descriptor.inode_bitmap_block()
+                || block.checked_sub(descriptor.inode_table_first_block()).is_some_and(|offset| offset < table_blocks) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     #[maybe_async::maybe_async]
     async fn get_block_bitmap_handle(
         &self,

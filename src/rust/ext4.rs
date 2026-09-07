@@ -1197,6 +1197,19 @@ fn write_transaction(
                 return Err(map_error(error));
             }
         };
+        // A checksummed but hostile extent can point at allocator metadata.
+        // Never let file-data classification turn that image into a home
+        // write before journal commit. The journal planner separately rejects
+        // overlap with the journal's physical storage.
+        match mounted.filesystem()?.is_fixed_metadata_block(block) {
+            Ok(false) => {}
+            result => {
+                let error = result.err().map(map_error).unwrap_or(Status::Invalid);
+                drop(file);
+                discard_uncommitted_stage(mounted, true)?;
+                return Err(error);
+            }
+        }
         if ordered_data.contains(&block) {
             discard_uncommitted_stage(mounted, true)?;
             return Err(Status::Invalid);
