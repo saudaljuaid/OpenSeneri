@@ -2261,6 +2261,37 @@ impl ExtentTree {
     }
 
     #[maybe_async::maybe_async]
+    pub(crate) async fn trim_orphan_suffix(
+        &mut self,
+        inode: &mut Inode,
+        max_blocks: u32,
+        max_logical_blocks: u32,
+    ) -> Result<(), Ext4Error> {
+        let mut extents = self.collect_extents().await?;
+        self.normalize_extents(&mut extents)?;
+        let end = extents.last().map(|extent| extent_end(extent, self.inode))
+            .transpose()?.ok_or(Ext4Error::FileTooLarge)?;
+        let block_size = self.ext4.superblock().block_size().to_u64();
+        let old_size = inode.size_in_bytes();
+        if max_blocks == 0 || end > max_logical_blocks
+            || old_size.div_ceil(block_size) > u64::from(max_logical_blocks) {
+            return Err(Ext4Error::FileTooLarge);
+        }
+        // Linux may already have cleared i_size while allocated extents
+        // remain. Derive the suffix from the checked extent tree, not EOF.
+        // The temporary size is only in memory; the final staged inode keeps
+        // the original EOF or the smaller retained prefix, and its orphan link.
+        let retained_size = u64::from(end.saturating_sub(max_blocks)) * block_size;
+        inode.set_size_in_bytes(u64::from(end) * block_size);
+        self.truncate(inode, retained_size).await?;
+        if old_size < retained_size {
+            inode.set_size_in_bytes(old_size);
+            inode.write(&self.ext4).await?;
+        }
+        Ok(())
+    }
+
+    #[maybe_async::maybe_async]
     pub(crate) async fn truncate(
         &mut self,
         inode: &mut Inode,

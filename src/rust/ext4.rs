@@ -1704,26 +1704,17 @@ fn mutation_capacity_error(error: &Ext4Error) -> bool {
 }
 
 fn trim_orphan_for_release(mounted: &mut Mounted, inode: u64, key: &[u8]) -> Result<(), Status> {
-    let node = allocated_inode(mounted.filesystem()?, inode)?;
-    if !node.file_type().is_regular_file() || node.links_count() != 0 { return Err(Status::ReadOnly); }
-    let old_size = node.size_in_bytes();
-    if old_size == 0 || old_size > MAX_SPLIT_ORPHAN_BYTES { return Err(Status::Range); }
-    let old_blocks = old_size.div_ceil(BLOCK_BYTES);
-    let mut blocks = old_blocks.min(ext4plus::JOURNAL_TRANSACTION_MAX_REVOKED_BLOCKS as u64);
-    drop(node);
+    let index = inode_index(inode)?;
+    let mut blocks = ext4plus::JOURNAL_TRANSACTION_MAX_REVOKED_BLOCKS as u32;
     loop {
         arm_recovery_marker(mounted)?;
-        let node = allocated_inode(mounted.filesystem()?, inode)?;
-        let mut file = ext4plus::file::File::open_inode(mounted.filesystem()?, node).map_err(map_error)?;
-        let size = (old_blocks - blocks) * BLOCK_BYTES;
-        if let Err(error) = file.truncate(size) {
+        if let Err(error) = mounted.filesystem()?.trim_orphan_suffix(index, blocks,
+            (MAX_SPLIT_ORPHAN_BYTES / BLOCK_BYTES) as u32) {
             let capacity = mutation_capacity_error(&error);
-            drop(file);
             discard_uncommitted_stage(mounted, true)?;
             if capacity && blocks > 1 { blocks /= 2; continue; }
             return Err(map_error(error));
         }
-        drop(file);
         return commit_namespace_mutation(mounted, PendingMutationKind::FinalizeOrphan, Vec::from(key));
     }
 }

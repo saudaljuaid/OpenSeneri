@@ -133,6 +133,20 @@ impl Ext4 {
         self.0.superblock.write(self).await
     }
 
+    /// Reclaim a bounded extent suffix without releasing the orphan inode.
+    /// The caller must journal or roll back the entire staged operation.
+    #[maybe_async::maybe_async]
+    pub async fn trim_orphan_suffix(&self, index: InodeIndex, max_blocks: u32,
+        max_logical_blocks: u32) -> Result<(), Ext4Error> {
+        if self.0.writer.is_none() { return Err(Ext4Error::Readonly); }
+        let mut inode = self.orphan_chain().await?.into_iter()
+            .find(|inode| inode.index == index).ok_or(Ext4Error::NotFound)?;
+        if !inode.file_type().is_regular_file() { return Err(Ext4Error::Readonly); }
+        let FileBlocks::ExtentTree(mut tree) = FileBlocks::from_inode(&inode, self.clone())?
+            else { return Err(Ext4Error::Readonly); };
+        tree.trim_orphan_suffix(&mut inode, max_blocks, max_logical_blocks).await
+    }
+
     /// Remove an orphan from any list position and free its inode/data through
     /// the configured writer, including every data/metadata block revocation.
     #[maybe_async::maybe_async]
