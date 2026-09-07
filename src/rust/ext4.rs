@@ -607,13 +607,14 @@ fn recover_dirty_journal(
     Ok(report)
 }
 
-fn validate_inode_storage(filesystem: &Ext4, path: &[u8]) -> Result<(), Status> {
+fn validate_inode_storage(filesystem: &Ext4, path: &[u8],
+    blocks: &mut ext4plus::BlockAllocationSnapshot<'_>) -> Result<(), Status> {
     // Validate the entry itself: dangling/looping symlinks are valid namespace
     // objects and their targets must not replace their own xattr validation.
     let path = Path::try_from(path).map_err(|_| Status::Invalid)?;
     let inode = filesystem.path_to_inode(path, FollowSymlinks::ExcludeFinalComponent)
         .map_err(map_error)?;
-    inode.validate_extent_tree(filesystem).map_err(map_error)?;
+    blocks.validate_inode_extents(&inode).map_err(map_error)?;
     let xattrs = inode.list_xattrs(filesystem).map_err(map_error)?;
     for name in xattrs {
         let _value = inode
@@ -625,8 +626,10 @@ fn validate_inode_storage(filesystem: &Ext4, path: &[u8]) -> Result<(), Status> 
 
 fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
     let mut linked_orphans = Vec::new();
+    let mut blocks = filesystem.block_allocation_snapshot();
     for index in filesystem.orphan_inodes().map_err(map_error)? {
         let inode = Inode::read(filesystem, index).map_err(map_error)?;
+        blocks.validate_inode_extents(&inode).map_err(map_error)?;
         if inode.links_count() != 0 { linked_orphans.push((index, inode.links_count(), 0usize)); }
     }
     let mut allocations = filesystem.inode_allocation_snapshot();
@@ -638,7 +641,7 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
     let mut root = Vec::new();
     root.try_reserve_exact(1).map_err(|_| Status::Range)?;
     root.push(b'/');
-    validate_inode_storage(filesystem, root.as_slice())?;
+    validate_inode_storage(filesystem, root.as_slice(), &mut blocks)?;
     pending.push(root);
     let mut visited = 0usize;
     while let Some(path) = pending.pop() {
@@ -667,7 +670,7 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
                 *seen += 1;
                 if *seen > usize::from(*links) { return Err(Status::Invalid); }
             }
-            validate_inode_storage(filesystem, entry_path.as_ref())?;
+            validate_inode_storage(filesystem, entry_path.as_ref(), &mut blocks)?;
             let kind = classify(metadata.file_type())?;
             if kind == 2 {
                 if pending.len() >= MAX_PENDING_DIRECTORIES {
@@ -939,6 +942,19 @@ fn commit_staged_mutation(
             return Err(Status::Invalid);
         }
     };
+    let allocation_check = (|| -> Result<(), Status> {
+        let mut blocks = mounted.filesystem()?.block_allocation_snapshot();
+        for block in ordered_data {
+            if !blocks.range_is_allocated(*block, 1).map_err(map_error)? {
+                return Err(Status::Invalid);
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = allocation_check {
+        discard_uncommitted_stage(mounted, true)?;
+        return Err(error);
+    }
     for block in transaction.revoked_blocks() {
         match mounted.filesystem()?.is_fixed_metadata_block(*block) {
             Ok(false) => {}
@@ -1340,6 +1356,10 @@ fn truncate_target(mounted: &mut Mounted, absolute: Vec<u8>, size: u64) -> Resul
         let validation = (|| {
             if let Some(block) = file.filesystem_block_at_offset(size).map_err(map_error)? {
                 if mounted.filesystem()?.is_fixed_metadata_block(block).map_err(map_error)? {
+                    return Err(Status::Invalid);
+                }
+                if !mounted.filesystem()?.block_allocation_snapshot()
+                    .range_is_allocated(block, 1).map_err(map_error)? {
                     return Err(Status::Invalid);
                 }
             }

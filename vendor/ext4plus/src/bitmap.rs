@@ -18,6 +18,67 @@ pub struct InodeAllocationSnapshot<'a> {
     groups: BTreeMap<u32, Vec<u8>>,
 }
 
+/// Checksummed block allocation view for one read-only validation pass.
+/// It never initializes lazy bitmaps or survives filesystem mutation.
+pub struct BlockAllocationSnapshot<'a> {
+    filesystem: &'a Ext4,
+    groups: BTreeMap<u32, Vec<u8>>,
+}
+
+impl<'a> BlockAllocationSnapshot<'a> {
+    pub(crate) fn new(filesystem: &'a Ext4) -> Self {
+        Self { filesystem, groups: BTreeMap::new() }
+    }
+
+    /// Require every block in a nonempty physical range to be allocated.
+    /// Allocation alone does not establish which inode owns the range.
+    #[maybe_async::maybe_async]
+    pub async fn range_is_allocated(&mut self, start: u64, count: u32) -> Result<bool, Ext4Error> {
+        let fs = self.filesystem;
+        let sb = fs.superblock();
+        let Some(end) = start.checked_add(u64::from(count)) else { return Ok(false) };
+        if count == 0 || start < u64::from(sb.first_data_block()) || end > sb.blocks_count() {
+            return Ok(false);
+        }
+        let mut block = start;
+        while block < end {
+            let (group, offset) = fs.block_block_group_location(block)?;
+            if !self.groups.contains_key(&group) {
+                let descriptor = fs.0.block_group_descriptors.get(group as usize)
+                    .ok_or(CorruptKind::BlockGroupDescriptor(group))?;
+                let bitmap = BitmapHandle::new(descriptor.block_bitmap_block(), false);
+                self.groups.insert(group, bitmap.read_validated(fs, group).await?);
+            }
+            let length = (end - block).min(u64::from(sb.blocks_per_group().get() - offset));
+            let bytes = self.groups.get(&group).ok_or(CorruptKind::BlockGroupDescriptor(group))?;
+            for bit in u64::from(offset)..u64::from(offset) + length {
+                let byte = bytes.get((bit / 8) as usize).ok_or(CorruptKind::BlockGroupDescriptor(group))?;
+                if byte & (1 << (bit % 8)) == 0 { return Ok(false); }
+            }
+            block += length;
+        }
+        Ok(true)
+    }
+
+    /// Validate data allocation for every extent, including unwritten extents
+    /// beyond EOF. Extent-node and cross-inode ownership are separate checks.
+    #[maybe_async::maybe_async]
+    pub async fn validate_inode_extents(&mut self, inode: &crate::inode::Inode) -> Result<(), Ext4Error> {
+        #[cfg(not(feature = "sync"))]
+        use crate::iters::AsyncIterator;
+        if inode.flags().contains(crate::inode::InodeFlags::EXTENTS) {
+            let mut extents = crate::iters::extents::Extents::new(self.filesystem.clone(), inode)?;
+            while let Some(extent) = extents.next().await {
+                let extent = extent?;
+                if !self.range_is_allocated(extent.start_block, u32::from(extent.num_blocks)).await? {
+                    return Err(CorruptKind::ExtentBlock(inode.index).into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<'a> InodeAllocationSnapshot<'a> {
     pub(crate) fn new(filesystem: &'a Ext4) -> Self {
         Self { filesystem, groups: BTreeMap::new() }

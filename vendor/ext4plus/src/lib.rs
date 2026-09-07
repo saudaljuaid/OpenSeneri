@@ -155,7 +155,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitmap::BitmapHandle;
-pub use bitmap::InodeAllocationSnapshot;
+pub use bitmap::{BlockAllocationSnapshot, InodeAllocationSnapshot};
 use block_group::{BlockGroupDescriptor, BlockGroupIndex};
 use block_index::FsBlockIndex;
 use core::fmt::{self, Debug, Formatter};
@@ -387,6 +387,11 @@ impl Ext4 {
     /// Callers must discard the snapshot before changing the filesystem.
     pub fn inode_allocation_snapshot(&self) -> InodeAllocationSnapshot<'_> {
         InodeAllocationSnapshot::new(self)
+    }
+
+    /// Cache checked block bitmaps for one validation pass, without writes.
+    pub fn block_allocation_snapshot(&self) -> BlockAllocationSnapshot<'_> {
+        BlockAllocationSnapshot::new(self)
     }
 
     /// Read the inode of the root `/` directory.
