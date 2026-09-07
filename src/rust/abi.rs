@@ -1002,7 +1002,9 @@ pub(crate) unsafe extern "C" fn phipia_ext4_remove_directory_probe(
     };
     // SAFETY: C supplies the live inode array under the volume lease.
     let open_inodes = unsafe { core::slice::from_raw_parts(open_inodes, open_count) };
-    match ext4::remove_directory_guarded(mounted, path, open_inodes) {
+    let result = if open_inodes.is_empty() { ext4::remove_directory_probe(mounted, path) }
+        else { ext4::remove_directory_guarded(mounted, path, open_inodes) };
+    match result {
         Ok(()) => ext4::Status::Ok as i32,
         Err(status) => status as i32,
     }
