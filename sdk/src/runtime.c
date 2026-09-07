@@ -300,6 +300,11 @@ long phipia_file_truncate(phipia_handle_t handle, uint64_t size)
     return phipia_syscall2(PHIPIA_SYS_FILE_TRUNCATE, handle, size);
 }
 
+long phipia_file_sync(phipia_handle_t handle)
+{
+    return phipia_syscall1(PHIPIA_SYS_FILE_SYNC, handle);
+}
+
 long phipia_path_chmod(uint16_t volume, const char *path, uint16_t mode)
 {
     return single_path(PHIPIA_SYS_PATH_CHMOD, volume, path, mode);

@@ -219,7 +219,7 @@ int fsync(int number)
 {
     struct descriptor_record record;
     if (!descriptor_snapshot(number, &record, 0)) { errno = EBADF; return -1; }
-    return phipia_result(phipia_syscall1(PHIPIA_SYS_VOLUME_SYNC, record.volume));
+    return phipia_result(phipia_file_sync(record.handle));
 }
 unsigned int sleep(unsigned int seconds)
 {

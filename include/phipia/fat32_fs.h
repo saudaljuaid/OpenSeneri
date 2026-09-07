@@ -133,6 +133,7 @@ enum phipfs_status phipfs_open(
 enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *path,
     enum phipfs_access access, uint8_t flags, uint16_t mode, phipfs_handle *handle);
 enum phipfs_status phipfs_close(phipfs_handle handle);
+enum phipfs_status phipfs_fsync(phipfs_handle handle);
 enum phipfs_status phipfs_read(
     phipfs_handle handle,
     uint8_t *destination,

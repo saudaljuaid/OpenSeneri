@@ -1023,7 +1023,7 @@ enum phipfs_status ext4_backend_unmount(enum phipfs_volume volume)
     return PHIPFS_STATUS_OK;
 }
 
-enum phipfs_status ext4_backend_sync(enum phipfs_volume volume)
+static enum phipfs_status sync_volume_handle(enum phipfs_volume volume, phipfs_handle handle)
 {
     struct ext4_mount_state *mount;
     enum phipfs_status status;
@@ -1048,6 +1048,14 @@ enum phipfs_status ext4_backend_sync(enum phipfs_volume volume)
         return status;
     }
     uint64_t open_inodes[EXT4_MAX_HANDLES];
+    if (handle != 0U) {
+        struct ext4_handle_state *state;
+        status = leased_handle_state(handle, mount, &state);
+        if (status != PHIPFS_STATUS_OK) {
+            (void)end_operation(mount, NULL);
+            return status;
+        }
+    }
     const size_t open_count = collect_open_inodes(volume, open_inodes, true);
     status = map_status(phipia_ext4_sync(mount->rust_mount, open_inodes, open_count));
     if (status == PHIPFS_STATUS_OK && open_count == 0U) mount->orphan_cleanup_pending = false;
@@ -1077,6 +1085,18 @@ enum phipfs_status ext4_backend_sync(enum phipfs_volume volume)
     }
     close_status = end_operation(mount, NULL);
     return status != PHIPFS_STATUS_OK ? status : close_status;
+}
+
+enum phipfs_status ext4_backend_sync(enum phipfs_volume volume)
+{
+    return sync_volume_handle(volume, 0U);
+}
+
+enum phipfs_status ext4_backend_fsync(phipfs_handle handle)
+{
+    struct ext4_handle_state *state;
+    const enum phipfs_status status = handle_state(handle, &state);
+    return status == PHIPFS_STATUS_OK ? sync_volume_handle(state->volume, handle) : status;
 }
 
 struct phipfs_drive_info ext4_backend_drive(enum phipfs_volume volume)

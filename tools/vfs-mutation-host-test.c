@@ -18,6 +18,14 @@ static uint16_t requested_directory_mode;
 static uint16_t expected_file_mode = 0644U;
 static unsigned prepared_calls;
 static uint8_t expected_prepared_flags = PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE;
+static unsigned file_sync_calls;
+
+static enum phipfs_status file_sync(phipfs_handle handle)
+{
+    assert(handle == 77U && live_backend_handles == 1U);
+    ++file_sync_calls;
+    return mutation_result;
+}
 
 static enum phipfs_status prepared_open(enum phipfs_volume volume, const char *path,
     enum phipfs_access access, uint8_t flags, uint16_t mode,
@@ -305,6 +313,19 @@ int main(void)
     assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,
         PHIPFS_OPEN_EXCLUSIVE, 01720U, &opened) == PHIPFS_STATUS_INVALID_ARGUMENT);
     assert(opened == 0U && prepared_calls == 3U);
+    backend.fsync = file_sync;
+    mutation_result = PHIPFS_STATUS_OK;
+    assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,
+        expected_prepared_flags, 01720U, &opened) == PHIPFS_STATUS_OK);
+    mutation_result = PHIPFS_STATUS_IO;
+    assert(phipfs_fsync(opened) == PHIPFS_STATUS_IO);
+    mutation_result = PHIPFS_STATUS_OK;
+    assert(phipfs_fsync(opened) == PHIPFS_STATUS_OK && file_sync_calls == 2U);
+    ++mounts[PHIPFS_VOLUME_DATA].generation;
+    assert(phipfs_fsync(opened) == PHIPFS_STATUS_STALE_HANDLE && file_sync_calls == 2U);
+    --mounts[PHIPFS_VOLUME_DATA].generation;
+    assert(phipfs_close(opened) == PHIPFS_STATUS_OK);
+    assert(phipfs_fsync(opened) == PHIPFS_STATUS_STALE_HANDLE && file_sync_calls == 2U);
     assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
     for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) assert(!vnodes[index].active);
     puts("VFS journal mutation retries, backend errors, path bounds and vnode census: PASS");

@@ -17,6 +17,7 @@ static uint8_t file_type = PHIPIA_EXT4_FILE_REGULAR;
 static unsigned renames;
 static uint64_t pending_size;
 static unsigned sync_refusals;
+static unsigned file_sync_calls;
 static unsigned stat_refusals;
 static unsigned appends;
 static uint16_t changed_mode;
@@ -369,6 +370,7 @@ int32_t phipia_ext4_write_inode(uintptr_t mounted, uint64_t inode, uint64_t offs
 
 int32_t phipia_ext4_sync(uintptr_t mounted, const uint64_t *open_inodes, size_t open_count)
 {
+    ++file_sync_calls;
     assert(mounted == 1U && ext4_mounts[PHIPFS_VOLUME_DATA].session.writable);
     assert(open_inodes != NULL && open_count <= EXT4_MAX_HANDLES);
     last_sync_open_count = open_count;
@@ -812,6 +814,26 @@ int main(void)
     const unsigned before_invalid_mkdir = opens;
     assert(ext4_backend_mkdir_mode(PHIPFS_VOLUME_DATA, "file", 010000U) == PHIPFS_STATUS_INVALID_ARGUMENT);
     assert(opens == before_invalid_mkdir && opens == closes);
+    assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);
+    assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ_WRITE, &second) == PHIPFS_STATUS_OK);
+    assert(ext4_backend_seek(first, 3, PHIPFS_SEEK_START, &position) == PHIPFS_STATUS_OK);
+    pending = true;
+    pending_size = 321U;
+    sync_refusals = 1U;
+    assert(ext4_backend_fsync(first) == PHIPFS_STATUS_IO);
+    assert(pending && last_sync_open_count == 2U && opens == closes);
+    assert(ext4_backend_fsync(first) == PHIPFS_STATUS_OK);
+    assert(!pending && disk_size == 321U && last_sync_open_count == 2U && opens == closes);
+    assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->size == 321U && state->offset == 3U);
+    assert(handle_state(second, &state) == PHIPFS_STATUS_OK && state->size == 321U);
+    callback_handle = first;
+    close_callback_kind = 3U;
+    const unsigned sync_before_stale = file_sync_calls;
+    assert(ext4_backend_fsync(first) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(close_callback_kind == 0U && file_sync_calls == sync_before_stale && opens == closes);
+    assert(ext4_backend_close(second) == PHIPFS_STATUS_OK);
+    assert(ext4_backend_fsync(second) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(!volume_has_open_handles(PHIPFS_VOLUME_DATA));
     unmount_refusals = 1U;
     assert(ext4_backend_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_CORRUPT);
     assert(live_mounts == 1U && !ext4_mounts[PHIPFS_VOLUME_DATA].detaching);

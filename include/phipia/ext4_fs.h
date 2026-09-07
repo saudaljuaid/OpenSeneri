@@ -176,6 +176,7 @@ enum phipfs_status ext4_backend_open_options(enum phipfs_volume volume, const ch
     enum phipfs_access access, uint8_t flags, uint16_t mode,
     phipfs_handle *handle, struct phipfs_stat *stat);
 enum phipfs_status ext4_backend_lstat_path(enum phipfs_volume volume, const char *path, struct phipfs_stat *stat);
+enum phipfs_status ext4_backend_fsync(phipfs_handle handle);
 enum phipfs_status ext4_backend_stat_path(enum phipfs_volume volume,
     const char *path, struct phipfs_stat *stat);
 enum phipfs_status ext4_backend_open_with_stat(enum phipfs_volume volume,

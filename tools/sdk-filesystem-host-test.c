@@ -22,10 +22,17 @@ static int nested_descriptor = -1;
 static int reenter_close;
 static int closing_descriptor;
 static long close_result;
+static long sync_result;
+static unsigned file_sync_calls;
 
 long phipia_syscall1(uint64_t number, uint64_t address)
 {
     if (number == PHIPIA_SYS_FUTEX_WAKE) return 0;
+    if (number == PHIPIA_SYS_FILE_SYNC) {
+        if (address != 42U) invalid_request = 1;
+        ++file_sync_calls;
+        return sync_result;
+    }
     if (number == PHIPIA_SYS_HANDLE_CLOSE) {
         if (address != 42U) invalid_request = 1;
         ++close_calls;
@@ -176,5 +183,12 @@ int main(void)
     descriptor = open("nested", O_RDONLY);
     if (descriptor != 3 || close(descriptor) != 0) return 34;
     if (open_calls != 47U || close_calls != 42U || invalid_request) return 35;
+    descriptor = open("nested", O_RDONLY);
+    sync_result = -PHIPIA_EIO;
+    if (fsync(descriptor) != -1 || errno != EIO) return 36;
+    sync_result = 0;
+    if (fsync(descriptor) != 0 || close(descriptor) != 0) return 37;
+    if (fsync(descriptor) != -1 || errno != EBADF || file_sync_calls != 2U) return 38;
+    if (open_calls != 48U || close_calls != 43U || invalid_request) return 39;
     return 0;
 }
