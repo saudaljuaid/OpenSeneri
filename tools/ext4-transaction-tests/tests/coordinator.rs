@@ -1367,6 +1367,17 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
         assert!(output.status.success(), "sudo {args:?}: {}", String::from_utf8_lossy(&output.stderr));
         output
     }
+    fn kernel_directory_exists(path: &std::path::Path) -> bool {
+        // /data/user is deliberately root-owned 0750. Inspect as root and
+        // distinguish ENOENT from permission or other errors: Path::is_dir
+        // silently turns all of them into false in the unprivileged runner.
+        let output = linux(&["python3", "-c", "import os, stat, sys\ntry:\n mode = os.stat(sys.argv[1]).st_mode\nexcept FileNotFoundError:\n print('missing')\nelse:\n assert stat.S_ISDIR(mode), 'expected a directory'\n print('directory')", path.to_str().unwrap()]);
+        match output.stdout.as_slice() {
+            b"directory\n" => true,
+            b"missing\n" => false,
+            unexpected => panic!("unexpected kernel directory result: {unexpected:?}"),
+        }
+    }
     struct LoopMount { directory: PathBuf, active: bool }
     impl LoopMount {
         fn mount(image: &std::path::Path, directory: &std::path::Path) -> Self {
@@ -1474,8 +1485,10 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
                     committed |= *boundary == 3;
                     std::fs::write(&image, &prefix).unwrap();
                     let kernel = LoopMount::mount(&image, &directory);
-                    assert_eq!(directory.join("data/user/kernel-directory").is_dir(), !committed || replace);
-                    assert_eq!(directory.join("system/kernel-directory").is_dir(), replace && !committed);
+                    assert_eq!(kernel_directory_exists(&directory.join("data/user/kernel-directory")), !committed || replace,
+                        "target directory, replace={replace}, cut={index}");
+                    assert_eq!(kernel_directory_exists(&directory.join("system/kernel-directory")), replace && !committed,
+                        "source directory, replace={replace}, cut={index}");
                     kernel.unmount();
                     let recovered = mount_fixture(&image);
                     if committed {
