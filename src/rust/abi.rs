@@ -960,6 +960,19 @@ pub(crate) unsafe extern "C" fn phipia_ext4_create_directory_probe(
     path: *const u8,
     path_length: usize,
 ) -> i32 {
+    // SAFETY: this entry point has the same input contract as the mode variant.
+    unsafe { phipia_ext4_create_directory_mode(mounted, path, path_length, 0o755) }
+}
+
+/// Create a directory with requested permissions in the namespace transaction.
+///
+/// # Safety
+/// The mount and path range must be live, readable and non-overlapping, and C
+/// must hold a writable storage lease.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn phipia_ext4_create_directory_mode(
+    mounted: usize, path: *const u8, path_length: usize, mode: u16,
+) -> i32 {
     if mounted == 0 || path.is_null() {
         return ext4::Status::NullArgument as i32;
     }
@@ -970,7 +983,7 @@ pub(crate) unsafe extern "C" fn phipia_ext4_create_directory_probe(
             core::slice::from_raw_parts(path, path_length),
         )
     };
-    match ext4::create_directory_probe(mounted, path) {
+    match ext4::create_directory_mode(mounted, path, mode) {
         Ok(()) => ext4::Status::Ok as i32,
         Err(status) => status as i32,
     }

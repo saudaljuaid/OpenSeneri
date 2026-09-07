@@ -7,6 +7,10 @@
 #define PHIPIA_PATH_MAX 127U
 #define PHIPIA_DIRECTORY_NAME_MAX 12U
 
+/* PATH_MKDIR value 0 keeps legacy mode 0755. This flag admits an explicit
+ * low-12-bit mode, including 0000, without changing existing callers. */
+#define PHIPIA_MKDIR_MODE_PRESENT (UINT64_C(1) << 16)
+
 enum phipia_volume {
     PHIPIA_VOLUME_SYSTEM = 1,
     PHIPIA_VOLUME_DATA = 2

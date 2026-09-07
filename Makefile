@@ -1197,6 +1197,14 @@ wall-clock-tests: $(WALL_CLOCK_HOST_TEST) $(SDK_TIME_HOST_TEST)
 	$(WALL_CLOCK_HOST_TEST)
 	$(SDK_TIME_HOST_TEST)
 
+$(BUILD_DIR)/sdk-filesystem-host-test: tools/sdk-filesystem-host-test.c sdk/src/posix.c \
+		sdk/src/internal.h sdk/include/phipia/runtime.h include/phipia/abi/storage.h
+	mkdir -p $(dir $@)
+	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections \
+		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion \
+		-Isdk/include -Iinclude tools/sdk-filesystem-host-test.c sdk/src/posix.c \
+		-Wl,--gc-sections -o $@
+
 $(BUILD_DIR)/ext4-vfs-host-test: tools/ext4-vfs-host-test.c \
 		src/kernel/ext4_fs.c include/phipia/ext4_fs.h include/phipia/nvme.h \
 		include/phipia/fat32_fs.h
@@ -1226,7 +1234,8 @@ $(BUILD_DIR)/ext4-msix-close-host-test: tools/ext4-msix-close-host-test.c \
 		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion -Iinclude \
 		tools/ext4-msix-close-host-test.c -Wl,--gc-sections -o $@
 
-ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/ext4-vfs-host-test $(BUILD_DIR)/vfs-mutation-host-test $(BUILD_DIR)/ext4-nvme-close-host-test $(BUILD_DIR)/ext4-msix-close-host-test
+ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesystem-host-test $(BUILD_DIR)/ext4-vfs-host-test $(BUILD_DIR)/vfs-mutation-host-test $(BUILD_DIR)/ext4-nvme-close-host-test $(BUILD_DIR)/ext4-msix-close-host-test
+	$(BUILD_DIR)/sdk-filesystem-host-test
 	$(BUILD_DIR)/ext4-vfs-host-test
 	$(BUILD_DIR)/vfs-mutation-host-test
 	$(BUILD_DIR)/ext4-nvme-close-host-test

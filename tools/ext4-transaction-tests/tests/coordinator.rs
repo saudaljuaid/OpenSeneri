@@ -436,7 +436,7 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
             25 | 26 => ext4::set_xattr(mounted, b"system/retry-test", b"user.note", Some(&[0x52; 701])),
             27 => ext4::set_xattr(mounted, b"system/retry-test", b"user.note", Some(b"inline")),
             28 => ext4::create_file_probe(mounted, b"system/retry-test", 0o600),
-            29 => ext4::create_directory_probe(mounted, b"system/retry-test"),
+            29 => ext4::create_directory_mode(mounted, b"system/retry-test", 0o1720),
             30 => ext4::chmod(mounted, b"system/retry-test", 0o777),
             _ => ext4::symlink_probe(mounted, b"system/retry-test", &target),
         };
@@ -470,6 +470,10 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
                 let acl_crash = (case >= 28).then(|| DEVICE.with_borrow(|device| device.bytes.clone()));
                 if failed_at >= 2 {
                     assert_public_reads_refused(&mounted);
+                    if case == 29 {
+                        assert_eq!(ext4::create_directory_mode(&mut mounted, b"system/retry-test", 0o755),
+                            Err(Status::Invalid), "different mode stole pending mkdir");
+                    }
                     if case == 8 {
                         assert_eq!(ext4::transaction_probe(&mut mounted, b"system/retry-test", 4093, b"append-retry"),
                             Err(Status::Invalid), "ordinary write stole pending append");
@@ -525,7 +529,8 @@ fn pending_commit_is_hidden_and_every_storage_refusal_retries_exact_bytes() {
                         assert_eq!(state.unwrap().gid, if case == 30 { 0 } else { 70000 });
                         assert_eq!(state.unwrap().mode & 0o2000, if case == 29 { 0o2000 } else { 0 });
                         assert!(if case == 30 { mode == 0o751 || mode == 0o777 }
-                            else { mode == if case == 28 { 0o600 } else { 0o751 } });
+                            else { mode == if case == 28 { 0o600 } else { 0o700 } });
+                        if case == 29 { assert_eq!(state.unwrap().mode & 0o7777, 0o3700); }
                         let raw = ext4plus::Ext4::load(Box::new(DEVICE.with_borrow(|device| device.bytes.clone()))).unwrap();
                         let inode = raw.path_to_inode(ext4plus::path::Path::try_from("/system/retry-test").unwrap(),
                             ext4plus::FollowSymlinks::All).unwrap();
@@ -916,6 +921,14 @@ fn inherited_acls_mask_new_modes_survive_rename_and_rollback_allocations() {
             assert_eq!(node.mode & 0o2000, if named != 0 && name == b"system/acl-directory" { 0o2000 } else { 0 });
         }
         assert_eq!(ext4::stat(&mounted, b"system/acl-renamed").unwrap().gid, 0);
+        for requested in [0, 0o700, 0o1777, 0o3777, 0o7777] {
+            let child = format!("system/requested-{requested:o}");
+            ext4::create_directory_mode(&mut mounted, child.as_bytes(), requested).unwrap();
+            let actual = ext4::stat(&mounted, child.as_bytes()).unwrap();
+            let expected = (requested & 0o1000) | (requested & 0o751) | if named == 0 { 0 } else { 0o2000 };
+            assert_eq!(actual.mode & 0o7777, expected);
+            ext4::remove_directory_probe(&mut mounted, child.as_bytes()).unwrap();
+        }
         ext4::sync(&mut mounted).unwrap();
         ext4::unmount(&mounted).unwrap();
         fsck(&path, &format!("coordinator-inherited-acl-{named}"));
@@ -3613,7 +3626,7 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
     let acl_input = path.with_extension("kernel-default-acl.bin");
     std::fs::write(&acl_input, posix_acl_fixture(20, 2)).unwrap();
     let acl_parent = directory.join("system/kernel-acl-parent");
-    linux(&["python3", "-c", "import os,sys; p=sys.argv[1]; os.mkdir(p); os.chown(p, 54321, 70000); os.chmod(p, 0o2755); os.setxattr(p, 'system.posix_acl_default', open(sys.argv[2], 'rb').read()); os.close(os.open(p+'/linux-file', os.O_CREAT|os.O_WRONLY, 0o666)); os.mkdir(p+'/linux-dir', 0o755); os.symlink('linux-file', p+'/linux-sym')",
+    linux(&["python3", "-c", "import os,sys; p=sys.argv[1]; os.mkdir(p); os.chown(p, 54321, 70000); os.chmod(p, 0o2755); os.setxattr(p, 'system.posix_acl_default', open(sys.argv[2], 'rb').read()); os.close(os.open(p+'/linux-file', os.O_CREAT|os.O_WRONLY, 0o666)); os.mkdir(p+'/linux-dir', 0o1720); os.symlink('linux-file', p+'/linux-sym')",
         acl_parent.to_str().unwrap(), acl_input.to_str().unwrap()]);
     kernel.unmount();
     let mut mounted = mount_fixture(&image);
@@ -3627,7 +3640,7 @@ fn linux_kernel_mounts_phipia_results_and_recovers_open_replace_cuts() {
     ext4::set_xattr(&mut mounted, b"system/from-linux", b"user.z", Some(&[b'z'; 701])).unwrap();
     ext4::append_probe(&mut mounted, b"system/linux-alias", b"+phipia", 16384).unwrap();
     ext4::create_file_probe(&mut mounted, b"system/kernel-acl-parent/phipia-file", 0o666).unwrap();
-    ext4::create_directory_probe(&mut mounted, b"system/kernel-acl-parent/phipia-dir").unwrap();
+    ext4::create_directory_mode(&mut mounted, b"system/kernel-acl-parent/phipia-dir", 0o1720).unwrap();
     ext4::symlink_probe(&mut mounted, b"system/kernel-acl-parent/phipia-sym", b"phipia-file").unwrap();
     assert_eq!(ext4::stat(&mounted, b"system/kernel-acl-parent/phipia-file").unwrap().mode & 0o777, 0o640);
     ext4::chmod(&mut mounted, b"system/kernel-acl-parent/phipia-file", 0o702).unwrap();

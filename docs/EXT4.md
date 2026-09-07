@@ -532,6 +532,12 @@ Creation also inherits a setgid parent's group (including symlinks), and new
 subdirectories retain setgid. A non-setgid parent's group is not inherited;
 the current VFS supplies caller uid/gid 0. Linux comparison fixtures include
 group IDs above 65535 and nested default-ACL/setgid inheritance.
+POSIX mkdir now carries its mode through the native syscall and VFS into the
+creation transaction, including mode 0000 and sticky. Legacy native mkdir calls
+retain mode 0755. Requested setuid/setgid bits are stripped for mkdir as in
+Linux; a setgid parent can still supply the directory's setgid bit. Pending
+mkdir retries bind both path and requested mode. This extension awaits Linux
+verification alongside the inherited-ACL fixtures.
 The admitted explicit xattr mutation namespace is
 `user.*`, with names up to 255 bytes. Set/replace/remove journal the inode and
 any allocated, rewritten or released external attribute block. The writer

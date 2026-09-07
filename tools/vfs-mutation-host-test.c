@@ -14,6 +14,7 @@ static unsigned live_backend_handles;
 static bool directory_metadata;
 static phipfs_handle closing_frontend;
 static bool closing_directory;
+static uint16_t requested_directory_mode;
 
 static enum phipfs_status replaced_open(enum phipfs_volume volume, const char *path,
     enum phipfs_access access, phipfs_handle *handle, struct phipfs_stat *stat)
@@ -89,6 +90,12 @@ static enum phipfs_status pair(enum phipfs_volume volume, const char *from, cons
 static enum phipfs_status create(enum phipfs_volume volume, const char *path, uint16_t mode)
 {
     assert(mode == 0644U);
+    return mutation(volume, path);
+}
+
+static enum phipfs_status mkdir_mode(enum phipfs_volume volume, const char *path, uint16_t mode)
+{
+    requested_directory_mode = mode;
     return mutation(volume, path);
 }
 
@@ -205,6 +212,19 @@ int main(void)
     vnode_release(old_vnode, vnodes[old_vnode].generation);
     assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
     for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) assert(!vnodes[index].active);
+    backend.mkdir_mode = mkdir_mode;
+    for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+        mutation_result = attempt == 0U ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK;
+        assert(phipfs_mkdir_mode(PHIPFS_VOLUME_DATA, expected_path, 01720U) == mutation_result);
+        assert(requested_directory_mode == 01720U);
+    }
+    assert(phipfs_mkdir_mode(PHIPFS_VOLUME_DATA, expected_path, 0U) == PHIPFS_STATUS_OK);
+    assert(requested_directory_mode == 0U);
+    assert(phipfs_mkdir(PHIPFS_VOLUME_DATA, expected_path) == PHIPFS_STATUS_OK);
+    assert(requested_directory_mode == 0755U);
+    const unsigned before_invalid_mkdir = calls;
+    assert(phipfs_mkdir_mode(PHIPFS_VOLUME_DATA, expected_path, 010000U) == PHIPFS_STATUS_INVALID_ARGUMENT);
+    assert(calls == before_invalid_mkdir);
     puts("VFS journal mutation retries, backend errors, path bounds and vnode census: PASS");
     return 0;
 }

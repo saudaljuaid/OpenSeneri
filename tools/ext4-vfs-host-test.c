@@ -20,6 +20,7 @@ static unsigned sync_refusals;
 static unsigned stat_refusals;
 static unsigned appends;
 static uint16_t changed_mode;
+static uint16_t directory_mode;
 static unsigned live_snapshots;
 static unsigned freed_snapshots;
 static size_t expected_open_inodes;
@@ -360,6 +361,16 @@ int32_t phipia_ext4_lstat(uintptr_t mounted, const uint8_t *path,
     size_t path_bytes, struct phipia_ext4_metadata *metadata)
 {
     return phipia_ext4_stat(mounted, path, path_bytes, metadata);
+}
+
+int32_t phipia_ext4_create_directory_mode(uintptr_t mounted, const uint8_t *path,
+    size_t path_bytes, uint16_t mode)
+{
+    assert(mounted == 1U && path_bytes == 4U && memcmp(path, "file", 4U) == 0);
+    assert(ext4_mounts[PHIPFS_VOLUME_DATA].operation_active);
+    assert(ext4_mounts[PHIPFS_VOLUME_DATA].session.writable);
+    directory_mode = mode;
+    return permanent_status;
 }
 
 int32_t phipia_ext4_symlink(uintptr_t mounted, const uint8_t *path,
@@ -716,6 +727,19 @@ int main(void)
     assert(live_snapshots == 0U && freed_snapshots == snapshots_before_close + 1U);
     assert(handle_state(callback_handle, &state) == PHIPFS_STATUS_STALE_HANDLE);
     assert(!volume_has_open_handles(PHIPFS_VOLUME_DATA));
+    for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+        permanent_status = attempt == 0U ? PHIPIA_EXT4_STATUS_IO : PHIPIA_EXT4_STATUS_OK;
+        assert(ext4_backend_mkdir_mode(PHIPFS_VOLUME_DATA, "file", 01720U) ==
+            (attempt == 0U ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK));
+        assert(directory_mode == 01720U && opens == closes);
+    }
+    assert(ext4_backend_mkdir_mode(PHIPFS_VOLUME_DATA, "file", 0U) == PHIPFS_STATUS_OK);
+    assert(directory_mode == 0U);
+    assert(ext4_backend_create_directory_probe(PHIPFS_VOLUME_DATA, "file") == PHIPFS_STATUS_OK);
+    assert(directory_mode == 0755U);
+    const unsigned before_invalid_mkdir = opens;
+    assert(ext4_backend_mkdir_mode(PHIPFS_VOLUME_DATA, "file", 010000U) == PHIPFS_STATUS_INVALID_ARGUMENT);
+    assert(opens == before_invalid_mkdir && opens == closes);
     unmount_refusals = 1U;
     assert(ext4_backend_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_CORRUPT);
     assert(live_mounts == 1U && !ext4_mounts[PHIPFS_VOLUME_DATA].detaching);

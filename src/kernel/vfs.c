@@ -120,6 +120,7 @@ static const struct vfs_backend_ops ext4_backend_ops = {
     .create = ext4_backend_create,
     .truncate = ext4_backend_truncate,
     .mkdir = ext4_backend_mkdir,
+    .mkdir_mode = ext4_backend_mkdir_mode,
     .rename = ext4_backend_rename,
     .unlink = ext4_backend_unlink,
     .rmdir = ext4_backend_rmdir,
@@ -1116,11 +1117,19 @@ enum phipfs_status phipfs_truncate(
 
 enum phipfs_status phipfs_mkdir(enum phipfs_volume volume, const char *path)
 {
+    return phipfs_mkdir_mode(volume, path, 0755U);
+}
+
+enum phipfs_status phipfs_mkdir_mode(enum phipfs_volume volume, const char *path, uint16_t mode)
+{
     char canonical[PHIPFS_MAX_PATH];
+    if ((mode & ~07777U) != 0U) return PHIPFS_STATUS_INVALID_ARGUMENT;
     enum phipfs_status status = resolve_parent(volume, path, canonical);
 
-    return status == PHIPFS_STATUS_OK ?
-        mounts[volume].backend->mkdir(volume, canonical) : status;
+    if (status != PHIPFS_STATUS_OK) return status;
+    const struct vfs_backend_ops *backend = mounts[volume].backend;
+    return backend->mkdir_mode != NULL ? backend->mkdir_mode(volume, canonical, mode) :
+        backend->mkdir(volume, canonical);
 }
 
 enum phipfs_status phipfs_rename(

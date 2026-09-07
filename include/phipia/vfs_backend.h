@@ -41,6 +41,7 @@ struct vfs_backend_ops {
     enum phipfs_status (*truncate)(enum phipfs_volume volume, const char *path,
         uint64_t size);
     enum phipfs_status (*mkdir)(enum phipfs_volume volume, const char *path);
+    enum phipfs_status (*mkdir_mode)(enum phipfs_volume volume, const char *path, uint16_t mode);
     enum phipfs_status (*rename)(enum phipfs_volume volume, const char *source,
         const char *destination);
     enum phipfs_status (*unlink)(enum phipfs_volume volume, const char *path);

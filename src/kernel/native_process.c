@@ -3573,6 +3573,11 @@ static int64_t syscall_single_path_mutation(
     if (number == PHIPIA_SYS_PATH_UNLINK && value > PHIPIA_UNLINK_DIRECTORY) {
         return -PHIPIA_EINVAL;
     }
+    if (number == PHIPIA_SYS_PATH_MKDIR && value != 0U &&
+        ((value & PHIPIA_MKDIR_MODE_PRESENT) == 0U ||
+         (value & ~(PHIPIA_MKDIR_MODE_PRESENT | UINT64_C(07777))) != 0U)) {
+        return -PHIPIA_EINVAL;
+    }
 
     if (!copy_from_user(process, &path_request, path_address,
             sizeof(path_request))) {
@@ -3587,7 +3592,8 @@ static int64_t syscall_single_path_mutation(
     }
     cpu_interrupt_enable();
     if (number == PHIPIA_SYS_PATH_MKDIR) {
-        status = phipfs_mkdir(volume, path);
+        status = phipfs_mkdir_mode(volume, path,
+            value == 0U ? 0755U : (uint16_t)(value & 07777U));
     } else if (number == PHIPIA_SYS_PATH_TRUNCATE) {
         status = phipfs_truncate(volume, path, value);
     } else if (value == PHIPIA_UNLINK_FILE) {

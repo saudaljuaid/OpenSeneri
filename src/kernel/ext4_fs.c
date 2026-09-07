@@ -97,8 +97,8 @@ extern int32_t phipia_ext4_unlink_file_probe(uintptr_t mounted,
 extern int32_t phipia_ext4_link_file_probe(uintptr_t mounted,
     const uint8_t *source, size_t source_length, const uint8_t *destination,
     size_t destination_length);
-extern int32_t phipia_ext4_create_directory_probe(uintptr_t mounted,
-    const uint8_t *path, size_t path_length);
+extern int32_t phipia_ext4_create_directory_mode(uintptr_t mounted,
+    const uint8_t *path, size_t path_length, uint16_t mode);
 extern int32_t phipia_ext4_remove_directory_probe(uintptr_t mounted,
     const uint8_t *path, size_t path_length, const uint64_t *open_inodes, size_t open_count);
 extern int32_t phipia_ext4_rename_probe(uintptr_t mounted,
@@ -1402,12 +1402,18 @@ enum phipfs_status ext4_backend_link_file_probe(enum phipfs_volume volume,
 enum phipfs_status ext4_backend_create_directory_probe(
     enum phipfs_volume volume, const char *path)
 {
+    return ext4_backend_mkdir_mode(volume, path, 0755U);
+}
+
+enum phipfs_status ext4_backend_mkdir_mode(
+    enum phipfs_volume volume, const char *path, uint16_t mode)
+{
     struct ext4_mount_state *mount;
     const size_t length = path_length(path);
     enum phipfs_status status;
     enum phipfs_status close_status;
 
-    if (!valid_volume(volume) || length == 0U || length >= PHIPFS_MAX_PATH) {
+    if (!valid_volume(volume) || length == 0U || length >= PHIPFS_MAX_PATH || (mode & ~07777U) != 0U) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
     mount = &ext4_mounts[volume];
@@ -1415,8 +1421,8 @@ enum phipfs_status ext4_backend_create_directory_probe(
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
-    status = map_status(phipia_ext4_create_directory_probe(mount->rust_mount,
-        (const uint8_t *)path, length));
+    status = map_status(phipia_ext4_create_directory_mode(mount->rust_mount,
+        (const uint8_t *)path, length, mode));
     close_status = end_operation(mount, NULL);
     return status != PHIPFS_STATUS_OK ? status : close_status;
 }

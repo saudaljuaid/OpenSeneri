@@ -171,7 +171,10 @@ ssize_t readlink(const char *path, char *output, size_t capacity)
 }
 int rmdir(const char *path) { return path_operation(path, PHIPIA_SYS_PATH_UNLINK, PHIPIA_UNLINK_DIRECTORY); }
 int mkdir(const char *path, mode_t mode)
-{ (void)mode; return path_operation(path, PHIPIA_SYS_PATH_MKDIR, 0U); }
+{
+    return path_operation(path, PHIPIA_SYS_PATH_MKDIR,
+        PHIPIA_MKDIR_MODE_PRESENT | (uint64_t)(mode & 07777U));
+}
 int ftruncate(int number, int64_t length)
 {
     struct descriptor_record *record = descriptor(number);

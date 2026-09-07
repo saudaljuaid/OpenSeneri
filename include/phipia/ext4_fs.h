@@ -141,6 +141,7 @@ enum phipfs_status ext4_backend_unlink_file_probe(enum phipfs_volume volume,
     const char *path);
 enum phipfs_status ext4_backend_link_file_probe(enum phipfs_volume volume,
     const char *source, const char *destination);
+enum phipfs_status ext4_backend_mkdir_mode(enum phipfs_volume volume, const char *path, uint16_t mode);
 enum phipfs_status ext4_backend_create_directory_probe(
     enum phipfs_volume volume, const char *path);
 enum phipfs_status ext4_backend_remove_directory_probe(

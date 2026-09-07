@@ -178,6 +178,7 @@ enum phipfs_status phipfs_truncate(
     uint64_t size
 );
 enum phipfs_status phipfs_mkdir(enum phipfs_volume volume, const char *path);
+enum phipfs_status phipfs_mkdir_mode(enum phipfs_volume volume, const char *path, uint16_t mode);
 enum phipfs_status phipfs_rename(
     enum phipfs_volume volume,
     const char *source,

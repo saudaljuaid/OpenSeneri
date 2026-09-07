@@ -1983,13 +1983,16 @@ pub(crate) fn create_directory_probe(
     mounted: &mut Mounted,
     path: &[u8],
 ) -> Result<(), Status> {
+    create_directory_mode(mounted, path, 0o755)
+}
+
+pub(crate) fn create_directory_mode(mounted: &mut Mounted, path: &[u8], mode: u16) -> Result<(), Status> {
+    if mode & !0o7777 != 0 { return Err(Status::Invalid); }
+    let mode_bytes = mode.to_le_bytes();
     let absolute = absolute_path(path)?;
     if mounted.pending_mutation.is_some() {
-        return resume_namespace_mutation(
-            mounted,
-            PendingMutationKind::CreateDirectory,
-            &absolute,
-        );
+        return resume_pending_mutation(mounted, PendingMutationKind::CreateDirectory,
+            &absolute, 0, &mode_bytes).map(|_| ());
     }
     if !mounted.stage.is_empty() || mounted.stage.is_sealed() {
         let recovery = mounted
@@ -2008,14 +2011,8 @@ pub(crate) fn create_directory_probe(
             Dir::open_inode(filesystem, parent_inode)?;
         let inode = filesystem.create_child_inode(parent_directory.inode(), InodeCreationOptions {
             file_type: FileType::Directory,
-            mode: InodeMode::S_IFDIR
-                | InodeMode::S_IRUSR
-                | InodeMode::S_IWUSR
-                | InodeMode::S_IXUSR
-                | InodeMode::S_IRGRP
-                | InodeMode::S_IXGRP
-                | InodeMode::S_IROTH
-                | InodeMode::S_IXOTH,
+            // Linux vfs_mkdir admits rwx/sticky; setgid comes from the parent.
+            mode: InodeMode::S_IFDIR | InodeMode::from_bits_retain(mode & 0o1777),
             uid: 0,
             gid: 0,
             time: Duration::from_secs(0),
@@ -2036,11 +2033,8 @@ pub(crate) fn create_directory_probe(
         discard_uncommitted_stage(mounted, true)?;
         return Err(Status::Invalid);
     }
-    commit_namespace_mutation(
-        mounted,
-        PendingMutationKind::CreateDirectory,
-        absolute,
-    )
+    commit_staged_mutation(mounted, PendingMutationKind::CreateDirectory,
+        absolute, Vec::from(mode_bytes), 0, 0, &[], None).map(|_| ())
 }
 
 /// Remove one empty directory through the journaled mutation path.
