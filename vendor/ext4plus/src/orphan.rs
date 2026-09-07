@@ -32,6 +32,8 @@ impl Ext4 {
             let entry = entry?;
             if entry.file_name() == b"." && !dot && entry.inode == inode.index { dot = true; }
             else if entry.file_name() == b".." && !dotdot
+                && entry.inode != inode.index
+                && (entry.inode.get() == 2 || entry.inode.get() >= 11)
                 && entry.inode.get() <= self.superblock().inodes_count() { dotdot = true; }
             else { return Err(CorruptKind::OrphanInode(inode.index.get()).into()); }
         }

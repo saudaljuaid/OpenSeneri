@@ -1138,20 +1138,32 @@ fn duplicate_extent_release_refuses_and_rolls_back_bitmap_and_namespace() {
 
 #[test]
 fn legacy_zero_link_orphan_recovery_retries_every_storage_failure() {
+    for directory in [false, true] { orphan_recovery_failure_case(directory); }
+}
+
+fn orphan_recovery_failure_case(directory: bool) {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);
-    ext4::create_file_probe(&mut mounted, b"system/orphan", 0o600).unwrap();
-    ext4::transaction_probe(&mut mounted, b"system/orphan", 0, b"unclosed").unwrap();
+    if directory {
+        ext4::create_directory_probe(&mut mounted, b"system/orphan").unwrap();
+    } else {
+        ext4::create_file_probe(&mut mounted, b"system/orphan", 0o600).unwrap();
+        ext4::transaction_probe(&mut mounted, b"system/orphan", 0, b"unclosed").unwrap();
+    }
     let inode = ext4::stat(&mounted, b"system/orphan").unwrap().inode;
     ext4::sync(&mut mounted).unwrap();
-    ext4::unmount(&mounted).unwrap();
+    if directory {
+        ext4::remove_directory_guarded(&mut mounted, b"system/orphan", &[inode]).unwrap();
+    } else { ext4::unmount(&mounted).unwrap(); }
     drop(mounted);
-    let image = path.with_extension("coordinator-orphan-input.img");
+    let image = path.with_extension(format!("coordinator-orphan-input-directory-{directory}.img"));
     DEVICE.with_borrow(|device| std::fs::write(&image, &device.bytes).unwrap());
-    debugfs(&image, "set_inode_field /system/orphan links_count 0");
-    debugfs(&image, "unlink /system/orphan");
-    debugfs(&image, &format!("set_super_value last_orphan {inode}"));
-    debugfs(&image, "feature needs_recovery");
+    if !directory {
+        debugfs(&image, "set_inode_field /system/orphan links_count 0");
+        debugfs(&image, "unlink /system/orphan");
+        debugfs(&image, &format!("set_super_value last_orphan {inode}"));
+        debugfs(&image, "feature needs_recovery");
+    }
     let bytes = std::fs::read(&image).unwrap();
     let size = bytes.len() as u64;
     let mounted = mount_bytes(bytes.clone());
@@ -1159,7 +1171,7 @@ fn legacy_zero_link_orphan_recovery_retries_every_storage_failure() {
     ext4::unmount(&mounted).unwrap();
     let events = DEVICE.with_borrow(|device| device.events.len());
     drop(mounted);
-    fsck(&path, "coordinator-orphan-cleanup");
+    fsck(&path, &format!("coordinator-orphan-cleanup-directory-{directory}"));
     for fail in 0..events {
         DEVICE.with_borrow_mut(|device| *device = Device {
             bytes: bytes.clone(), fail_event: Some(fail), ..Device::default()
@@ -1174,7 +1186,7 @@ fn legacy_zero_link_orphan_recovery_retries_every_storage_failure() {
         let (mounted, _) = ext4::mount(1, size).unwrap();
         ext4::unmount(&mounted).unwrap();
         drop(mounted);
-        fsck(&path, &format!("coordinator-orphan-failure-{fail}"));
+        fsck(&path, &format!("coordinator-orphan-directory-{directory}-failure-{fail}"));
     }
     // Invalid chain nodes must be rejected before replay checkpoints or clears
     // anything, even when debugfs has recomputed their inode checksums.
@@ -1609,8 +1621,11 @@ fn indexed_directory_moves_update_dotdot_checksum_and_refuse_hostile_counts() {
 
 #[test]
 fn final_orphan_release_retries_identical_bytes_without_a_live_handle() {
+    for directory in [false, true] { orphan_release_failure_case(directory); }
+}
+
+fn orphan_release_failure_case(directory: bool) {
     let Some(path) = fixture() else { return };
-    for directory in [false, true] {
     let mut baseline = mount_fixture(&path);
     let name = b"system/close-retry";
     if directory {
@@ -1659,7 +1674,6 @@ fn final_orphan_release_retries_identical_bytes_without_a_live_handle() {
         }
     }
     fsck(&path, &format!("coordinator-orphan-close-retry-directory-{directory}"));
-    }
 }
 
 #[test]
