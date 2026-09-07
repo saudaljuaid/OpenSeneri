@@ -1160,9 +1160,13 @@ $(KERNEL): $(OBJECTS) $(RUST_LIB) linker.ld
 	}
 
 toolchain:
-	@for tool in bash bzip2 gcc gzip ld grub-file readelf nm objdump rustc python3 sha256sum strings tar; do \
-		command -v $$tool >/dev/null 2>&1 || { echo "missing tool: $$tool"; exit 1; }; \
-	done
+	@missing_tools=; \
+	for tool in bash bzip2 gcc gzip ld grub-file readelf nm objdump rustc python3 sha256sum strings tar; do \
+		if ! command -v $$tool >/dev/null 2>&1; then \
+			missing_tools="$$missing_tools $$tool"; \
+		fi; \
+	done; \
+	test -z "$$missing_tools" || { echo "missing tools:$$missing_tools"; exit 1; }
 	@version=$$($(RUSTC) --version | awk '{ print $$2 }'); \
 		echo "$$version" | awk -F'[.-]' \
 			'{ exit !($$1 > 1 || ($$1 == 1 && $$2 >= 85)) }' || \
