@@ -1787,14 +1787,14 @@ pub(crate) fn remove_directory_probe(
     }
 }
 
-/// Rename without replacement through JBD2, including non-indexed directories
+/// Rename without replacement through JBD2, including indexed directories
 /// across parents with their dotdot entry and parent link counts in one stage.
 pub(crate) fn rename_probe(
     mounted: &mut Mounted,
     source: &[u8],
     destination: &[u8],
 ) -> Result<(), Status> {
-    rename_transaction(mounted, source, destination, false)
+    rename_transaction(mounted, source, destination, false, &[])
 }
 
 pub(crate) fn rename_replace_probe(
@@ -1802,13 +1802,21 @@ pub(crate) fn rename_replace_probe(
     source: &[u8],
     destination: &[u8],
 ) -> Result<(), Status> {
-    rename_transaction(mounted, source, destination, true)
+    rename_replace_guarded(mounted, source, destination, &[])
+}
+
+/// Replace while preserving live regular inodes; open directory targets remain
+/// refused until directory orphan semantics are admitted.
+pub(crate) fn rename_replace_guarded(mounted: &mut Mounted, source: &[u8],
+    destination: &[u8], open_inodes: &[u64]) -> Result<(), Status> {
+    rename_transaction(mounted, source, destination, true, open_inodes)
 }
 
 fn remove_rename_destination(
     directory: &mut Dir,
     name: DirEntryName<'_>,
     source: &ext4plus::inode::Inode,
+    open_inodes: &[u64],
 ) -> Result<bool, Ext4Error> {
     let target = match directory.get_entry(name) {
         Ok(target) => target,
@@ -1829,7 +1837,11 @@ fn remove_rename_destination(
         if !target.file_type().is_regular_file() && !target.file_type().is_symlink() {
             return Err(Ext4Error::IsASpecialFile);
         }
-        directory.unlink(name, target)?;
+        if target.file_type().is_regular_file() && open_inodes.contains(&u64::from(target.index.get())) {
+            directory.unlink_open(name, target)?;
+        } else {
+            directory.unlink(name, target)?;
+        }
     }
     Ok(true)
 }
@@ -1839,6 +1851,7 @@ fn rename_transaction(
     source: &[u8],
     destination: &[u8],
     replace: bool,
+    open_inodes: &[u64],
 ) -> Result<(), Status> {
     let kind = if replace { PendingMutationKind::RenameReplace } else { PendingMutationKind::Rename };
     let source_absolute = absolute_path(source)?;
@@ -1879,6 +1892,15 @@ fn rename_transaction(
         .path_to_inode(source_parent, FollowSymlinks::All).map_err(map_error)?;
     let destination_parent_inode = filesystem
         .path_to_inode(destination_parent, FollowSymlinks::All).map_err(map_error)?;
+    if replace && !open_inodes.is_empty() {
+        let target_path = Path::try_from(destination_absolute.as_slice()).map_err(|_| Status::Invalid)?;
+        match filesystem.path_to_inode(target_path, FollowSymlinks::ExcludeFinalComponent) {
+            Ok(target) if target.index != inode.index && target.file_type().is_dir()
+                && open_inodes.contains(&u64::from(target.index.get())) => return Err(Status::Busy),
+            Ok(_) | Err(Ext4Error::NotFound) => {},
+            Err(error) => return Err(map_error(error)),
+        }
+    }
     if source_parent_inode.flags().intersects(InodeFlags::IMMUTABLE | InodeFlags::APPEND_ONLY)
         || destination_parent_inode.flags().contains(InodeFlags::IMMUTABLE) {
         return Err(Status::ReadOnly);
@@ -1890,13 +1912,13 @@ fn rename_transaction(
     let mutation = (|| {
         let mut source_directory = Dir::open_inode(filesystem, source_parent_inode)?;
         if same_parent {
-            if replace && !remove_rename_destination(&mut source_directory, destination_name, &inode)? {
+            if replace && !remove_rename_destination(&mut source_directory, destination_name, &inode, open_inodes)? {
                 return Ok(());
             }
             return source_directory.rename_entry(source_name, destination_name, inode);
         }
         let mut destination_directory = Dir::open_inode(filesystem, destination_parent_inode)?;
-        if replace && !remove_rename_destination(&mut destination_directory, destination_name, &inode)? {
+        if replace && !remove_rename_destination(&mut destination_directory, destination_name, &inode, open_inodes)? {
             return Ok(());
         }
         if inode.file_type().is_dir() {

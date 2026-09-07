@@ -1042,17 +1042,23 @@ pub(crate) unsafe extern "C" fn phipia_ext4_rename_probe(
 pub(crate) unsafe extern "C" fn phipia_ext4_rename_replace(
     mounted: usize, source: *const u8, source_length: usize,
     destination: *const u8, destination_length: usize,
+    open_inodes: *const u64, open_count: usize,
 ) -> i32 {
-    if mounted == 0 || source.is_null() || destination.is_null() {
+    if mounted == 0 || source.is_null() || destination.is_null() || open_inodes.is_null() {
         return ext4::Status::NullArgument as i32;
     }
+    if open_count > 128 { return ext4::Status::Range as i32; }
     // SAFETY: complete non-overlapping input ranges are the caller's contract.
     let (mounted, source, destination) = unsafe {
         (&mut *(mounted as *mut ext4::Mounted),
          core::slice::from_raw_parts(source, source_length),
          core::slice::from_raw_parts(destination, destination_length))
     };
-    match ext4::rename_replace_probe(mounted, source, destination) {
+    // SAFETY: C supplies all live file and directory inodes under the lease.
+    let open_inodes = unsafe { core::slice::from_raw_parts(open_inodes, open_count) };
+    let result = if open_inodes.is_empty() { ext4::rename_replace_probe(mounted, source, destination) }
+        else { ext4::rename_replace_guarded(mounted, source, destination, open_inodes) };
+    match result {
         Ok(()) => ext4::Status::Ok as i32,
         Err(status) => status as i32,
     }

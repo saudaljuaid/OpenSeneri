@@ -48,9 +48,12 @@ the staged view is hidden. Native PATH_LINK and SDK link expose hard links.
 `phipfs_rename` retains no-replace behavior; `phipfs_rename_replace` publishes
 replacement in one transaction, preserving same-inode no-ops and refusing
 nonempty directory destinations or incompatible file/directory types. The
-destination's freed blocks are revoked with the namespace change. Replacement
-currently requires no open handles on the volume and fits the existing image
-and revoke limits. The existing native `PATH_REPLACE` syscall selects this
+destination's freed blocks are revoked with the namespace change. An open regular
+destination is retained on the orphan chain, while source handles keep their
+inode identity. Replacing an open directory destination remains BUSY; unrelated
+handles no longer block replacement. The existing image/revoke limits still
+apply, and the open-file replacement fixtures await Linux verification.
+The existing native `PATH_REPLACE` syscall selects this
 operation when ext4 is admitted, and SDK `rename()` uses that syscall. Errors
 from the ext4 transaction return directly; they never trigger the multi-step
 backup-name replacement used by backends without atomic replacement.

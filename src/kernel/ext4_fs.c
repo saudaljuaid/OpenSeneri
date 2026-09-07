@@ -108,7 +108,8 @@ extern int32_t phipia_ext4_symlink(uintptr_t mounted, const uint8_t *path,
     size_t path_bytes, const uint8_t *target, size_t target_bytes);
 extern int32_t phipia_ext4_rename_replace(uintptr_t mounted,
     const uint8_t *source, size_t source_bytes,
-    const uint8_t *destination, size_t destination_bytes);
+    const uint8_t *destination, size_t destination_bytes,
+    const uint64_t *open_inodes, size_t open_count);
 extern int32_t phipia_ext4_readlink(uintptr_t mounted, const uint8_t *path,
     size_t path_bytes, uint8_t *output, size_t capacity, size_t *read_bytes);
 extern int32_t phipia_ext4_append(uintptr_t mounted, const uint8_t *path,
@@ -729,7 +730,7 @@ static void update_open_sizes(enum phipfs_volume volume, uint64_t inode,
     }
 }
 
-static size_t collect_open_inodes(enum phipfs_volume volume, uint64_t *inodes)
+static size_t collect_open_inodes(enum phipfs_volume volume, uint64_t *inodes, bool include_directories)
 {
     size_t count = 0U;
     for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
@@ -737,7 +738,7 @@ static size_t collect_open_inodes(enum phipfs_volume volume, uint64_t *inodes)
             ext4_handles[index].volume == volume &&
             ext4_handles[index].mount_generation ==
                 ext4_mounts[volume].generation &&
-            !ext4_handles[index].directory) {
+            (include_directories || !ext4_handles[index].directory)) {
             inodes[count++] = ext4_handles[index].inode;
         }
     }
@@ -747,8 +748,7 @@ static size_t collect_open_inodes(enum phipfs_volume volume, uint64_t *inodes)
 static bool volume_has_open_handles(enum phipfs_volume volume)
 {
     for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
-        if (ext4_handles[index].active && ext4_handles[index].volume == volume &&
-            ext4_handles[index].mount_generation == ext4_mounts[volume].generation) {
+        if (ext4_handles[index].active && ext4_handles[index].volume == volume) {
             return true;
         }
     }
@@ -904,12 +904,7 @@ enum phipfs_status ext4_backend_unmount(enum phipfs_volume volume)
         if (mount->mounting) return release_failed_mount(mount);
         return PHIPFS_STATUS_NOT_MOUNTED;
     }
-    for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
-        if (ext4_handles[index].active &&
-            ext4_handles[index].volume == volume) {
-            return PHIPFS_STATUS_BUSY;
-        }
-    }
+    if (volume_has_open_handles(volume)) return PHIPFS_STATUS_BUSY;
     const bool was_frozen = mount->close_failed;
     if (was_frozen) {
         status = retry_session_close(mount);
@@ -953,7 +948,7 @@ enum phipfs_status ext4_backend_sync(enum phipfs_volume volume)
         return status;
     }
     uint64_t open_inodes[EXT4_MAX_HANDLES];
-    const size_t open_count = collect_open_inodes(volume, open_inodes);
+    const size_t open_count = collect_open_inodes(volume, open_inodes, false);
     status = map_status(phipia_ext4_sync(mount->rust_mount, open_inodes, open_count));
     if (status == PHIPFS_STATUS_OK && open_count == 0U) mount->orphan_cleanup_pending = false;
     if (status == PHIPFS_STATUS_OK) {
@@ -1245,7 +1240,7 @@ static enum phipfs_status remove_path(enum phipfs_volume volume,
         return status;
     }
     uint64_t open_inodes[EXT4_MAX_HANDLES];
-    const size_t open_count = collect_open_inodes(volume, open_inodes);
+    const size_t open_count = collect_open_inodes(volume, open_inodes, false);
     if (open_count != 0U) mount->orphan_cleanup_pending = true;
     status = map_status(phipia_ext4_unlink_file_probe(mount->rust_mount,
         (const uint8_t *)path, length, open_inodes, open_count, remove_directory));
@@ -1854,18 +1849,17 @@ enum phipfs_status ext4_backend_rename_replace(enum phipfs_volume volume,
         destination_length == 0U || destination_length >= PHIPFS_MAX_PATH) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
-    /* Replacement can remove the inode an existing path-based handle names. */
-    if (volume_has_open_handles(volume)) {
-        return PHIPFS_STATUS_BUSY;
-    }
     mount = &ext4_mounts[volume];
     status = begin_operation(mount, true);
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
+    uint64_t open_inodes[EXT4_MAX_HANDLES];
+    const size_t open_count = collect_open_inodes(volume, open_inodes, true);
+    if (open_count != 0U) mount->orphan_cleanup_pending = true;
     status = map_status(phipia_ext4_rename_replace(mount->rust_mount,
         (const uint8_t *)source, source_length,
-        (const uint8_t *)destination, destination_length));
+        (const uint8_t *)destination, destination_length, open_inodes, open_count));
     close_status = end_operation(mount, NULL);
     return status != PHIPFS_STATUS_OK ? status : close_status;
 }

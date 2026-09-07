@@ -330,8 +330,11 @@ int32_t phipia_ext4_rename_probe(uintptr_t mounted, const uint8_t *source,
 }
 
 int32_t phipia_ext4_rename_replace(uintptr_t mounted, const uint8_t *source,
-    size_t source_bytes, const uint8_t *destination, size_t destination_bytes)
+    size_t source_bytes, const uint8_t *destination, size_t destination_bytes,
+    const uint64_t *open_inodes, size_t open_count)
 {
+    assert(open_inodes != NULL && open_count == expected_open_inodes);
+    for (size_t index = 0U; index < open_count; ++index) assert(open_inodes[index] == 43U);
     return phipia_ext4_rename_probe(mounted, source, source_bytes, destination, destination_bytes);
 }
 
@@ -436,12 +439,14 @@ int main(void)
         PHIPFS_ACCESS_READ, false, 0U, &first) == PHIPFS_STATUS_OK);
     assert(ext4_backend_rename(PHIPFS_VOLUME_DATA, "file", "moved") == PHIPFS_STATUS_OK);
     assert(renames == 1U);
-    assert(ext4_backend_rename_replace(PHIPFS_VOLUME_DATA, "file", "moved") == PHIPFS_STATUS_BUSY);
-    assert(ext4_backend_close(first) == PHIPFS_STATUS_OK);
-    assert(ext4_backend_rename(PHIPFS_VOLUME_DATA, "file", "moved") == PHIPFS_STATUS_OK);
-    assert(renames == 2U);
+    expected_open_inodes = 1U;
     assert(ext4_backend_rename_replace(PHIPFS_VOLUME_DATA, "file", "moved") == PHIPFS_STATUS_OK);
+    assert(ext4_backend_close(first) == PHIPFS_STATUS_OK);
+    expected_open_inodes = 0U;
+    assert(ext4_backend_rename(PHIPFS_VOLUME_DATA, "file", "moved") == PHIPFS_STATUS_OK);
     assert(renames == 3U);
+    assert(ext4_backend_rename_replace(PHIPFS_VOLUME_DATA, "file", "moved") == PHIPFS_STATUS_OK);
+    assert(renames == 4U);
     permanent_status = PHIPIA_EXT4_STATUS_IO;
     assert(ext4_backend_symlink(PHIPFS_VOLUME_DATA, "file", "../missing") == PHIPFS_STATUS_IO);
     permanent_status = PHIPIA_EXT4_STATUS_OK;
