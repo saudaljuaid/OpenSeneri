@@ -3216,7 +3216,53 @@ fn indexed_directory_compaction_preserves_names_links_and_replays_every_boundary
     for sentinel in [false, true] {
         let image = path.with_extension(format!("htree-shrink-input-{sentinel}.img"));
         write_sparse_fixture(&image, &std::fs::read(&path).unwrap()).unwrap();
-        if sentinel { debugfs(&image, "set_inode_field /indexed links_count 1"); }
+        if sentinel {
+            debugfs(&image, "set_inode_field /indexed links_count 1");
+            // Promote the Linux-created htree through a real allocated index
+            // block. This exercises collapsing an indirect level as well as
+            // removing leaves; debugfs updates allocation/inode checksums.
+            let input = std::fs::read(&image).unwrap();
+            let raw = ext4plus::Ext4::load(Box::new(input.clone())).unwrap();
+            let node = raw.path_to_inode(ext4plus::Path::try_from("/indexed").unwrap(), ext4plus::FollowSymlinks::All).unwrap();
+            let number = node.index.get();
+            let blocks = node.size_in_bytes() / 4096;
+            let file = ext4plus::file::File::open_inode(&raw, node).unwrap();
+            let root = file.filesystem_block_at_offset(0).unwrap().unwrap() as usize * 4096;
+            debugfs(&image, &format!("fallocate /indexed {blocks} {blocks}"));
+            debugfs(&image, &format!("set_inode_field /indexed size {}", (blocks + 1) * 4096));
+            let mut bytes = std::fs::read(&image).unwrap();
+            let raw = ext4plus::Ext4::load(Box::new(bytes.clone())).unwrap();
+            let node = raw.path_to_inode(ext4plus::Path::try_from("/indexed").unwrap(), ext4plus::FollowSymlinks::All).unwrap();
+            let file = ext4plus::file::File::open_inode(&raw, node).unwrap();
+            let internal = file.filesystem_block_at_offset(blocks * 4096).unwrap().unwrap() as usize * 4096;
+            let count = u16::from_le_bytes(bytes[root + 0x22..root + 0x24].try_into().unwrap()) as usize;
+            assert_eq!(u16::from_le_bytes(bytes[root + 0x20..root + 0x22].try_into().unwrap()), 507);
+            assert!(count > 1 && count <= 507);
+            assert_eq!(bytes[root + 0x1e], 0);
+            let indices = bytes[root + 0x20..root + 0x20 + count * 8].to_vec();
+            bytes[internal..internal + 4096].fill(0);
+            bytes[internal + 4..internal + 6].copy_from_slice(&4096u16.to_le_bytes());
+            bytes[internal + 8..internal + 8 + indices.len()].copy_from_slice(&indices);
+            bytes[internal + 8..internal + 10].copy_from_slice(&510u16.to_le_bytes());
+            bytes[root + 0x1e] = 1;
+            bytes[root + 0x22..root + 0x24].copy_from_slice(&1u16.to_le_bytes());
+            bytes[root + 0x24..root + 0x28].copy_from_slice(&(blocks as u32).to_le_bytes());
+            bytes[root + 0x28..root + 4096].fill(0);
+            let ipg = u32::from_le_bytes(bytes[1064..1068].try_into().unwrap());
+            let descriptor = 4096 + ((number - 1) / ipg) as usize * 64;
+            let table = u32::from_le_bytes(bytes[descriptor + 8..descriptor + 12].try_into().unwrap()) as usize;
+            let inode_start = table * 4096 + ((number - 1) % ipg) as usize * 256;
+            for (block, used) in [(root, 0x28), (internal, 8 + count * 8)] {
+                let mut crc = u32::from_le_bytes(bytes[1648..1652].try_into().unwrap());
+                for byte in number.to_le_bytes().iter().chain(&bytes[inode_start + 0x64..inode_start + 0x68])
+                    .chain(&bytes[block..block + used]).chain(&[0u8; 8]) {
+                    crc ^= u32::from(*byte);
+                    for _ in 0..8 { crc = (crc >> 1) ^ (0x82f6_3b78u32 & 0u32.wrapping_sub(crc & 1)); }
+                }
+                bytes[block + 4092..block + 4096].copy_from_slice(&crc.to_le_bytes());
+            }
+            write_sparse_fixture(&image, &bytes).unwrap();
+        }
         let names: Vec<String> = (0..256).map(|index| format!("indexed/entry-{index:04}-phipia-fixture")).collect();
         let record_bytes = (8 + names[0].split('/').next_back().unwrap().len() + 3) & !3;
         let capacity = (4096 - 12) / record_bytes;
@@ -3224,6 +3270,7 @@ fn indexed_directory_compaction_preserves_names_links_and_replays_every_boundary
         let mut mounted = mount_fixture(&image);
         let old_size = ext4::stat(&mounted, b"indexed").unwrap().size;
         assert!(old_size > 8192 && old_size <= 64 * 4096);
+        fsck(&path, &format!("coordinator-htree-shrink-import-{sentinel}"));
         // Leave exactly one too many names for a single leaf. Empty the target
         // file first so the compaction's free-space delta is directory storage.
         for name in &names[capacity + 1..] { ext4::unlink_file_probe(&mut mounted, name.as_bytes()).unwrap(); }
