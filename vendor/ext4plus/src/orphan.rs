@@ -2,11 +2,14 @@
 //! operation and roll back its staged filesystem view on any error.
 
 use crate::error::CorruptKind;
+use crate::file_blocks::FileBlocks;
 use crate::inode::{Inode, InodeFlags, InodeIndex};
 #[cfg(not(feature = "sync"))]
 use crate::iters::AsyncIterator;
 use crate::iters::read_dir::ReadDir;
+use crate::iters::extents::Extents;
 use crate::path::PathBuf;
+use crate::util::read_u16le;
 use crate::{Ext4, Ext4Error};
 use alloc::vec::Vec;
 
@@ -22,11 +25,47 @@ impl Ext4 {
         if inode.file_type().is_regular_file() { return Ok(()); }
         if !inode.file_type().is_dir() { return Err(Ext4Error::Readonly); }
         let block_size = self.superblock().block_size().to_u64();
-        if inode.size_in_bytes() == 0 || inode.size_in_bytes() % block_size != 0
-            || inode.size_in_bytes() / block_size > 8192 {
+        let mut directory_inode = inode.clone();
+        if inode.size_in_bytes() == 0 {
+            // Linux ext4_rmdir clears i_size before orphan cleanup frees the
+            // extents. Reconstruct only a bounded contiguous logical prefix
+            // for validating the remaining directory blocks; never persist it.
+            // Linked truncation orphans still require separate handling.
+            if !inode.flags().contains(InodeFlags::EXTENTS)
+                || read_u16le(&inode.inline_data(), 6) != 0 {
+                // Multi-level zero-size directory trees remain outside this
+                // recovery profile; do not traverse an unbounded empty tree.
+                return Err(Ext4Error::Readonly);
+            }
+            let _blocks = FileBlocks::from_inode(inode, self.clone())?;
+            let mut extents = Extents::new(self.clone(), inode)?;
+            let mut end = 0u64;
+            while let Some(extent) = extents.next().await {
+                let extent = extent?;
+                if !extent.is_initialized || u64::from(extent.block_within_file) != end
+                    || extent.num_blocks == 0 {
+                    return Err(CorruptKind::OrphanInode(inode.index.get()).into());
+                }
+                end = end.checked_add(u64::from(extent.num_blocks))
+                    .filter(|end| *end <= 8192)
+                    .ok_or(CorruptKind::OrphanInode(inode.index.get()))?;
+            }
+            if end == 0 {
+                // The final data-free transaction can precede inode release.
+                // Admit only an empty inline extent root with no residual
+                // allocation accounting or external xattr block.
+                if inode.blocks() != 0 || inode.file_acl() != 0 {
+                    return Err(CorruptKind::OrphanInode(inode.index.get()).into());
+                }
+                return Ok(());
+            }
+            directory_inode.set_size_in_bytes(end * block_size);
+        }
+        if directory_inode.size_in_bytes() % block_size != 0
+            || directory_inode.size_in_bytes() / block_size > 8192 {
             return Err(CorruptKind::OrphanInode(inode.index.get()).into());
         }
-        let mut entries = ReadDir::new(self.clone(), inode, PathBuf::empty())?;
+        let mut entries = ReadDir::new(self.clone(), &directory_inode, PathBuf::empty())?;
         let (mut dot, mut dotdot) = (false, false);
         while let Some(entry) = entries.next().await {
             let entry = entry?;
