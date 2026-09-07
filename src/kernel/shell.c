@@ -613,6 +613,7 @@ static enum phipfs_status shell_create_file(const char *path)
     enum phipfs_status status = phipfs_open_options(PHIPFS_VOLUME_DATA, path,
         PHIPFS_ACCESS_READ_WRITE, PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE,
         0644U, &handle);
+    if (status == PHIPFS_STATUS_OK) status = phipfs_fsync(handle);
     if (status == PHIPFS_STATUS_OK) status = phipfs_close(handle);
     return status;
 }
