@@ -60,7 +60,9 @@ impl<'a> BlockAllocationSnapshot<'a> {
                 value == 1
             };
             let mut reserve = |start: u64, count: u64, group: u32| -> Result<(), Ext4Error> {
-                if start.checked_add(count).is_none_or(|end| end > sb.blocks_count()) {
+                let group_start = u64::from(sb.first_data_block()) + u64::from(group) * u64::from(sb.blocks_per_group().get());
+                let group_end = (group_start + u64::from(sb.blocks_per_group().get())).min(sb.blocks_count());
+                if start < group_start || start.checked_add(count).is_none_or(|end| end > group_end) {
                     return Err(CorruptKind::BlockGroupDescriptor(group).into());
                 }
                 let count = u32::try_from(count).map_err(|_| Ext4Error::FileTooLarge)?;
@@ -184,11 +186,55 @@ impl<'a> BlockAllocationSnapshot<'a> {
     /// Finish a complete reachable/orphan ownership pass. A stored xattr
     /// count must equal its distinct inode references before any release.
     #[maybe_async::maybe_async]
-    pub async fn finish(self, inodes: &mut InodeAllocationSnapshot<'_>) -> Result<(), Ext4Error> {
+    pub async fn finish(mut self, inodes: &mut InodeAllocationSnapshot<'_>) -> Result<(), Ext4Error> {
         if self.invalid { return Err(Ext4Error::Readonly); }
         inodes.validate_known_allocations(&self.validated_inodes, &self.directory_counts).await?;
+        self.validate_block_census().await?;
         for (_, (expected, seen, inode)) in self.xattr_references {
             if expected != seen { return Err(CorruptKind::Xattr(inode).into()); }
+        }
+        Ok(())
+    }
+
+    /// Compare the complete ownership map with allocation, including fixed
+    /// metadata and padding. One temporary group buffer bounds census memory;
+    /// lazy groups use the same pure image builder as first allocation.
+    #[maybe_async::maybe_async]
+    async fn validate_block_census(&mut self) -> Result<(), Ext4Error> {
+        if !self.fixed_reserved { return Err(Ext4Error::Readonly); }
+        let fs = self.filesystem;
+        let sb = fs.superblock();
+        let mut total_free = 0u64;
+        for group in 0..sb.num_block_groups() {
+            let descriptor = fs.get_block_group_descriptor(group);
+            let start = u64::from(sb.first_data_block()) + u64::from(group) * u64::from(sb.blocks_per_group().get());
+            let bits = fs.blocks_in_group(group)? as usize;
+            let end = start + bits as u64;
+            let mut expected = vec![0xff; sb.block_size().to_usize()];
+            expected.get_mut(..bits / 8).ok_or(CorruptKind::BlockGroupDescriptor(group))?.fill(0);
+            if bits % 8 != 0 { expected[bits / 8] = 0xff << (bits % 8); }
+            // Include a range that began in the previous group, then ranges
+            // starting here. No physical block needs a separate map lookup.
+            for (&range_start, &range_end) in self.extent_ranges.range(..start).next_back().into_iter()
+                .chain(self.extent_ranges.range(start..end)) {
+                for block in range_start.max(start)..range_end.min(end) {
+                    let bit = (block - start) as usize;
+                    expected[bit / 8] |= 1 << (bit % 8);
+                }
+            }
+            let bitmap = BitmapHandle::new(descriptor.block_bitmap_block(), false);
+            let actual = if descriptor.flags() & 2 != 0 {
+                bitmap.uninitialized_bytes(fs, group)?
+            } else if let Some(bytes) = self.groups.remove(&group) { bytes }
+            else { bitmap.read_validated(fs, group).await? };
+            let free: u64 = expected.iter().map(|byte| u64::from(byte.count_zeros())).sum();
+            if actual != expected || free != u64::from(descriptor.free_blocks_count()) {
+                return Err(CorruptKind::BlockGroupDescriptor(group).into());
+            }
+            total_free += free;
+        }
+        if total_free != sb.free_blocks_count() {
+            return Err(CorruptKind::BlockGroupDescriptor(0).into());
         }
         Ok(())
     }
@@ -385,8 +431,22 @@ impl BitmapHandle {
         let descriptor = ext4.get_block_group_descriptor(group);
         let flag = if self.is_inode_bitmap { 1 } else { 2 };
         if descriptor.flags() & flag == 0 { return Ok(()); }
+        if ext4.0.writer.is_none() { return Err(Ext4Error::Readonly); }
+        let bytes = self.uninitialized_bytes(ext4, group)?;
+        ext4.write_to_block(self.block, 0, &bytes).await?;
+        let checksum = self.calc_checksum(ext4, group).await?;
+        if self.is_inode_bitmap { descriptor.set_inode_bitmap_checksum(checksum); }
+        else { descriptor.set_block_bitmap_checksum(checksum); }
+        descriptor.set_flags(descriptor.flags() & !flag);
+        descriptor.write(ext4).await
+    }
+
+    /// Derive lazy allocation state without writing or reading stale bitmap
+    /// bytes. Used by admission as well as the staged first allocation.
+    fn uninitialized_bytes(&self, ext4: &Ext4, group: u32) -> Result<Vec<u8>, Ext4Error> {
+        let descriptor = ext4.get_block_group_descriptor(group);
         let sb = &ext4.0.superblock;
-        if ext4.0.writer.is_none() || group == 0 || sb.block_size().to_u32() != 4096
+        if group == 0 || sb.block_size().to_u32() != 4096
             || sb.incompatible_features().intersects(IncompatibleFeatures::META_BLOCK_GROUPS | IncompatibleFeatures::FLEXIBLE_BLOCK_GROUPS)
             || sb.compatible_features().contains(CompatibleFeatures::RESIZE_INODE)
             || sb.compatible_features().bits() & 0x200 != 0 {
@@ -432,12 +492,7 @@ impl BitmapHandle {
             let free = (0..bits).filter(|bit| bytes[(*bit / 8) as usize] & (1 << (*bit % 8)) == 0).count();
             if free as u64 != u64::from(descriptor.free_blocks_count()) { return Err(bad()); }
         }
-        ext4.write_to_block(self.block, 0, &bytes).await?;
-        let checksum = self.calc_checksum(ext4, group).await?;
-        if self.is_inode_bitmap { descriptor.set_inode_bitmap_checksum(checksum); }
-        else { descriptor.set_block_bitmap_checksum(checksum); }
-        descriptor.set_flags(descriptor.flags() & !flag);
-        descriptor.write(ext4).await
+        Ok(bytes)
     }
 
     #[maybe_async::maybe_async]

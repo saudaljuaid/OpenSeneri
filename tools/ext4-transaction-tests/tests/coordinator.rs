@@ -1238,9 +1238,13 @@ fn inode_bitmap_census_checks_group_totals_directory_counts_and_unused_tail() {
                     write_sparse_fixture(&image, &hostile).unwrap();
                 }
             }
+            debugfs(&image, "set_bg 0 checksum calc");
+            debugfs(&image, &format!("set_bg {lazy} checksum calc"));
             if dirty { debugfs(&image, "feature needs_recovery"); }
             let hostile = std::fs::read(&image).unwrap();
             assert_ne!(hostile, pristine, "debugfs must create a real counter fault");
+            // Refusal must come from the census, not stale descriptor CRCs.
+            ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
             DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
             assert!(ext4::mount(1, hostile.len() as u64).is_err(), "accepted census case {case}, dirty={dirty}");
             DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
@@ -1297,6 +1301,64 @@ fn allocated_inodes_missing_from_namespace_and_orphan_chain_refuse_admission() {
     assert_eq!(ext4::stat_inode(&recovered, inode), Err(Status::NotFound));
     ext4::unmount(&recovered).unwrap();
     fsck(&path, "coordinator-reachable-orphan-recovery");
+}
+
+#[test]
+fn block_bitmap_census_refuses_unowned_allocations_fixed_frees_and_false_counters() {
+    let Some(path) = fixture() else { return };
+    let pristine = std::fs::read(&path).unwrap();
+    let image = path.with_extension("coordinator-block-census.img");
+    let per_group = u32::from_le_bytes(pristine[1056..1060].try_into().unwrap()) as usize;
+    let bitmap = u32::from_le_bytes(pristine[4096..4100].try_into().unwrap()) as usize * 4096;
+    let free = u16::from_le_bytes(pristine[4108..4110].try_into().unwrap()) as u32;
+    let total = u32::from_le_bytes(pristine[1036..1040].try_into().unwrap());
+    let first_free = (0..per_group).find(|bit| pristine[bitmap + bit / 8] & (1 << (bit % 8)) == 0).unwrap();
+    let lazy = (0..pristine.len().div_ceil(per_group * 4096)).find(|group| {
+        let descriptor = 4096 + group * 64;
+        u16::from_le_bytes(pristine[descriptor + 18..descriptor + 20].try_into().unwrap()) & 2 != 0
+    }).expect("fixture has a lazy block group");
+    let lazy_free = u16::from_le_bytes(pristine[4096 + lazy * 64 + 12..4096 + lazy * 64 + 14].try_into().unwrap());
+    for case in 0..8 {
+        for dirty in [false, true] {
+            write_sparse_fixture(&image, &pristine).unwrap();
+            match case {
+                0 => debugfs(&image, &format!("set_bg 0 free_blocks_count {}", free - 1)),
+                1 => debugfs(&image, &format!("set_bg 0 free_blocks_count {}", free + 1)),
+                2 => debugfs(&image, &format!("set_super_value free_blocks_count {}", total - 1)),
+                3 => debugfs(&image, &format!("set_bg {lazy} free_blocks_count {}", lazy_free - 1)),
+                4 => debugfs(&image, "freeb 1"), // descriptor table still owns it
+                5 => {
+                    debugfs(&image, &format!("setb {first_free}"));
+                    // Make both counters agree with the bitmap: only the
+                    // complete ownership comparison can detect this leak.
+                    debugfs(&image, &format!("set_bg 0 free_blocks_count {}", free - 1));
+                    debugfs(&image, &format!("set_super_value free_blocks_count {}", total - 1));
+                }
+                6 => {
+                    assert!(per_group < 32768);
+                    let mut hostile = pristine.clone();
+                    hostile[bitmap + 4095] &= 0x7f;
+                    write_sparse_fixture(&image, &hostile).unwrap();
+                }
+                _ => {
+                    let other = u32::from_le_bytes(pristine[4096 + lazy * 64..4100 + lazy * 64].try_into().unwrap());
+                    debugfs(&image, &format!("set_bg 0 block_bitmap {other}"));
+                }
+            }
+            debugfs(&image, "set_bg 0 checksum calc");
+            debugfs(&image, &format!("set_bg {lazy} checksum calc"));
+            if dirty { debugfs(&image, "feature needs_recovery"); }
+            let hostile = std::fs::read(&image).unwrap();
+            ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
+            DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+            assert!(ext4::mount(1, hostile.len() as u64).is_err(), "accepted block census case {case}, dirty={dirty}");
+            DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+        }
+    }
+    let mounted = mount_bytes(pristine.clone());
+    ext4::unmount(&mounted).unwrap();
+    DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, pristine); });
+    fsck(&path, "coordinator-block-census-valid-lazy");
 }
 
 #[test]
