@@ -30,6 +30,7 @@ static bool close_reports_failure;
 static bool reenter_on_open;
 static bool reenter_on_close;
 static bool open_reports_failure;
+static bool expect_published_size_before_close;
 static unsigned live_mounts = 1U;
 static uint32_t logical_block_bytes = 4096U;
 
@@ -177,6 +178,15 @@ enum nvme_status nvme_volume_close(struct nvme_volume_session *session)
     if (reenter_on_close) {
         reenter_on_close = false;
         assert(retry_session_close(&ext4_mounts[PHIPFS_VOLUME_DATA]) == PHIPFS_STATUS_BUSY);
+    }
+    if (expect_published_size_before_close) {
+        expect_published_size_before_close = false;
+        assert(ext4_mounts[PHIPFS_VOLUME_DATA].operation_active);
+        for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
+            if (ext4_handles[index].active && ext4_handles[index].inode == 42U) {
+                assert(ext4_handles[index].size == disk_size);
+            }
+        }
     }
     if (expect_registered_before_close) {
         assert(ext4_mounts[PHIPFS_VOLUME_DATA].operation_active);
@@ -404,7 +414,9 @@ int main(void)
     uint64_t position;
     assert(ext4_backend_append(first, (const uint8_t *)"a", 1U, &written) == PHIPFS_STATUS_ACCESS);
     assert(appends == 0U && written == 0U);
+    expect_published_size_before_close = true;
     assert(ext4_backend_append(second, (const uint8_t *)"abc", 3U, &written) == PHIPFS_STATUS_OK);
+    assert(!expect_published_size_before_close);
     assert(written == 3U && state->offset == 65540U);
     assert(ext4_backend_seek(second, 0, PHIPFS_SEEK_START, &position) == PHIPFS_STATUS_OK);
     permanent_status = PHIPIA_EXT4_STATUS_IO;

@@ -52,7 +52,8 @@ destination's freed blocks are revoked with the namespace change. An open regula
 destination is retained on the orphan chain, while source handles keep their
 inode identity. Replacing an open directory destination remains BUSY; unrelated
 handles no longer block replacement. The existing image/revoke limits still
-apply, and the open-file replacement fixtures await Linux verification.
+apply. Open-file replacement and Linux-kernel recovery/roundtrip fixtures
+passed Linux verification at f61d344.
 The existing native `PATH_REPLACE` syscall selects this
 operation when ext4 is admitted, and SDK `rename()` uses that syscall. Errors
 from the ext4 transaction return directly; they never trigger the multi-step
@@ -449,8 +450,9 @@ Inode-based access checks the checksummed allocation bitmap before reading an
 inode body. A freed inode can retain valid mode and checksum fields after Linux
 deletion; those fields alone do not authorize access. The manual filesystem
 workflow also enables disposable Linux loop-mount tests for replace-rename
-recovery and bidirectional file modification. These new fixtures require Linux
-execution before claiming kernel interoperability for that operation profile.
+recovery and bidirectional file modification. Those fixtures passed Linux
+verification at f61d344; they cover that operation profile, not the full
+Milestone 2 interoperability and crash matrix.
 
 The append backend selects the live inode's EOF under the exclusive writable
 volume lease, ignoring the handle's seek position. Retained journal retries
@@ -460,6 +462,11 @@ syscalls return at most one 4096-byte copied chunk; callers must handle short
 writes. Direct backend requests remain bounded to 256 KiB and can checkpoint
 multiple transactions, so crash atomicity for the entire request is not claimed.
 The current C file-size cap remains 16 MiB.
+
+Successful writes publish their cursor and shared EOF while still owning the
+volume lease. A later writer cannot be followed by an older EOF update from
+the previous writer. If controller teardown then fails, that committed cursor
+and EOF remain visible while the mount refuses further storage operations.
 
 Append-only ext4 inodes accept the append operation, including bounded split
 requests, but reject ordinary writes (even at EOF), truncate, unlink, rename,

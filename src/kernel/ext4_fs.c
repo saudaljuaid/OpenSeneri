@@ -1403,23 +1403,17 @@ enum phipfs_status ext4_backend_write(phipfs_handle handle,
     }
     status = map_status(phipia_ext4_write_inode(mount->rust_mount, state->inode, state->offset,
         source, source_bytes, written_bytes));
+    if (status == PHIPFS_STATUS_OK) {
+        if (*written_bytes > source_bytes || *written_bytes > UINT64_MAX - state->offset) {
+            status = PHIPFS_STATUS_CORRUPT;
+        } else {
+            end = state->offset + *written_bytes;
+            state->offset = end;
+            if (end > state->size) update_open_sizes(state->volume, state->inode, end);
+        }
+    }
     close_status = end_operation(mount, NULL);
-    if (status != PHIPFS_STATUS_OK) {
-        return status;
-    }
-    if (close_status != PHIPFS_STATUS_OK) {
-        return close_status;
-    }
-    if (*written_bytes > source_bytes ||
-        *written_bytes > UINT64_MAX - state->offset) {
-        return PHIPFS_STATUS_CORRUPT;
-    }
-    end = state->offset + *written_bytes;
-    state->offset = end;
-    if (end > state->size) {
-        update_open_sizes(state->volume, state->inode, end);
-    }
-    return PHIPFS_STATUS_OK;
+    return status != PHIPFS_STATUS_OK ? status : close_status;
 }
 
 enum phipfs_status ext4_backend_append(phipfs_handle handle,
@@ -1446,14 +1440,19 @@ enum phipfs_status ext4_backend_append(phipfs_handle handle,
     if (status != PHIPFS_STATUS_OK) return status;
     status = map_status(phipia_ext4_append_inode(mount->rust_mount, state->inode, source,
         source_bytes, PHIPFS_MAX_FILE_BYTES, &start, written_bytes));
+    if (status == PHIPFS_STATUS_OK) {
+        if (*written_bytes > source_bytes || start > PHIPFS_MAX_FILE_BYTES ||
+            *written_bytes > PHIPFS_MAX_FILE_BYTES - start) {
+            status = PHIPFS_STATUS_CORRUPT;
+        } else {
+            // Publish the durable EOF before releasing the writer lease. A
+            // later append must not have its newer size overwritten by us.
+            state->offset = start + *written_bytes;
+            update_open_sizes(state->volume, state->inode, state->offset);
+        }
+    }
     close_status = end_operation(mount, NULL);
-    if (status != PHIPFS_STATUS_OK) return status;
-    if (close_status != PHIPFS_STATUS_OK) return close_status;
-    if (*written_bytes > source_bytes || start > PHIPFS_MAX_FILE_BYTES ||
-        *written_bytes > PHIPFS_MAX_FILE_BYTES - start) return PHIPFS_STATUS_CORRUPT;
-    state->offset = start + *written_bytes;
-    update_open_sizes(state->volume, state->inode, state->offset);
-    return PHIPFS_STATUS_OK;
+    return status != PHIPFS_STATUS_OK ? status : close_status;
 }
 
 enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
