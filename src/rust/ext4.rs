@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::error::Error;
@@ -608,7 +609,7 @@ fn recover_dirty_journal(
 }
 
 fn validate_inode_storage(filesystem: &Ext4, path: &[u8],
-    blocks: &mut ext4plus::BlockAllocationSnapshot<'_>) -> Result<(), Status> {
+    blocks: &mut ext4plus::BlockAllocationSnapshot<'_>) -> Result<Inode, Status> {
     // Validate the entry itself: dangling/looping symlinks are valid namespace
     // objects and their targets must not replace their own xattr validation.
     let path = Path::try_from(path).map_err(|_| Status::Invalid)?;
@@ -621,18 +622,26 @@ fn validate_inode_storage(filesystem: &Ext4, path: &[u8],
             .get_xattr(filesystem, name.as_slice())
             .map_err(map_error)?;
     }
-    Ok(())
+    Ok(inode)
+}
+
+fn untracked_directory_links(filesystem: &Ext4, inode: &Inode) -> bool {
+    inode.file_type().is_dir() && inode.flags().contains(InodeFlags::DIRECTORY_HTREE)
+        && filesystem.superblock().read_only_compatible_features().bits() & 0x20 != 0
+        && inode.links_count() == 1
 }
 
 fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
-    let mut linked_orphans = Vec::new();
+    // Count directory entries, including dot/dotdot, per distinct inode.
+    // A zero-link orphan is deliberately absent from the live namespace.
+    let mut references = BTreeMap::new();
     let mut blocks = filesystem.block_allocation_snapshot();
     blocks.reserve_fixed_metadata().map_err(map_error)?;
     blocks.validate_internal_journal().map_err(map_error)?;
     for index in filesystem.orphan_inodes().map_err(map_error)? {
         let inode = Inode::read(filesystem, index).map_err(map_error)?;
         blocks.validate_inode_extents(&inode).map_err(map_error)?;
-        if inode.links_count() != 0 { linked_orphans.push((index, inode.links_count(), 0usize)); }
+        references.insert(index, (inode.links_count(), 0u32, false));
     }
     let mut allocations = filesystem.inode_allocation_snapshot();
     if !allocations.is_allocated(core::num::NonZeroU32::new(2).unwrap()).map_err(map_error)? {
@@ -643,11 +652,17 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
     let mut root = Vec::new();
     root.try_reserve_exact(1).map_err(|_| Status::Range)?;
     root.push(b'/');
-    validate_inode_storage(filesystem, root.as_slice(), &mut blocks)?;
-    pending.push(root);
+    let root_inode = validate_inode_storage(filesystem, root.as_slice(), &mut blocks)?;
+    let root_index = root_inode.index;
+    references.insert(root_index, (root_inode.links_count(), 0u32, untracked_directory_links(filesystem, &root_inode)));
+    let mut directories = BTreeSet::new();
+    directories.insert(root_index);
+    pending.push((root, root_index, root_index));
     let mut visited = 0usize;
-    while let Some(path) = pending.pop() {
+    while let Some((path, index, parent)) = pending.pop() {
         let mut directory = filesystem.read_dir(path.as_slice()).map_err(map_error)?;
+        let mut names = BTreeSet::new();
+        let (mut dot, mut dotdot) = (false, false);
         for result in &mut directory {
             let entry = result.map_err(map_error)?;
             // Validate before metadata() computes an inode-table location.
@@ -658,34 +673,50 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
             }
             let name = entry.file_name();
             if name == "." || name == ".." {
+                let (seen, expected) = if name == "." { (&mut dot, index) } else { (&mut dotdot, parent) };
+                if *seen || entry.inode != expected || !entry.file_type().map_err(map_error)?.is_dir() {
+                    return Err(Status::Invalid);
+                }
+                *seen = true;
+                let (_, count, _) = references.get_mut(&entry.inode).ok_or(Status::Invalid)?;
+                *count = count.checked_add(1).ok_or(Status::Range)?;
                 continue;
             }
             visited = visited.checked_add(1).ok_or(Status::Range)?;
             if visited > MAX_VALIDATED_ENTRIES {
                 return Err(Status::Range);
             }
+            if !names.insert(name.as_ref().to_vec()) { return Err(Status::Invalid); }
             let entry_path = entry.path();
             let metadata = entry.metadata().map_err(map_error)?;
             // A zero-link orphan must never remain reachable by a directory.
-            if metadata.links_count == 0 { return Err(Status::Invalid); }
-            if let Some((_, links, seen)) = linked_orphans.iter_mut().find(|(index, _, _)| *index == entry.inode) {
-                *seen += 1;
-                if *seen > usize::from(*links) { return Err(Status::Invalid); }
+            if metadata.links_count == 0 || metadata.file_type() != entry.file_type().map_err(map_error)? {
+                return Err(Status::Invalid);
             }
-            validate_inode_storage(filesystem, entry_path.as_ref(), &mut blocks)?;
+            let inode = validate_inode_storage(filesystem, entry_path.as_ref(), &mut blocks)?;
+            if inode.index != entry.inode { return Err(Status::Invalid); }
+            let (links, seen, untracked) = references.entry(entry.inode).or_insert((metadata.links_count, 0,
+                untracked_directory_links(filesystem, &inode)));
+            if *links != metadata.links_count { return Err(Status::Invalid); }
+            *seen = seen.checked_add(1).ok_or(Status::Range)?;
+            if !*untracked && *seen > u32::from(*links) { return Err(Status::Invalid); }
             let kind = classify(metadata.file_type())?;
             if kind == 2 {
+                // Directories have one namespace parent. Reject aliases and
+                // cycles before following another path to the same inode.
+                if !directories.insert(entry.inode) { return Err(Status::Invalid); }
                 if pending.len() >= MAX_PENDING_DIRECTORIES {
                     return Err(Status::Range);
                 }
                 pending.try_reserve(1).map_err(|_| Status::Range)?;
                 let path_bytes: &[u8] = entry_path.as_ref();
+                if path_bytes.len() >= 4096 { return Err(Status::Range); }
                 let mut owned_path = Vec::new();
                 owned_path
                     .try_reserve_exact(path_bytes.len())
                     .map_err(|_| Status::Range)?;
                 owned_path.extend_from_slice(path_bytes);
-                pending.push(owned_path);
+                pending.push((owned_path, entry.inode, index));
             } else if kind == 3 {
                 let _target = filesystem
                     .read_link(entry_path.as_ref())
@@ -702,8 +733,9 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
                 }
             }
         }
+        if !dot || !dotdot { return Err(Status::Invalid); }
     }
-    if linked_orphans.iter().any(|(_, links, seen)| *seen != usize::from(*links)) {
+    if references.values().any(|(links, seen, untracked)| !*untracked && *seen != u32::from(*links)) {
         return Err(Status::Invalid);
     }
     blocks.finish(&mut allocations).map_err(map_error)

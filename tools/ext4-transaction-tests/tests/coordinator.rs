@@ -2074,6 +2074,100 @@ fn inode_counts_must_match_all_mapping_and_xattr_blocks_before_admission() {
 }
 
 #[test]
+fn namespace_counts_parents_types_and_unique_names_are_checked_before_mutation() {
+    let Some(path) = fixture() else { return };
+    let directory = b"system/namespace-count";
+    let first = b"system/namespace-count/first";
+    let alias = b"system/namespace-count/alias";
+    let mut mounted = mount_fixture(&path);
+    ext4::create_directory_probe(&mut mounted, directory).unwrap();
+    ext4::create_directory_probe(&mut mounted, b"system/namespace-count/child").unwrap();
+    ext4::create_file_probe(&mut mounted, first, 0o600).unwrap();
+    ext4::transaction_probe(&mut mounted, first, 0, b"two names").unwrap();
+    ext4::link_file_probe(&mut mounted, first, alias).unwrap();
+    ext4::symlink_probe(&mut mounted, b"system/namespace-count/sym-a", b"missing").unwrap();
+    ext4::link_file_probe(&mut mounted, b"system/namespace-count/sym-a", b"system/namespace-count/sym-b").unwrap();
+    let number = ext4::stat(&mounted, directory).unwrap().inode as u32;
+    let root_links = ext4::stat(&mounted, b".").unwrap().links;
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-namespace-count-before");
+    drop(mounted);
+    let pristine = DEVICE.with_borrow(|device| device.bytes.clone());
+    let raw = ext4plus::Ext4::load(Box::new(pristine.clone())).unwrap();
+    let node = ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(number).unwrap()).unwrap();
+    let file = ext4plus::file::File::open_inode(&raw, node).unwrap();
+    let block = file.filesystem_block_at_offset(0).unwrap().unwrap() as usize * 4096;
+    let ipg = u32::from_le_bytes(pristine[1064..1068].try_into().unwrap());
+    let descriptor = 4096 + ((number - 1) / ipg) as usize * 64;
+    let table = u32::from_le_bytes(pristine[descriptor + 8..descriptor + 12].try_into().unwrap()) as usize;
+    let inode_start = table * 4096 + ((number - 1) % ipg) as usize * 256;
+    let entry_offset = |name: &[u8]| {
+        let mut offset = block;
+        while offset < block + 4084 {
+            let length = pristine[offset + 6] as usize;
+            if &pristine[offset + 8..offset + 8 + length] == name { return offset; }
+            offset += u16::from_le_bytes(pristine[offset + 4..offset + 6].try_into().unwrap()) as usize;
+        }
+        panic!("fixture directory entry missing");
+    };
+    let first_offset = entry_offset(b"first");
+    let alias_offset = entry_offset(b"alias");
+    let image = path.with_extension("coordinator-namespace-count-input.img");
+    for case in 0..12 {
+        for dirty in [false, true] {
+            write_sparse_fixture(&image, &pristine).unwrap();
+            match case {
+                0 => debugfs(&image, "set_inode_field /system/namespace-count/first links_count 1"),
+                1 => debugfs(&image, "set_inode_field /system/namespace-count/first links_count 3"),
+                2 => debugfs(&image, "set_inode_field /system/namespace-count/sym-a links_count 1"),
+                3 => debugfs(&image, "set_inode_field /system/namespace-count links_count 2"),
+                4 => debugfs(&image, &format!("set_inode_field <2> links_count {}", root_links + 1)),
+                5 => debugfs(&image, "link /system/namespace-count/child /data/user/directory-alias"),
+                6 => debugfs(&image, "link /system/namespace-count /system/namespace-count/cycle"),
+                _ => {
+                    let mut hostile = pristine.clone();
+                    match case {
+                        7 => hostile[block..block + 4].copy_from_slice(&2u32.to_le_bytes()),
+                        8 => hostile[block + 12..block + 16].copy_from_slice(&2u32.to_le_bytes()),
+                        9 => hostile[block..block + 4].fill(0),
+                        10 => hostile[alias_offset + 8..alias_offset + 13].copy_from_slice(b"first"),
+                        _ => hostile[first_offset + 7] = 2, // inode remains regular
+                    }
+                    let mut crc = u32::from_le_bytes(hostile[1648..1652].try_into().unwrap());
+                    for byte in number.to_le_bytes().iter().chain(&hostile[inode_start + 0x64..inode_start + 0x68])
+                        .chain(&hostile[block..block + 4084]) {
+                        crc ^= u32::from(*byte);
+                        for _ in 0..8 { crc = (crc >> 1) ^ (0x82f6_3b78u32 & 0u32.wrapping_sub(crc & 1)); }
+                    }
+                    hostile[block + 4092..block + 4096].copy_from_slice(&crc.to_le_bytes());
+                    write_sparse_fixture(&image, &hostile).unwrap();
+                }
+            }
+            if dirty { debugfs(&image, "feature needs_recovery"); }
+            let hostile = std::fs::read(&image).unwrap();
+            let raw = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
+            // Both directory and inode CRCs are valid; the new graph/count
+            // checks must detect these semantically invalid namespaces.
+            for entry in raw.read_dir("/system/namespace-count").unwrap() { entry.unwrap().metadata().unwrap(); }
+            DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+            assert!(ext4::mount(1, hostile.len() as u64).is_err(), "accepted namespace case {case}, dirty={dirty}");
+            DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+        }
+    }
+    let mut mounted = mount_bytes(pristine);
+    ext4::unlink_file_probe(&mut mounted, first).unwrap();
+    let mut contents = [0; 9];
+    read_exact(&mounted, alias, &mut contents);
+    assert_eq!(&contents, b"two names");
+    assert_eq!(ext4::stat(&mounted, alias).unwrap().links, 1);
+    ext4::rename_probe(&mut mounted, b"system/namespace-count/child", b"data/user/moved-child").unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-namespace-count-valid");
+}
+
+#[test]
 fn file_extents_cannot_overwrite_or_free_fixed_metadata() {
     let Some(path) = fixture() else { return };
     let name = b"system/metadata-alias";
