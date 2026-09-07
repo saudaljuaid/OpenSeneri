@@ -3509,12 +3509,24 @@ fn indexed_directory_compaction_preserves_names_links_and_replays_every_boundary
             let file = ext4plus::file::File::open_inode(&raw, node).unwrap();
             let root = file.filesystem_block_at_offset(0).unwrap().unwrap() as usize * 4096;
             debugfs(&image, &format!("fallocate /indexed {blocks} {blocks}"));
+            // INIT_BEYOND_EOF permits allocation beyond EOF; it does not
+            // force initialized extents. Resolve and initialize that exact
+            // allocated block before populating it with directory metadata.
+            let report = std::process::Command::new("debugfs")
+                .args(["-R", &format!("bmap /indexed {blocks}")]).arg(&image).output().unwrap();
+            assert!(report.status.success());
+            let report = String::from_utf8(report.stdout).unwrap();
+            let physical: u64 = report.split_whitespace().next().expect("allocated htree node")
+                .parse().expect("debugfs physical block");
+            assert_ne!(physical, 0, "{report}");
+            debugfs(&image, &format!("bmap /indexed {blocks} {physical}"));
             debugfs(&image, &format!("set_inode_field /indexed size {}", (blocks + 1) * 4096));
             let mut bytes = std::fs::read(&image).unwrap();
             let raw = ext4plus::Ext4::load(Box::new(bytes.clone())).unwrap();
             let node = raw.path_to_inode(ext4plus::path::Path::try_from("/indexed").unwrap(), ext4plus::FollowSymlinks::All).unwrap();
             let file = ext4plus::file::File::open_inode(&raw, node).unwrap();
-            let internal = file.filesystem_block_at_offset(blocks * 4096).unwrap().unwrap() as usize * 4096;
+            assert_eq!(file.filesystem_block_at_offset(blocks * 4096).unwrap(), Some(physical));
+            let internal = physical as usize * 4096;
             let count = u16::from_le_bytes(bytes[root + 0x22..root + 0x24].try_into().unwrap()) as usize;
             assert_eq!(u16::from_le_bytes(bytes[root + 0x20..root + 0x22].try_into().unwrap()), 507);
             assert!(count > 1 && count <= 507);
