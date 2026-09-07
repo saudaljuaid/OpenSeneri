@@ -90,7 +90,7 @@ pub(crate) struct Mounted {
     stage: Rc<JournalMutationStage>,
     pending_mutation: Option<PendingMutation>,
     pending_write: Option<PendingWrite>,
-    pending_unlink: Option<PendingUnlink>,
+    pending_reclaim: Option<PendingReclaim>,
     context: usize,
     image_bytes: u64,
 }
@@ -103,7 +103,7 @@ impl Mounted {
     fn readable_filesystem(&self) -> Result<&Ext4, Status> {
         // A retained transaction may contain uncommitted namespace and allocator
         // updates. Only the reloaded checkpointed view is public.
-        if self.pending_write.is_some() || self.pending_mutation.is_some() || self.pending_unlink.is_some()
+        if self.pending_write.is_some() || self.pending_mutation.is_some() || self.pending_reclaim.is_some()
             || !self.stage.is_empty() || self.stage.is_sealed() {
             return Err(Status::Io);
         }
@@ -168,7 +168,8 @@ struct PendingWrite {
     chunk_bytes: usize,
 }
 
-struct PendingUnlink {
+struct PendingReclaim {
+    kind: PendingMutationKind,
     path: Vec<u8>,
     inode: u64,
     namespace_committed: bool,
@@ -347,7 +348,7 @@ pub(crate) fn set_stage_block_limit(mounted: &mut Mounted, block_limit: usize) -
 }
 
 fn ensure_staged_view(mounted: &mut Mounted) -> Result<(), Status> {
-    if mounted.pending_unlink.is_some() { return Err(Status::Busy); }
+    if mounted.pending_reclaim.is_some() { return Err(Status::Busy); }
     if mounted.filesystem.is_none() {
         let needs_recovery = mounted.journal.filesystem_recovery_marker_is_durable()
             .map_err(|_| Status::Invalid)?;
@@ -731,7 +732,7 @@ pub(crate) fn mount(context: usize, media_bytes: u64) -> Result<(Box<Mounted>, I
             stage,
             pending_mutation: None,
             pending_write: None,
-            pending_unlink: None,
+            pending_reclaim: None,
             context,
             image_bytes,
         });
@@ -784,7 +785,7 @@ fn resume_pending_mutation(
     offset: u64,
     source: &[u8],
 ) -> Result<usize, Status> {
-    if mounted.pending_unlink.is_some() { return Err(Status::Busy); }
+    if mounted.pending_reclaim.is_some() { return Err(Status::Busy); }
     let pending = mounted.pending_mutation.as_ref().ok_or(Status::Invalid)?;
     if pending.kind != kind
         || pending.path != path
@@ -1631,9 +1632,9 @@ pub(crate) fn unlink_file_guarded(
     open_inodes: &[u64],
 ) -> Result<(), Status> {
     let absolute = absolute_path(path)?;
-    if let Some(pending) = &mounted.pending_unlink {
-        if pending.path != absolute { return Err(Status::Invalid); }
-        return resume_unlink_request(mounted);
+    if let Some(pending) = &mounted.pending_reclaim {
+        if pending.kind != PendingMutationKind::UnlinkFile || pending.path != absolute { return Err(Status::Invalid); }
+        return resume_reclaim_request(mounted);
     }
     if mounted.pending_mutation.is_some() {
         return resume_namespace_mutation(mounted, PendingMutationKind::UnlinkFile, &absolute);
@@ -1690,10 +1691,11 @@ pub(crate) fn unlink_file_guarded(
                 discard_uncommitted_stage(mounted, true)?;
                 return Err(map_error(error));
             }
-            mounted.pending_unlink = Some(PendingUnlink {
+            mounted.pending_reclaim = Some(PendingReclaim {
+                kind: PendingMutationKind::UnlinkFile,
                 path: absolute, inode, namespace_committed: false,
             });
-            return resume_unlink_request(mounted);
+            return resume_reclaim_request(mounted);
         }
         return Err(map_error(error));
     }
@@ -1711,21 +1713,21 @@ pub(crate) fn unlink_file_guarded(
     commit_namespace_mutation(mounted, PendingMutationKind::UnlinkFile, absolute)
 }
 
-fn resume_unlink_request(mounted: &mut Mounted) -> Result<(), Status> {
-    let mut request = mounted.pending_unlink.take().ok_or(Status::Invalid)?;
+fn resume_reclaim_request(mounted: &mut Mounted) -> Result<(), Status> {
+    let mut request = mounted.pending_reclaim.take().ok_or(Status::Invalid)?;
     let result = (|| {
         if !request.namespace_committed {
             if mounted.pending_mutation.is_some() {
-                resume_namespace_mutation(mounted, PendingMutationKind::UnlinkFile, &request.path)?;
+                resume_namespace_mutation(mounted, request.kind, &request.path)?;
             } else {
-                commit_namespace_mutation(mounted, PendingMutationKind::UnlinkFile, request.path.clone())?;
+                commit_namespace_mutation(mounted, request.kind, request.path.clone())?;
             }
             request.namespace_committed = true;
         }
         finalize_orphan(mounted, request.inode)
     })();
     if result.is_err() && (request.namespace_committed || mounted.pending_mutation.is_some()) {
-        mounted.pending_unlink = Some(request);
+        mounted.pending_reclaim = Some(request);
     }
     result
 }
@@ -1991,8 +1993,7 @@ pub(crate) fn rename_replace_probe(
     rename_replace_guarded(mounted, source, destination, &[])
 }
 
-/// Replace while preserving live regular inodes; open directory targets remain
-/// refused until directory orphan semantics are admitted.
+/// Replace while preserving live regular inodes and open directory snapshots.
 pub(crate) fn rename_replace_guarded(mounted: &mut Mounted, source: &[u8],
     destination: &[u8], open_inodes: &[u64]) -> Result<(), Status> {
     rename_transaction(mounted, source, destination, true, open_inodes)
@@ -2003,6 +2004,8 @@ fn remove_rename_destination(
     name: DirEntryName<'_>,
     source: &ext4plus::inode::Inode,
     open_inodes: &[u64],
+    defer_target: Option<u64>,
+    reclaim: &mut Option<u64>,
 ) -> Result<bool, Ext4Error> {
     let target = match directory.get_entry(name) {
         Ok(target) => target,
@@ -2027,7 +2030,13 @@ fn remove_rename_destination(
         if !target.file_type().is_regular_file() && !target.file_type().is_symlink() {
             return Err(Ext4Error::IsASpecialFile);
         }
-        if target.file_type().is_regular_file() && open_inodes.contains(&u64::from(target.index.get())) {
+        let number = u64::from(target.index.get());
+        let retain = target.file_type().is_regular_file() && open_inodes.contains(&number);
+        if target.file_type().is_regular_file() && !retain && target.links_count() == 1
+            && target.size_in_bytes() <= MAX_SPLIT_ORPHAN_BYTES {
+            *reclaim = Some(number);
+        }
+        if retain || defer_target == Some(number) {
             directory.unlink_open(name, target)?;
         } else {
             directory.unlink(name, target)?;
@@ -2047,6 +2056,10 @@ fn rename_transaction(
     let source_absolute = absolute_path(source)?;
     let destination_absolute = absolute_path(destination)?;
     let pending_key = namespace_pair_key(&source_absolute, &destination_absolute)?;
+    if let Some(pending) = &mounted.pending_reclaim {
+        if pending.kind != kind || pending.path != pending_key { return Err(Status::Invalid); }
+        return resume_reclaim_request(mounted);
+    }
     if mounted.pending_mutation.is_some() {
         return resume_namespace_mutation(
             mounted,
@@ -2061,65 +2074,86 @@ fn rename_transaction(
             .map_err(|_| Status::Invalid)?;
         discard_uncommitted_stage(mounted, recovery)?;
     }
-    arm_recovery_marker(mounted)?;
-    let source_path = Path::try_from(source_absolute.as_slice())
-        .map_err(|_| Status::Invalid)?;
-    let (source_parent, source_name) = parent_and_name(&source_absolute)?;
-    let (destination_parent, destination_name) =
-        parent_and_name(&destination_absolute)?;
-    let filesystem = mounted.filesystem()?;
-    let mut inode = filesystem
-        .path_to_inode(source_path, FollowSymlinks::ExcludeFinalComponent)
-        .map_err(map_error)?;
-    if inode.flags().intersects(InodeFlags::IMMUTABLE | InodeFlags::APPEND_ONLY) {
-        return Err(Status::ReadOnly);
-    }
-    if !inode.file_type().is_regular_file() && !inode.file_type().is_dir()
-        && !inode.file_type().is_symlink() {
-        return Err(Status::Special);
-    }
-    let source_parent_inode = filesystem
-        .path_to_inode(source_parent, FollowSymlinks::All).map_err(map_error)?;
-    let destination_parent_inode = filesystem
-        .path_to_inode(destination_parent, FollowSymlinks::All).map_err(map_error)?;
-    if source_parent_inode.flags().intersects(InodeFlags::IMMUTABLE | InodeFlags::APPEND_ONLY)
-        || destination_parent_inode.flags().contains(InodeFlags::IMMUTABLE) {
-        return Err(Status::ReadOnly);
-    }
-    // Different path strings can resolve to the same directory through a
-    // symlink. Use one directory object in that case so inode size updates
-    // cannot be lost between two independently cached parent inodes.
-    let same_parent = source_parent_inode.index == destination_parent_inode.index;
-    let mutation = (|| {
-        let mut source_directory = Dir::open_inode(filesystem, source_parent_inode)?;
-        if same_parent {
-            if replace && !remove_rename_destination(&mut source_directory, destination_name, &inode, open_inodes)? {
+    let mut defer_target = None;
+    loop {
+        arm_recovery_marker(mounted)?;
+        let source_path = Path::try_from(source_absolute.as_slice())
+            .map_err(|_| Status::Invalid)?;
+        let (source_parent, source_name) = parent_and_name(&source_absolute)?;
+        let (destination_parent, destination_name) =
+            parent_and_name(&destination_absolute)?;
+        let filesystem = mounted.filesystem()?;
+        let mut inode = filesystem
+            .path_to_inode(source_path, FollowSymlinks::ExcludeFinalComponent)
+            .map_err(map_error)?;
+        if inode.flags().intersects(InodeFlags::IMMUTABLE | InodeFlags::APPEND_ONLY) {
+            return Err(Status::ReadOnly);
+        }
+        if !inode.file_type().is_regular_file() && !inode.file_type().is_dir()
+            && !inode.file_type().is_symlink() {
+            return Err(Status::Special);
+        }
+        let source_parent_inode = filesystem
+            .path_to_inode(source_parent, FollowSymlinks::All).map_err(map_error)?;
+        let destination_parent_inode = filesystem
+            .path_to_inode(destination_parent, FollowSymlinks::All).map_err(map_error)?;
+        if source_parent_inode.flags().intersects(InodeFlags::IMMUTABLE | InodeFlags::APPEND_ONLY)
+            || destination_parent_inode.flags().contains(InodeFlags::IMMUTABLE) {
+            return Err(Status::ReadOnly);
+        }
+        // Different path strings can resolve to the same directory through a
+        // symlink. Use one directory object in that case so inode size updates
+        // cannot be lost between two independently cached parent inodes.
+        let same_parent = source_parent_inode.index == destination_parent_inode.index;
+        let mut reclaim = None;
+        let mutation = (|| {
+            let mut source_directory = Dir::open_inode(filesystem, source_parent_inode)?;
+            if same_parent {
+                if replace && !remove_rename_destination(&mut source_directory, destination_name, &inode,
+                    open_inodes, defer_target, &mut reclaim)? {
+                    return Ok(());
+                }
+                return source_directory.rename_entry(source_name, destination_name, inode);
+            }
+            let mut destination_directory = Dir::open_inode(filesystem, destination_parent_inode)?;
+            if replace && !remove_rename_destination(&mut destination_directory, destination_name, &inode,
+                open_inodes, defer_target, &mut reclaim)? {
                 return Ok(());
             }
-            return source_directory.rename_entry(source_name, destination_name, inode);
+            if inode.file_type().is_dir() {
+                return source_directory.move_directory(source_name,
+                    &mut destination_directory, destination_name, inode);
+            }
+            // Both changes remain in one stage. Link-before-unlink keeps the inode
+            // allocated; its temporary extra link never reaches home metadata.
+            destination_directory.link(destination_name, &mut inode)?;
+            source_directory.unlink(source_name, inode).map(|_| ())
+        })();
+        if let Err(error) = mutation {
+            let capacity = mutation_capacity_error(&error);
+            discard_uncommitted_stage(mounted, true)?;
+            if let Some(inode) = reclaim.filter(|_| capacity && defer_target.is_none()) {
+                mounted.filesystem()?.validate_extent_reclaim(inode_index(inode)?,
+                    (MAX_SPLIT_ORPHAN_BYTES / BLOCK_BYTES) as u32).map_err(map_error)?;
+                defer_target = Some(inode);
+                continue;
+            }
+            return Err(map_error(error));
         }
-        let mut destination_directory = Dir::open_inode(filesystem, destination_parent_inode)?;
-        if replace && !remove_rename_destination(&mut destination_directory, destination_name, &inode, open_inodes)? {
-            return Ok(());
+        if mounted.stage.is_empty() {
+            discard_uncommitted_stage(mounted, true)?;
+            return if replace { Ok(()) } else { Err(Status::Invalid) };
         }
-        if inode.file_type().is_dir() {
-            return source_directory.move_directory(source_name,
-                &mut destination_directory, destination_name, inode);
+        if let Some(inode) = defer_target {
+            // The new name and the old target's orphan link become durable in
+            // one transaction. Cleanup retries retain both pathname arguments.
+            mounted.pending_reclaim = Some(PendingReclaim {
+                kind, path: pending_key, inode, namespace_committed: false,
+            });
+            return resume_reclaim_request(mounted);
         }
-        // Both changes remain in one stage. Link-before-unlink keeps the inode
-        // allocated; its temporary extra link never reaches home metadata.
-        destination_directory.link(destination_name, &mut inode)?;
-        source_directory.unlink(source_name, inode).map(|_| ())
-    })();
-    if let Err(error) = mutation {
-        discard_uncommitted_stage(mounted, true)?;
-        return Err(map_error(error));
+        return commit_namespace_mutation(mounted, kind, pending_key);
     }
-    if mounted.stage.is_empty() {
-        discard_uncommitted_stage(mounted, true)?;
-        return if replace { Ok(()) } else { Err(Status::Invalid) };
-    }
-    commit_namespace_mutation(mounted, kind, pending_key)
 }
 
 /// Retry and durably execute the final clean plan while C holds a write lease.
@@ -2131,8 +2165,8 @@ pub(crate) fn prepare_unmount(mounted: &mut Mounted) -> Result<(), Status> {
 /// Drain durable mutations and reclaim only orphans with no live C handle.
 /// Live orphans keep the recovery marker set even after a successful sync.
 pub(crate) fn sync_with_open_inodes(mounted: &mut Mounted, open_inodes: &[u64]) -> Result<(), Status> {
-    if mounted.pending_unlink.is_some() {
-        resume_unlink_request(mounted)?;
+    if mounted.pending_reclaim.is_some() {
+        resume_reclaim_request(mounted)?;
     } else if mounted.pending_write.is_some() {
         let _ = resume_write_request(mounted)?;
     } else if mounted.pending_mutation.is_some() {
@@ -2196,7 +2230,7 @@ pub(crate) fn sync(mounted: &mut Mounted) -> Result<(), Status> {
 pub(crate) fn unmount(mounted: &Mounted) -> Result<(), Status> {
     if mounted.filesystem.is_none()
         || mounted.pending_write.is_some()
-        || mounted.pending_unlink.is_some()
+        || mounted.pending_reclaim.is_some()
         || mounted.pending_mutation.is_some()
         || !mounted.stage.is_empty()
         || mounted.stage.is_sealed()

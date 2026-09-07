@@ -1832,15 +1832,23 @@ fn final_orphan_release_retries_identical_bytes_without_a_live_handle() {
         (false, false, false), (true, false, false),
         (false, true, false), (false, true, true),
     ] {
-        orphan_release_failure_case(directory, large, zero_size, false);
+        orphan_release_failure_case(directory, large, zero_size, ReclaimOperation::Finalize);
     }
 }
 
 #[test]
 fn oversized_quiescent_unlink_retries_namespace_and_reclamation_as_one_request() {
-    orphan_release_failure_case(false, false, false, true);
+    orphan_release_failure_case(false, false, false, ReclaimOperation::Unlink);
     for zero_size in [false, true] {
-        orphan_release_failure_case(false, true, zero_size, true);
+        orphan_release_failure_case(false, true, zero_size, ReclaimOperation::Unlink);
+    }
+}
+
+#[test]
+fn oversized_replacement_retries_atomic_namespace_and_old_target_reclamation() {
+    for operation in [ReclaimOperation::ReplaceSameParent, ReclaimOperation::ReplaceCrossParent] {
+        orphan_release_failure_case(false, false, false, operation);
+        orphan_release_failure_case(false, true, false, operation);
     }
 }
 
@@ -1877,9 +1885,23 @@ fn oversized_unlink_refuses_out_of_profile_extents_before_namespace_publication(
     fsck(&path, "coordinator-beyond-reclaim-refused");
 }
 
-fn orphan_release_failure_case(directory: bool, large: bool, zero_size: bool, quiescent: bool) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReclaimOperation { Finalize, Unlink, ReplaceSameParent, ReplaceCrossParent }
+
+fn orphan_release_failure_case(directory: bool, large: bool, zero_size: bool, operation: ReclaimOperation) {
     let Some(path) = fixture() else { return };
     let mut baseline = mount_fixture(&path);
+    let quiescent = operation != ReclaimOperation::Finalize;
+    let source: Option<&[u8]> = match operation {
+        ReclaimOperation::ReplaceSameParent => Some(b"system/reclaim-source"),
+        ReclaimOperation::ReplaceCrossParent => Some(b"data/user/reclaim-source"),
+        _ => None,
+    };
+    let source_metadata = source.map(|source| {
+        ext4::create_file_probe(&mut baseline, source, 0o640).unwrap();
+        ext4::transaction_probe(&mut baseline, source, 0, b"replacement").unwrap();
+        ext4::stat(&baseline, source).unwrap()
+    });
     let free_before_file = ext4::free_bytes(&baseline).unwrap();
     let name = b"system/close-retry";
     if directory {
@@ -1924,15 +1946,27 @@ fn orphan_release_failure_case(directory: bool, large: bool, zero_size: bool, qu
         mounted
     };
     let perform = |mounted: &mut ext4::Mounted| {
-        if quiescent { ext4::unlink_file_probe(mounted, name) }
+        if let Some(source) = source { ext4::rename_replace_probe(mounted, source, name) }
+        else if quiescent { ext4::unlink_file_probe(mounted, name) }
         else { ext4::finalize_orphan(mounted, inode) }
+    };
+    let assert_reclaimed = |mounted: &ext4::Mounted| {
+        assert_eq!(ext4::stat_inode(mounted, inode), Err(Status::NotFound));
+        assert_eq!(ext4::free_bytes(mounted), Ok(free_before_file));
+        if let Some(source) = source {
+            assert_eq!(ext4::stat(mounted, source), Err(Status::NotFound));
+            assert_eq!(ext4::stat(mounted, name), Ok(source_metadata.unwrap()));
+            let mut content = [0; 11];
+            read_exact(mounted, name, &mut content);
+            assert_eq!(&content, b"replacement");
+        } else { assert_eq!(ext4::stat(mounted, name), Err(Status::NotFound)); }
     };
     let mut reference = prepare();
     let orphan_bytes = DEVICE.with_borrow(|device| device.bytes.clone());
     perform(&mut reference).unwrap();
     let expected = DEVICE.with_borrow(|device| device.events.clone());
     if large || quiescent { assert!(expected.iter().filter(|event| **event == Event::Flush(3)).count() >= 2); }
-    assert_eq!(ext4::free_bytes(&reference), Ok(free_before_file));
+    assert_reclaimed(&reference);
     ext4::sync(&mut reference).unwrap();
     let final_bytes = DEVICE.with_borrow(|device| device.bytes.clone());
     drop(reference);
@@ -1951,6 +1985,10 @@ fn orphan_release_failure_case(directory: bool, large: bool, zero_size: bool, qu
                     assert!(ext4::unlink_file_probe(&mut mounted, b"system/README.TXT").is_err());
                     assert!(ext4::create_file_probe(&mut mounted, name, 0o600).is_err());
                     assert!(ext4::truncate_inode(&mut mounted, inode, 0).is_err());
+                    if let Some(source) = source {
+                        assert!(ext4::rename_probe(&mut mounted, source, name).is_err());
+                        assert!(ext4::rename_replace_probe(&mut mounted, name, source).is_err());
+                    }
                     DEVICE.with_borrow(|device| assert_eq!(device.events.len(), events));
                 }
             }
@@ -1969,11 +2007,12 @@ fn orphan_release_failure_case(directory: bool, large: bool, zero_size: bool, qu
                 else { assert_eq!(device.events, expected[start..]); }
             });
             ext4::sync(&mut mounted).unwrap();
+            assert_reclaimed(&mounted);
             ext4::unmount(&mounted).unwrap();
             DEVICE.with_borrow(|device| assert!(device.bytes == final_bytes));
         }
     }
-    fsck(&path, &format!("coordinator-orphan-close-retry-directory-{directory}-large-{large}-zero-{zero_size}-quiescent-{quiescent}"));
+    fsck(&path, &format!("coordinator-orphan-close-retry-directory-{directory}-large-{large}-zero-{zero_size}-{operation:?}"));
     if large || quiescent {
         let mut prefix = orphan_bytes;
         for (index, event) in expected.iter().enumerate() {
@@ -1983,21 +2022,25 @@ fn orphan_release_failure_case(directory: bool, large: bool, zero_size: bool, qu
                     // Reboot every durable prefix, including the middle of
                     // multi-transaction reclamation. No live handle survives.
                     let recovered = mount_bytes(prefix.clone());
-                    if quiescent && ext4::stat(&recovered, name).is_ok() {
+                    if quiescent && ext4::stat(&recovered, name) == Ok(initial_metadata) {
                         assert_eq!(ext4::stat(&recovered, name), Ok(initial_metadata));
                         assert_eq!(ext4::free_bytes(&recovered), Ok(initial_free));
+                        if let Some(source) = source {
+                            assert_eq!(ext4::stat(&recovered, source), Ok(source_metadata.unwrap()));
+                            let mut content = [0; 11];
+                            read_exact(&recovered, source, &mut content);
+                            assert_eq!(&content, b"replacement");
+                        }
                         if !zero_size {
                             let mut data = [0; 8192];
                             read_exact(&recovered, name, &mut data);
                             assert_eq!(data, [0x53; 8192]);
                         }
                     } else {
-                        assert_eq!(ext4::stat(&recovered, name), Err(Status::NotFound));
-                        assert_eq!(ext4::stat_inode(&recovered, inode), Err(Status::NotFound));
-                        assert_eq!(ext4::free_bytes(&recovered), Ok(free_before_file));
+                        assert_reclaimed(&recovered);
                     }
                     ext4::unmount(&recovered).unwrap();
-                    fsck(&path, &format!("coordinator-large-orphan-zero-{zero_size}-quiescent-{quiescent}-cut-{index}"));
+                    fsck(&path, &format!("coordinator-large-orphan-zero-{zero_size}-{operation:?}-cut-{index}"));
                 }
             }
         }
