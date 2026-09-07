@@ -979,7 +979,6 @@ fn linux_acl_entries_survive_user_xattr_mutation_and_acl_aware_chmod() {
         entry += (16 + baseline[entry] as usize + 3) & !3;
     }
     assert_eq!(&baseline[entry + 16..entry + 20], b"note");
-    let generation = u32::from_le_bytes(baseline[inode_start + 0x64..inode_start + 0x68].try_into().unwrap());
     for case in 0..5 {
         for dirty in [false, true] {
             let mut hostile = baseline.clone();
@@ -991,7 +990,7 @@ fn linux_acl_entries_survive_user_xattr_mutation_and_acl_aware_chmod() {
                 _ => hostile[entry + 8..entry + 12].copy_from_slice(&u32::MAX.to_le_bytes()),
             }
             write_sparse_fixture(&image, &hostile).unwrap();
-            debugfs(&image, &format!("set_inode_field <{number}> generation {generation}"));
+            refresh_fixture_inode_checksum(&image, number);
             if dirty { debugfs(&image, "feature needs_recovery"); }
             let hostile = std::fs::read(&image).unwrap();
             let raw = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
@@ -1022,7 +1021,8 @@ fn stat_lstat_preserve_signed_times_owner_mode_and_link_identity() {
     }
     let image = path.with_extension("coordinator-signed-stat.img");
     write_sparse_fixture(&image, &bytes).unwrap();
-    debugfs(&image, "set_inode_field /system/README.TXT uid 70000"); // also refresh inode CRC
+    refresh_fixture_inode_checksum(&image, number);
+    debugfs(&image, "set_inode_field /system/README.TXT uid 70000");
     debugfs(&image, "set_inode_field /system/README.TXT gid 90000");
     debugfs(&image, &format!("set_inode_field /system/README.TXT mode {}", 0o100640));
     let baseline = std::fs::read(&image).unwrap();
@@ -1055,7 +1055,7 @@ fn stat_lstat_preserve_signed_times_owner_mode_and_link_identity() {
         let mut hostile = baseline.clone();
         hostile[start + 0x8c..start + 0x90].copy_from_slice(&(1_000_000_000u32 << 2).to_le_bytes());
         write_sparse_fixture(&image, &hostile).unwrap();
-        debugfs(&image, "set_inode_field /system/README.TXT uid 70000");
+        refresh_fixture_inode_checksum(&image, number);
         if dirty { debugfs(&image, "feature needs_recovery"); }
         let hostile = std::fs::read(&image).unwrap();
         let raw = ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
@@ -1335,6 +1335,24 @@ fn debugfs(image: &std::path::Path, command: &str) {
     let result = std::process::Command::new("debugfs")
         .args(["-w", "-R", command]).arg(image).output().unwrap();
     assert!(result.status.success(), "debugfs: {}", String::from_utf8_lossy(&result.stderr));
+}
+
+fn refresh_fixture_inode_checksum(image: &std::path::Path, number: u32) {
+    let bytes = std::fs::read(image).unwrap();
+    let ipg = u32::from_le_bytes(bytes[1064..1068].try_into().unwrap());
+    let descriptor = 4096 + ((number - 1) / ipg) as usize * 64;
+    let table = u32::from_le_bytes(bytes[descriptor + 8..descriptor + 12].try_into().unwrap()) as usize * 4096;
+    let start = table + ((number - 1) % ipg) as usize * 256;
+    let generation = u32::from_le_bytes(bytes[start + 0x64..start + 0x68].try_into().unwrap());
+    // Raw corruption deliberately invalidated the old checksum. debugfs -n
+    // permits that fixture read, then set_inode_field writes a fresh checksum.
+    // A normal strict ext4plus read below independently proves the new CRC.
+    let command = format!("set_inode_field <{number}> generation {generation}");
+    let result = std::process::Command::new("debugfs")
+        .args(["-n", "-w", "-R", &command]).arg(image).output().unwrap();
+    assert!(result.status.success(), "debugfs checksum: {}", String::from_utf8_lossy(&result.stderr));
+    let raw = ext4plus::Ext4::load(Box::new(std::fs::read(image).unwrap())).unwrap();
+    ext4plus::inode::Inode::read(&raw, std::num::NonZeroU32::new(number).unwrap()).unwrap();
 }
 
 fn refresh_fixture_descriptor_checksums(image: &std::path::Path, groups: &[usize]) {
@@ -5499,7 +5517,7 @@ fn minimum_write_capacity_refusal_rolls_back_all_allocations() {
     let free = ext4::free_bytes(&mounted).unwrap();
     let initial = DEVICE.with_borrow_mut(|device| { device.events.clear(); device.bytes.clone() });
     ext4::set_stage_block_limit(&mut mounted, 1).unwrap();
-    assert_eq!(ext4::transaction_probe(&mut mounted, name, 7, &[0x5a; 8192]), Err(Status::Io));
+    assert_eq!(ext4::transaction_probe(&mut mounted, name, 7, &[0x5a; 8192]), Err(Status::Full));
     assert_eq!(ext4::stat(&mounted, name).unwrap().size, 0);
     assert_eq!(ext4::free_bytes(&mounted), Ok(free));
     // The durable recovery marker is the only permitted write before a

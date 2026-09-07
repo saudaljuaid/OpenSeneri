@@ -531,6 +531,9 @@ fn inode_metadata(inode: &ext4plus::inode::Inode) -> Result<Metadata, Status> {
 }
 
 fn map_error(error: Ext4Error) -> Status {
+    // The staging writer transports bounded-capacity refusal in its I/O error
+    // wrapper. It is not a device failure and must reach VFS as ENOSPC.
+    if mutation_capacity_error(&error) { return Status::Full; }
     match error {
         Ext4Error::Io(_) => Status::Io,
         Ext4Error::NoSpace => Status::Full,
@@ -1175,7 +1178,7 @@ fn resume_write_request(mounted: &mut Mounted) -> Result<usize, Status> {
                     request.chunk_bytes = (touched / 2) * JOURNAL_BLOCK_BYTES;
                     continue;
                 }
-                Err(Status::Io)
+                Err(Status::Full)
             }
             Ok(WriteTransactionOutcome::Written(written)) => Ok(written),
             Err(error) => Err(error),
