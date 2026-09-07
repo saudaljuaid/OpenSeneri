@@ -1302,6 +1302,17 @@ fn checksummed_malformed_extent_trees_are_refused_before_traversal_or_mutation()
                 assert!(device.events.is_empty());
                 assert_eq!(device.bytes, empty);
             });
+            debugfs(&image, &format!("set_inode_field <{number}> links_count 0"));
+            debugfs(&image, "unlink /system/extent-cycle");
+            debugfs(&image, &format!("set_super_value last_orphan {number}"));
+            debugfs(&image, "feature needs_recovery");
+            let orphan = std::fs::read(&image).unwrap();
+            DEVICE.with_borrow_mut(|device| *device = Device { bytes: orphan.clone(), ..Device::default() });
+            assert!(ext4::mount(1, size).is_err());
+            DEVICE.with_borrow(|device| {
+                assert!(device.events.is_empty(), "malformed orphan was checkpointed");
+                assert_eq!(device.bytes, orphan);
+            });
         }
     }
 }

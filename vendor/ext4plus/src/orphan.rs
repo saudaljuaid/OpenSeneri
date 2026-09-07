@@ -23,6 +23,9 @@ impl Ext4 {
             return Err(Ext4Error::Readonly);
         }
         if inode.file_type().is_regular_file() {
+            // Orphans are absent from the namespace walk. Validate their
+            // complete extent map before recovery writes or suffix cleanup.
+            inode.validate_extent_tree(self).await?;
             if inode.links_count() != 0 {
                 self.validate_extent_reclaim(inode.index, MAX_TRUNCATE_ORPHAN_BLOCKS).await?;
             }
