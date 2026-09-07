@@ -2265,7 +2265,7 @@ impl ExtentTree {
         let mut extents = self.collect_extents().await?;
         self.normalize_extents(&mut extents)?;
         let end = extents.last().map(|extent| extent_end(extent, self.inode))
-            .transpose()?.ok_or(Ext4Error::FileTooLarge)?;
+            .transpose()?.unwrap_or(0);
         if end > max_logical_blocks { return Err(Ext4Error::FileTooLarge); }
         Ok(end)
     }
@@ -2276,11 +2276,12 @@ impl ExtentTree {
         inode: &mut Inode,
         max_blocks: u32,
         max_logical_blocks: u32,
+        preserve_blocks: u32,
     ) -> Result<(), Ext4Error> {
         let end = self.reclaim_extent_end(max_logical_blocks).await?;
         let block_size = self.ext4.superblock().block_size().to_u64();
         let old_size = inode.size_in_bytes();
-        if max_blocks == 0 || end > max_logical_blocks
+        if max_blocks == 0 || end <= preserve_blocks || end > max_logical_blocks
             || old_size.div_ceil(block_size) > u64::from(max_logical_blocks) {
             return Err(Ext4Error::FileTooLarge);
         }
@@ -2288,7 +2289,7 @@ impl ExtentTree {
         // remain. Derive the suffix from the checked extent tree, not EOF.
         // The temporary size is only in memory; the final staged inode keeps
         // the original EOF or the smaller retained prefix, and its orphan link.
-        let retained_size = u64::from(end.saturating_sub(max_blocks)) * block_size;
+        let retained_size = u64::from(end.saturating_sub(max_blocks).max(preserve_blocks)) * block_size;
         inode.set_size_in_bytes(u64::from(end) * block_size);
         self.truncate(inode, retained_size).await?;
         if old_size < retained_size {

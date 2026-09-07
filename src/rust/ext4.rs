@@ -621,6 +621,11 @@ fn validate_xattrs(filesystem: &Ext4, path: &[u8]) -> Result<(), Status> {
 }
 
 fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
+    let mut linked_orphans = Vec::new();
+    for index in filesystem.orphan_inodes().map_err(map_error)? {
+        let inode = Inode::read(filesystem, index).map_err(map_error)?;
+        if inode.links_count() != 0 { linked_orphans.push((index, inode.links_count(), 0usize)); }
+    }
     let mut allocations = filesystem.inode_allocation_snapshot();
     if !allocations.is_allocated(core::num::NonZeroU32::new(2).unwrap()).map_err(map_error)? {
         return Err(Status::Invalid);
@@ -655,6 +660,10 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
             let metadata = entry.metadata().map_err(map_error)?;
             // A zero-link orphan must never remain reachable by a directory.
             if metadata.links_count == 0 { return Err(Status::Invalid); }
+            if let Some((_, links, seen)) = linked_orphans.iter_mut().find(|(index, _, _)| *index == entry.inode) {
+                *seen += 1;
+                if *seen > usize::from(*links) { return Err(Status::Invalid); }
+            }
             validate_xattrs(filesystem, entry_path.as_ref())?;
             let kind = classify(metadata.file_type())?;
             if kind == 2 {
@@ -685,6 +694,9 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
                 }
             }
         }
+    }
+    if linked_orphans.iter().any(|(_, links, seen)| *seen != usize::from(*links)) {
+        return Err(Status::Invalid);
     }
     Ok(())
 }
@@ -1763,6 +1775,10 @@ pub(crate) fn finalize_orphan(mounted: &mut Mounted, inode: u64) -> Result<(), S
         if !mounted.readable_filesystem()?.orphan_inodes().map_err(map_error)?.contains(&index) {
             return Ok(());
         }
+        if allocated_inode(mounted.filesystem()?, inode)?.links_count() != 0 {
+            if complete_linked_orphan_transaction(mounted, inode, &key)? { return Ok(()); }
+            continue;
+        }
         arm_recovery_marker(mounted)?;
         match mounted.filesystem()?.release_orphan(index) {
             Ok(()) => return commit_namespace_mutation(mounted, PendingMutationKind::FinalizeOrphan, key),
@@ -1783,6 +1799,25 @@ pub(crate) fn finalize_orphan(mounted: &mut Mounted, inode: u64) -> Result<(), S
 fn mutation_capacity_error(error: &Ext4Error) -> bool {
     matches!(error, Ext4Error::Io(cause) if matches!(cause.downcast_ref::<JournalMutationStageError>(),
         Some(JournalMutationStageError::TooManyBlocks | JournalMutationStageError::TooManyRevocations)))
+}
+
+fn complete_linked_orphan_transaction(mounted: &mut Mounted, inode: u64, key: &[u8]) -> Result<bool, Status> {
+    let index = inode_index(inode)?;
+    let mut blocks = ext4plus::JOURNAL_TRANSACTION_MAX_REVOKED_BLOCKS as u32;
+    loop {
+        arm_recovery_marker(mounted)?;
+        let complete = match mounted.filesystem()?.complete_truncate_orphan(index, blocks) {
+            Ok(complete) => complete,
+            Err(error) => {
+                let capacity = mutation_capacity_error(&error);
+                discard_uncommitted_stage(mounted, true)?;
+                if capacity && blocks > 1 { blocks /= 2; continue; }
+                return Err(map_error(error));
+            }
+        };
+        commit_namespace_mutation(mounted, PendingMutationKind::FinalizeOrphan, Vec::from(key))?;
+        return Ok(complete);
+    }
 }
 
 fn trim_orphan_for_release(mounted: &mut Mounted, inode: u64, key: &[u8]) -> Result<(), Status> {
@@ -2196,7 +2231,8 @@ pub(crate) fn sync_with_open_inodes(mounted: &mut Mounted, open_inodes: &[u64]) 
     }
     let orphans = mounted.filesystem()?.orphan_inodes().map_err(map_error)?;
     for inode in orphans {
-        if !open_inodes.contains(&u64::from(inode.get())) {
+        if !open_inodes.contains(&u64::from(inode.get()))
+            || allocated_inode(mounted.filesystem()?, u64::from(inode.get()))?.links_count() != 0 {
             finalize_orphan(mounted, u64::from(inode.get()))?;
         }
     }

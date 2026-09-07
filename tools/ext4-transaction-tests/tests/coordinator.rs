@@ -1441,6 +1441,90 @@ fn unlink_open_preserves_inode_io_until_sync_observes_final_close() {
 }
 
 #[test]
+fn linked_truncate_orphan_recovery_preserves_names_inode_xattrs_and_prefix() {
+    let Some(path) = fixture() else { return };
+    for large in [false, true] {
+        let name = b"system/linked-truncate";
+        let alias = b"data/user/truncate-alias";
+        let mut mounted = mount_fixture(&path);
+        ext4::create_file_probe(&mut mounted, name, 0o640).unwrap();
+        ext4::set_xattr(&mut mounted, name, b"user.retained", Some(b"attribute")).unwrap();
+        ext4::link_file_probe(&mut mounted, name, alias).unwrap();
+        let free_before_data = ext4::free_bytes(&mounted).unwrap();
+        ext4::transaction_probe(&mut mounted, name, 0, &[0x53; 8192]).unwrap();
+        let inode = ext4::stat(&mounted, name).unwrap().inode;
+        ext4::sync(&mut mounted).unwrap();
+        drop(mounted);
+        let image = path.with_extension(format!("coordinator-linked-truncate-input-{large}.img"));
+        DEVICE.with_borrow(|device| std::fs::write(&image, &device.bytes).unwrap());
+        if large { debugfs(&image, "fallocate /system/linked-truncate 0 8193"); }
+        // Linux commits the desired EOF while the remaining allocated suffix
+        // and nonzero link count identify a truncate orphan, not an unlink.
+        debugfs(&image, "set_inode_field /system/linked-truncate size 17");
+        debugfs(&image, &format!("set_super_value last_orphan {inode}"));
+        debugfs(&image, "feature needs_recovery");
+        let dirty = std::fs::read(&image).unwrap();
+        let check = |mounted: &ext4::Mounted| {
+            let metadata = ext4::stat(mounted, name).unwrap();
+            assert_eq!((metadata.inode, metadata.size, metadata.links, metadata.mode & 0o777), (inode, 17, 2, 0o640));
+            assert_eq!(ext4::stat(mounted, alias), Ok(metadata));
+            assert_eq!(ext4::free_bytes(mounted), Ok(free_before_data - 4096));
+            let mut content = [0; 17];
+            read_exact(mounted, alias, &mut content);
+            assert_eq!(content, [0x53; 17]);
+            let mut value = [0; 9];
+            assert_eq!(ext4::get_xattr(mounted, name, b"user.retained", &mut value), Ok(9));
+            assert_eq!(&value, b"attribute");
+            ext4::unmount(mounted).unwrap();
+        };
+        let reference = mount_bytes(dirty.clone());
+        check(&reference);
+        let events = DEVICE.with_borrow(|device| device.events.clone());
+        if large { assert!(events.iter().filter(|event| **event == Event::Flush(3)).count() >= 3); }
+        drop(reference);
+        fsck(&path, &format!("coordinator-linked-truncate-complete-{large}"));
+        for accept in [false, true] {
+            for fail in 0..events.len() {
+                DEVICE.with_borrow_mut(|device| *device = Device {
+                    bytes: dirty.clone(), fail_event: Some(fail), accept_failed_write: accept,
+                    ..Device::default()
+                });
+                assert!(matches!(ext4::mount(1, dirty.len() as u64), Err(Status::Io)), "linked recovery {large}/{fail}");
+                DEVICE.with_borrow_mut(|device| { device.fail_event = Some(0); device.events.clear(); });
+                match ext4::mount(1, dirty.len() as u64) {
+                    Ok((mounted, _)) => check(&mounted),
+                    Err(error) => assert_eq!(error, Status::Io),
+                }
+                DEVICE.with_borrow_mut(|device| { device.fail_event = None; device.events.clear(); });
+                let (mut mounted, _) = ext4::mount(1, dirty.len() as u64).unwrap();
+                check(&mounted);
+                // Regrowth must expose zeroes throughout the removed tail,
+                // including the retained partial block after repeated crashes.
+                ext4::truncate_inode(&mut mounted, inode, 8192).unwrap();
+                let mut content = [0xa5; 8192];
+                read_exact(&mounted, name, &mut content);
+                assert_eq!(&content[..17], &[0x53; 17]);
+                assert!(content[17..].iter().all(|byte| *byte == 0));
+                ext4::sync(&mut mounted).unwrap();
+                ext4::unmount(&mounted).unwrap();
+                fsck(&path, &format!("coordinator-linked-truncate-{large}-{accept}-{fail}"));
+            }
+        }
+        let mut prefix = dirty;
+        for (cut, event) in events.iter().enumerate() {
+            match event {
+                Event::Write(start, bytes) => prefix[*start as usize..*start as usize + bytes.len()].copy_from_slice(bytes),
+                Event::Flush(_) => {
+                    let recovered = mount_bytes(prefix.clone());
+                    check(&recovered);
+                    fsck(&path, &format!("coordinator-linked-truncate-{large}-cut-{cut}"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn freed_checksummed_inode_bodies_do_not_authorize_inode_io() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);
