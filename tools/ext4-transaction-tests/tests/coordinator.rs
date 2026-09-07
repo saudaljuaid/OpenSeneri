@@ -1362,6 +1362,55 @@ fn block_bitmap_census_refuses_unowned_allocations_fixed_frees_and_false_counter
 }
 
 #[test]
+fn reserved_inodes_cannot_hide_storage_outside_the_ownership_census() {
+    let Some(path) = fixture() else { return };
+    let pristine = std::fs::read(&path).unwrap();
+    let image = path.with_extension("coordinator-reserved-storage.img");
+    let table = u32::from_le_bytes(pristine[4104..4108].try_into().unwrap()) as usize * 4096;
+    let root_block = u32::from_le_bytes(pristine[table + 256 + 0x3c..table + 256 + 0x40].try_into().unwrap());
+    assert_ne!(root_block, 0);
+    for (index, field, value) in [
+        (1, "block[0]", u64::from(root_block)),
+        (3, "block[TIND]", u64::from(root_block)),
+        (4, "file_acl", u64::from(root_block)),
+        (5, "size", 4096), (6, "blocks", 8),
+        (7, "mode", 0o100600), (9, "links_count", 1), (10, "flags", 0x80000),
+    ] {
+        for dirty in [false, true] {
+            write_sparse_fixture(&image, &pristine).unwrap();
+            debugfs(&image, &format!("set_inode_field <{index}> {field} {value}"));
+            if dirty { debugfs(&image, "feature needs_recovery"); }
+            let hostile = std::fs::read(&image).unwrap();
+            assert_ne!(&hostile[table + (index - 1) * 256..table + index * 256],
+                &pristine[table + (index - 1) * 256..table + index * 256]);
+            ext4plus::Ext4::load(Box::new(hostile.clone())).unwrap();
+            DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+            assert!(ext4::mount(1, hostile.len() as u64).is_err(), "accepted reserved inode {index} {field}, dirty={dirty}");
+            DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+        }
+    }
+    // Inactive reserved bodies can retain checksummed timestamps. They must
+    // remain byte-identical across admission and ordinary file publication.
+    write_sparse_fixture(&image, &pristine).unwrap();
+    debugfs(&image, "set_inode_field <3> atime 1780000000");
+    let valid = std::fs::read(&image).unwrap();
+    assert_ne!(&valid[table + 512..table + 768], &pristine[table + 512..table + 768]);
+    let mut mounted = mount_bytes(valid.clone());
+    ext4::create_file_probe(&mut mounted, b"system/reserved-control", 0o600).unwrap();
+    ext4::transaction_probe(&mut mounted, b"system/reserved-control", 0, b"control").unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    DEVICE.with_borrow(|device| assert_eq!(&device.bytes[table..table + 256], &valid[table..table + 256]));
+    DEVICE.with_borrow(|device| assert_eq!(&device.bytes[table + 512..table + 768], &valid[table + 512..table + 768]));
+    fsck(&path, "coordinator-reserved-empty-valid");
+    let mut hostile = valid;
+    hostile[table + 512 + 0x7c] ^= 1;
+    DEVICE.with_borrow_mut(|device| *device = Device { bytes: hostile.clone(), ..Device::default() });
+    assert!(ext4::mount(1, hostile.len() as u64).is_err());
+    DEVICE.with_borrow(|device| { assert!(device.events.is_empty()); assert_eq!(device.bytes, hostile); });
+}
+
+#[test]
 fn checksummed_extents_require_allocated_data_even_beyond_eof_or_on_orphan_chain() {
     let Some(path) = fixture() else { return };
     let name = b"system/allocation-map";
@@ -1552,7 +1601,7 @@ fn legacy_indirect_mapping_ownership_is_checked_before_writes_or_recovery() {
             match case {
                 0 => debugfs(&image, &format!("freeb {single}")),
                 1 => debugfs(&image, &format!("set_inode_field <{inode}> block[0] {single}")),
-                2 => debugfs(&image, &format!("set_inode_field <{inode}> block[13] {single}")),
+                2 => debugfs(&image, &format!("set_inode_field <{inode}> block[DIND] {single}")),
                 _ => {
                     // Legacy indirect records have no CRC. An allocated
                     // self-reference must be caught before recursive reads.

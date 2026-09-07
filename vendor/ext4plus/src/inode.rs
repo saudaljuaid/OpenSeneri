@@ -184,6 +184,38 @@ pub struct Inode {
 }
 
 impl Inode {
+    /// The admitted writable profile uses only root and journal among reserved
+    /// inodes. Other reserved slots must not hide storage outside the ownership
+    /// census (bad-block lists, boot loaders, resize/quota inodes, etc.).
+    #[maybe_async::maybe_async]
+    pub(crate) async fn validate_empty_reserved(ext4: &Ext4, index: InodeIndex) -> Result<(), Ext4Error> {
+        let (block, offset) = get_inode_location(ext4, index)?;
+        let mut data = vec![0; usize::from(ext4.superblock().inode_size())];
+        ext4.read_from_block(block, offset, &mut data).await?;
+        for range in [0..2, 4..8, 0x14..0x24, 0x28..0x64, 0x68..0x70, 0x74..0x78] {
+            if data.get(range).is_none_or(|bytes| bytes.iter().any(|byte| *byte != 0)) {
+                return Err(Ext4Error::Readonly);
+            }
+        }
+        // mke2fs leaves unused reserved slots entirely zero. A populated
+        // inactive inode body must carry its normal metadata checksum.
+        if ext4.has_metadata_checksums() && data.iter().any(|byte| *byte != 0) {
+            if data.len() < Self::I_CHECKSUM_HI_OFFSET + 2 {
+                return Err(CorruptKind::InodeChecksum(index).into());
+            }
+            let expected = u32_from_hilo(read_u16le(&data, Self::I_CHECKSUM_HI_OFFSET),
+                read_u16le(&data, Self::L_I_CHECKSUM_LO_OFFSET));
+            let mut checksum = Checksum::with_seed(ext4.superblock().checksum_seed());
+            checksum.update_u32_le(index.get());
+            checksum.update_u32_le(read_u32le(&data, 0x64));
+            write_u16le(&mut data, Self::L_I_CHECKSUM_LO_OFFSET, 0);
+            write_u16le(&mut data, Self::I_CHECKSUM_HI_OFFSET, 0);
+            checksum.update(&data);
+            if checksum.finalize() != expected { return Err(CorruptKind::InodeChecksum(index).into()); }
+        }
+        Ok(())
+    }
+
     /// Validate every extent, including holes and allocation beyond EOF.
     /// This checks tree structure and physical bounds, not block ownership.
     /// Non-extent inodes retain their existing block-map validation path.

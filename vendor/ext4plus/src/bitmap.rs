@@ -189,6 +189,12 @@ impl<'a> BlockAllocationSnapshot<'a> {
     pub async fn finish(mut self, inodes: &mut InodeAllocationSnapshot<'_>) -> Result<(), Ext4Error> {
         if self.invalid { return Err(Ext4Error::Readonly); }
         inodes.validate_known_allocations(&self.validated_inodes, &self.directory_counts).await?;
+        for number in 1..self.filesystem.superblock().first_allocatable_inode() {
+            let index = crate::inode::InodeIndex::new(number).unwrap();
+            if number != 2 && Some(index) != self.filesystem.superblock().journal_inode() {
+                crate::inode::Inode::validate_empty_reserved(self.filesystem, index).await?;
+            }
+        }
         self.validate_block_census().await?;
         for (_, (expected, seen, inode)) in self.xattr_references {
             if expected != seen { return Err(CorruptKind::Xattr(inode).into()); }
