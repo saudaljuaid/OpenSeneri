@@ -1484,8 +1484,8 @@ enum phipfs_status ext4_backend_write(phipfs_handle handle,
         return PHIPFS_STATUS_OK;
     }
     if (source_bytes > EXT4_TRANSACTION_PROBE_MAX_BYTES ||
-        state->offset > PHIPFS_MAX_FILE_BYTES ||
-        source_bytes > PHIPFS_MAX_FILE_BYTES - state->offset) {
+        state->offset > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES ||
+        source_bytes > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES - state->offset) {
         return PHIPFS_STATUS_RANGE;
     }
     mount = &ext4_mounts[state->volume];
@@ -1531,10 +1531,10 @@ enum phipfs_status ext4_backend_append(phipfs_handle handle,
     status = begin_operation(mount, true);
     if (status != PHIPFS_STATUS_OK) return status;
     status = map_status(phipia_ext4_append_inode(mount->rust_mount, state->inode, source,
-        source_bytes, PHIPFS_MAX_FILE_BYTES, &start, written_bytes));
+        source_bytes, PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES, &start, written_bytes));
     if (status == PHIPFS_STATUS_OK) {
-        if (*written_bytes > source_bytes || start > PHIPFS_MAX_FILE_BYTES ||
-            *written_bytes > PHIPFS_MAX_FILE_BYTES - start) {
+        if (*written_bytes > source_bytes || start > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES ||
+            *written_bytes > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES - start) {
             status = PHIPFS_STATUS_CORRUPT;
         } else {
             // Publish the durable EOF before releasing the writer lease. A
@@ -1803,7 +1803,7 @@ enum phipfs_status ext4_backend_truncate(enum phipfs_volume volume,
     if (!valid_volume(volume)) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
-    if (size > PHIPFS_MAX_FILE_BYTES) {
+    if (size > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES) {
         return PHIPFS_STATUS_RANGE;
     }
     /* Retry the exact mutation before reading checkpointed metadata; the
@@ -1866,7 +1866,7 @@ enum phipfs_status ext4_backend_ftruncate(phipfs_handle handle, uint64_t size)
     if (status != PHIPFS_STATUS_OK) return status;
     if (state->directory) return PHIPFS_STATUS_IS_DIRECTORY;
     if ((state->access & PHIPFS_ACCESS_WRITE) == 0U) return PHIPFS_STATUS_ACCESS;
-    if (size > PHIPFS_MAX_FILE_BYTES) return PHIPFS_STATUS_RANGE;
+    if (size > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES) return PHIPFS_STATUS_RANGE;
     struct ext4_mount_state *mount = &ext4_mounts[state->volume];
     status = begin_operation(mount, true);
     if (status != PHIPFS_STATUS_OK) return status;

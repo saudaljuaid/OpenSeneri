@@ -12,6 +12,9 @@
 #define PHIPIA_EXT4_FILE_DIRECTORY 2U
 #define PHIPIA_EXT4_FILE_SYMLINK 3U
 
+/* Match the coordinator's bounded split-orphan reclaim profile. */
+#define PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES UINT64_C(67108864)
+
 enum phipia_ext4_status {
     PHIPIA_EXT4_STATUS_OK = 0,
     PHIPIA_EXT4_STATUS_NULL_ARGUMENT,

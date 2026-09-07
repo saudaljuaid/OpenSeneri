@@ -531,6 +531,53 @@ fn append_uses_live_eof_through_aliases_and_refuses_overflow_without_writes() {
 }
 
 #[test]
+fn maximum_vfs_file_growth_keeps_holes_zero_and_reclaims_the_last_extent() {
+    let Some(path) = fixture() else { return };
+    let maximum = 64 * 1024 * 1024u64;
+    // Keep this interoperability boundary tied to the ordinary C backend.
+    assert!(include_str!("../../../include/phipia/ext4_fs.h")
+        .contains("PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES UINT64_C(67108864)"));
+    let name = b"system/maximum-vfs-file";
+    let mut mounted = mount_fixture(&path);
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    let free = ext4::free_bytes(&mounted).unwrap();
+    ext4::truncate_probe(&mut mounted, name, maximum - 2).unwrap();
+    assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
+    assert_eq!(ext4::transaction_probe(&mut mounted, name, maximum - 2, b"x"), Ok(1));
+    assert_eq!(ext4::append_probe(&mut mounted, name, b"y", maximum), Ok((maximum - 1, 1)));
+    assert_eq!(ext4::stat(&mounted, name).unwrap().size, maximum);
+    assert_eq!(ext4::free_bytes(&mounted).unwrap(), free - 4096);
+    DEVICE.with_borrow_mut(|device| device.events.clear());
+    assert_eq!(ext4::append_probe(&mut mounted, name, b"z", maximum), Err(Status::Range));
+    DEVICE.with_borrow(|device| assert!(device.events.is_empty()));
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-maximum-vfs-live");
+    drop(mounted);
+    let persisted = DEVICE.with_borrow(|device| device.bytes.clone());
+    let mut mounted = mount_bytes(persisted);
+    for offset in [0, 16 * 1024 * 1024, maximum - 8192] {
+        let mut hole = [0xa5; 4096];
+        assert_eq!(ext4::pread(&mounted, name, offset, &mut hole), Ok(hole.len()));
+        assert!(hole.iter().all(|byte| *byte == 0));
+    }
+    let mut tail = [0xa5; 4096];
+    assert_eq!(ext4::pread(&mounted, name, maximum - 4096, &mut tail), Ok(tail.len()));
+    assert!(tail[..4094].iter().all(|byte| *byte == 0));
+    assert_eq!(&tail[4094..], b"xy");
+    ext4::truncate_probe(&mut mounted, name, maximum - 1).unwrap();
+    ext4::truncate_probe(&mut mounted, name, maximum).unwrap();
+    assert_eq!(ext4::pread(&mounted, name, maximum - 2, &mut tail[..2]), Ok(2));
+    assert_eq!(&tail[..2], b"x\0");
+    ext4::truncate_probe(&mut mounted, name, 0).unwrap();
+    assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
+    ext4::unlink_file_probe(&mut mounted, name).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-maximum-vfs-reclaimed");
+}
+
+#[test]
 fn mutation_timestamps_are_journaled_and_linux_epoch_encoding_matches() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);

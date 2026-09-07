@@ -184,9 +184,12 @@ int32_t phipia_ext4_append(uintptr_t mounted, const uint8_t *path,
 {
     assert(mounted == 1U && path_bytes == 4U && memcmp(path, "file", 4U) == 0);
     assert(source != NULL && ext4_mounts[PHIPFS_VOLUME_DATA].session.writable);
-    assert(maximum_size == PHIPFS_MAX_FILE_BYTES);
+    assert(maximum_size == PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES);
     ++appends;
     if (permanent_status != PHIPIA_EXT4_STATUS_OK) return permanent_status;
+    if (disk_size > maximum_size || source_bytes > maximum_size - disk_size) {
+        return PHIPIA_EXT4_STATUS_RANGE;
+    }
     *start = disk_size;
     *written = source_bytes;
     disk_size += source_bytes;
@@ -534,6 +537,23 @@ int main(void)
     assert(ext4_backend_ftruncate(second, 5U) == PHIPFS_STATUS_IO);
     assert(ext4_backend_ftruncate(second, 5U) == PHIPFS_STATUS_OK);
     assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->size == 5U && state->offset == 1U);
+    const uint64_t maximum = PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES;
+    assert(maximum == UINT64_C(64) * 1024U * 1024U);
+    assert(ext4_backend_truncate(PHIPFS_VOLUME_DATA, "file", maximum - 2U) == PHIPFS_STATUS_OK);
+    assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->size == maximum - 2U);
+    assert(ext4_backend_seek(second, (int64_t)(maximum - 2U), PHIPFS_SEEK_START, &position) == PHIPFS_STATUS_OK);
+    assert(ext4_backend_write(second, (const uint8_t *)"x", 1U, &written) == PHIPFS_STATUS_OK && written == 1U);
+    assert(ext4_backend_append(second, (const uint8_t *)"y", 1U, &written) == PHIPFS_STATUS_OK && written == 1U);
+    assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->size == maximum && state->offset == 1U);
+    const unsigned before_range = opens;
+    assert(ext4_backend_write(second, (const uint8_t *)"z", 1U, &written) == PHIPFS_STATUS_RANGE && written == 0U);
+    assert(ext4_backend_truncate(PHIPFS_VOLUME_DATA, "file", maximum + 1U) == PHIPFS_STATUS_RANGE);
+    assert(ext4_backend_ftruncate(second, UINT64_MAX) == PHIPFS_STATUS_RANGE);
+    assert(opens == before_range);
+    assert(ext4_backend_append(second, (const uint8_t *)"z", 1U, &written) == PHIPFS_STATUS_RANGE && written == 0U);
+    assert(disk_size == maximum && opens == closes);
+    assert(ext4_backend_ftruncate(second, maximum) == PHIPFS_STATUS_OK);
+    assert(ext4_backend_ftruncate(second, 5U) == PHIPFS_STATUS_OK);
     assert(ext4_backend_close(first) == PHIPFS_STATUS_OK);
     assert(last_sync_open_count == 1U);
     sync_refusals = 1U;
