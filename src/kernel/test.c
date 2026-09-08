@@ -5251,6 +5251,83 @@ static void ext4_vfs_cut_contents(phipfs_handle file, uint64_t size, uint8_t val
     }
 }
 
+static _Noreturn void ext4_vfs_dense_file(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/dense-target";
+    const uint64_t maximum = PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES;
+    static uint8_t bytes[256U * 1024U];
+    struct phipfs_stat original, after;
+    phipfs_handle writer, reader;
+    size_t count;
+    uint64_t position;
+    enum phipfs_status status = phipfs_lstat_path(volume, name, &original);
+    if (status == PHIPFS_STATUS_NOT_FOUND) {
+        console_write("ST EXT4 DENSE cleanup retained\n");
+    } else {
+        ext4_vfs_require(status, "dense fixture stat");
+        if (original.directory || original.links != 1U || original.mode != 0100644U ||
+            (original.size != 0U && original.size != maximum))
+            kernel_test_fail("ext4 dense file has unexpected initial metadata");
+        ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ_WRITE, &writer), "dense writer");
+        ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &reader), "dense held reader");
+        ext4_vfs_require(phipfs_seek(reader, 123, PHIPFS_SEEK_START, &position), "dense reader cursor");
+        if (original.size == 0U) {
+            for (uint64_t offset = 0U; offset < maximum; offset += sizeof(bytes)) {
+                for (size_t index = 0U; index < sizeof(bytes); ++index)
+                    bytes[index] = (uint8_t)(((offset + index) * 17U + 3U) % 251U);
+                ext4_vfs_require(phipfs_write(writer, bytes, sizeof(bytes), &count), "dense split write");
+                ext4_vfs_require(phipfs_fstat(reader, &after), "dense shared EOF");
+                if (count != sizeof(bytes) || after.object_id != original.object_id ||
+                    after.size != offset + sizeof(bytes) || after.links != 1U)
+                    kernel_test_fail("ext4 dense split write lost bytes or shared inode state");
+            }
+            const uint64_t free_at_limit = phipfs_drive(volume).free_bytes;
+            if (phipfs_write(writer, (const uint8_t *)"x", 1U, &count) != PHIPFS_STATUS_RANGE || count != 0U)
+                kernel_test_fail("ext4 dense write exceeded the admitted file limit");
+            ext4_vfs_require(phipfs_seek(writer, 0, PHIPFS_SEEK_CURRENT, &position), "dense refused write cursor");
+            if (position != maximum || phipfs_drive(volume).free_bytes != free_at_limit)
+                kernel_test_fail("ext4 dense refused write changed cursor or allocation");
+            console_write("ST EXT4 DENSE written 67108864\n");
+        }
+        for (uint64_t offset = 0U; offset < maximum; offset += sizeof(bytes)) {
+            ext4_vfs_require(phipfs_pread(reader, bytes, sizeof(bytes), offset, &count), "dense full read");
+            if (count != sizeof(bytes)) kernel_test_fail("ext4 dense read stopped before EOF");
+            for (size_t index = 0U; index < count; ++index)
+                if (bytes[index] != (uint8_t)(((offset + index) * 17U + 3U) % 251U))
+                    kernel_test_fail("ext4 dense contents differ from the written pattern");
+        }
+        ext4_vfs_require(phipfs_seek(reader, 0, PHIPFS_SEEK_CURRENT, &position), "dense pread cursor");
+        if (position != 123U) kernel_test_fail("ext4 dense pread changed the held reader cursor");
+        if (original.size == maximum) {
+            console_write("ST EXT4 DENSE cold read 67108864\n");
+            ext4_vfs_require(phipfs_ftruncate(writer, 0U), "dense split truncate reclamation");
+            ext4_vfs_require(phipfs_fstat(reader, &after), "dense truncated shared EOF");
+            ext4_vfs_require(phipfs_pread(reader, bytes, sizeof(bytes), 0U, &count), "dense truncated read");
+            if (after.size != 0U || after.object_id != original.object_id || count != 0U)
+                kernel_test_fail("ext4 dense truncate lost shared inode identity or EOF");
+        }
+        ext4_vfs_require(phipfs_fsync(writer), "dense file sync");
+        ext4_vfs_require(phipfs_close(reader), "dense reader close");
+        ext4_vfs_require(phipfs_close(writer), "dense writer close");
+        if (phipfs_fstat(reader, &after) != PHIPFS_STATUS_STALE_HANDLE ||
+            phipfs_fstat(writer, &after) != PHIPFS_STATUS_STALE_HANDLE)
+            kernel_test_fail("ext4 dense file retained a closed handle");
+        if (original.size == maximum) {
+            ext4_vfs_require(phipfs_unlink(volume, name), "dense final unlink");
+            console_write("ST EXT4 DENSE reclaimed\n");
+        }
+    }
+    ext4_vfs_require(phipfs_sync(volume), "dense filesystem sync");
+    ext4_vfs_require(phipfs_unmount(volume), "dense clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 dense resource census failed");
+    console_write("ST EXT4 VFS dense maximum contents shared EOF reclaim census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_journal_wrap(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -6326,6 +6403,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
     }
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/WRAP.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_journal_wrap();
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/DENSE.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_dense_file();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTUNLINK.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_held_unlink_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTREPLACE.TST", &stat) == PHIPFS_STATUS_OK)

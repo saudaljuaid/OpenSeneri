@@ -589,6 +589,13 @@ syscalls return at most one 4096-byte copied chunk; callers must handle short
 writes. Direct backend requests remain bounded to 256 KiB and can checkpoint
 multiple transactions, so crash atomicity for the entire request is not claimed.
 The C mutation cap is now 64 MiB, matching the bounded split-reclaim profile.
+`qemu-test-ext4-dense-file` separately exercises a fully allocated file at that
+bound: 256 KiB VFS requests, complete patterned readback, shared EOF, a cold read,
+truncate/unlink reclamation, then a third boot. Linux checks the allocated result
+and exact restored block/inode counters with read-only mount and fsck. Its
+reports distinguish this case from the existing sparse maximum check and record
+QEMU elapsed time including boot and guest verification; no power-cut guarantee
+is inferred from an uncut dense-file pass.
 The changed C boundary/ownership host test passes; the corresponding Linux
 64 MiB sparse growth, tail, remount and reclamation fixture is pending.
 
