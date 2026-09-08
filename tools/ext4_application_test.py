@@ -153,6 +153,18 @@ def boot(args, image, output, work, number):
                 raise RuntimeError("clean reboot omitted ext4 release census")
             if process.wait(timeout=30) != 0:
                 raise RuntimeError("QEMU did not stop at clean guest reboot")
+        except Exception:
+            # Preserve the guest failure context before shutting down QEMU. A
+            # missing output file alone cannot distinguish a UI mistake from a
+            # filesystem refusal or kernel panic.
+            if qmp is not None and process.poll() is None:
+                try:
+                    capture.capture_png(qmp, work, output, f"ext4-boot-{number}-failed")
+                except (OSError, RuntimeError):
+                    pass
+            if serial.exists():
+                print(serial.read_bytes()[-8192:].decode("utf-8", errors="replace"), flush=True)
+            raise
         finally:
             if qmp is not None:
                 if process.poll() is None:
