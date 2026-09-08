@@ -706,20 +706,24 @@ static void command_write_line(const char *arguments, bool append)
             "write: use write PATH \"text\"\n");
         return;
     }
-    struct phipfs_stat stat;
-    status = phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat);
-    if (status == PHIPFS_STATUS_NOT_FOUND) {
-        status = phipfs_create(PHIPFS_VOLUME_DATA, path);
-    }
-    // The compatibility FAT32 backend deliberately refuses path truncation
-    // while a handle is open. ext4 truncates the held inode under its lease.
-    if (status == PHIPFS_STATUS_OK && !append && !inode_truncate) {
-        status = phipfs_truncate(PHIPFS_VOLUME_DATA, path, 0U);
-    }
-    if (status == PHIPFS_STATUS_OK) {
-        status = phipfs_open(PHIPFS_VOLUME_DATA, path,
-            PHIPFS_ACCESS_WRITE, &handle);
+    if (inode_truncate) {
+        status = phipfs_open_options(PHIPFS_VOLUME_DATA, path,
+            PHIPFS_ACCESS_WRITE, PHIPFS_OPEN_CREATE, UINT16_C(0644), &handle);
         opened = status == PHIPFS_STATUS_OK;
+    } else {
+        struct phipfs_stat stat;
+        status = phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat);
+        if (status == PHIPFS_STATUS_NOT_FOUND) {
+            status = phipfs_create(PHIPFS_VOLUME_DATA, path);
+        }
+        // The compatibility backend refuses path truncation with open handles.
+        if (status == PHIPFS_STATUS_OK && !append) {
+            status = phipfs_truncate(PHIPFS_VOLUME_DATA, path, 0U);
+        }
+        if (status == PHIPFS_STATUS_OK) {
+            status = phipfs_open(PHIPFS_VOLUME_DATA, path, PHIPFS_ACCESS_WRITE, &handle);
+            opened = status == PHIPFS_STATUS_OK;
+        }
     }
     if (status == PHIPFS_STATUS_OK && !append && inode_truncate) {
         status = phipfs_ftruncate(handle, 0U);

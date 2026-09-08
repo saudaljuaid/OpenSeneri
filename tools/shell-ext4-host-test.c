@@ -8,6 +8,9 @@
 static bool ext4, live, exists, appended;
 static unsigned opened_count, closed_count, truncated_count, sync_count;
 static enum phipfs_status truncate_result, write_result;
+static enum phipfs_status prepared_result;
+static unsigned prepared_count;
+static bool create_before_prepared_open;
 static char bytes[128];
 static size_t length;
 static bool interrupts_enabled, queued_keyboard, queued_ui, inject_on_disable;
@@ -28,14 +31,24 @@ void console_write(const char *text) { (void)text; }
 void console_putc(char character) { (void)character; }
 enum phipfs_status phipfs_stat_path(enum phipfs_volume volume, const char *path,
     struct phipfs_stat *result)
-{ (void)result; assert(volume == PHIPFS_VOLUME_DATA && strcmp(path, "notes.txt") == 0);
+{ (void)result; assert(!ext4 && volume == PHIPFS_VOLUME_DATA && strcmp(path, "notes.txt") == 0);
   return exists ? PHIPFS_STATUS_OK : PHIPFS_STATUS_NOT_FOUND; }
 enum phipfs_status phipfs_create(enum phipfs_volume volume, const char *path)
-{ (void)volume; (void)path; assert(!exists); exists = true; return PHIPFS_STATUS_OK; }
+{ (void)volume; (void)path; assert(!ext4 && !exists); exists = true; return PHIPFS_STATUS_OK; }
 enum phipfs_status phipfs_open(enum phipfs_volume volume, const char *path,
     enum phipfs_access access, phipfs_handle *handle)
 { (void)volume; (void)path; assert(exists && !live && access == PHIPFS_ACCESS_WRITE);
   live = true; appended = false; ++opened_count; *handle = 77U; return PHIPFS_STATUS_OK; }
+enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *path,
+    enum phipfs_access access, uint8_t flags, uint16_t mode, phipfs_handle *handle)
+{ assert(ext4 && flags == PHIPFS_OPEN_CREATE && mode == UINT16_C(0644));
+  ++prepared_count; *handle = 0U;
+  if (prepared_result != PHIPFS_STATUS_OK) return prepared_result;
+  if (create_before_prepared_open) {
+      create_before_prepared_open = false; memcpy(bytes, "racing\n", 7U); length = 7U;
+  }
+  exists = true;
+  return phipfs_open(volume, path, access, handle); }
 static enum phipfs_status truncate_bytes(void)
 { ++truncated_count; if (truncate_result == PHIPFS_STATUS_OK) length = 0U;
   return truncate_result; }
@@ -92,6 +105,23 @@ int main(void)
         command_write_line("notes.txt \"refused\"", true);
         assert(!live && length == 6U && opened_count == closed_count && sync_count == 3U);
     }
+    const unsigned before_prepared_failure = opened_count;
+    const unsigned before_truncate_failure = truncated_count;
+    prepared_result = PHIPFS_STATUS_NO_HANDLES;
+    exists = false; length = 0U;
+    command_write_line("notes.txt \"no handle\"", true);
+    assert(!exists && !live && opened_count == before_prepared_failure &&
+        truncated_count == before_truncate_failure && sync_count == 3U);
+    exists = true; memcpy(bytes, "retained", 8U); length = 8U;
+    command_write_line("notes.txt \"no handle\"", false);
+    assert(!live && length == 8U && memcmp(bytes, "retained", 8U) == 0 &&
+        opened_count == before_prepared_failure && truncated_count == before_truncate_failure);
+    prepared_result = write_result = PHIPFS_STATUS_OK;
+    exists = false; length = 0U; create_before_prepared_open = true;
+    command_write_line("notes.txt \"tail\"", true);
+    assert(!live && !create_before_prepared_open && prepared_count == 8U &&
+        length == 12U && memcmp(bytes, "racing\ntail\n", 12U) == 0 &&
+        opened_count == closed_count && sync_count == 4U);
     puts("terminal ext4/FAT32 write, append, truncate and failure cleanup: PASS");
     return 0;
 }
