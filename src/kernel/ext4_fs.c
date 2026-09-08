@@ -2149,7 +2149,9 @@ enum phipfs_status ext4_backend_get_xattr(enum phipfs_volume volume,
         path_bytes, (const uint8_t *)name, name_bytes, output == NULL ? &empty : output,
         capacity, length));
     enum phipfs_status close_status = end_operation(mount, NULL);
-    return status != PHIPFS_STATUS_OK ? status : close_status;
+    if (status == PHIPFS_STATUS_OK) status = close_status;
+    if (status != PHIPFS_STATUS_OK) *length = 0U;
+    return status;
 }
 
 enum phipfs_status ext4_backend_symlink(enum phipfs_volume volume,
@@ -2228,5 +2230,7 @@ enum phipfs_status ext4_backend_readlink(enum phipfs_volume volume,
     status = map_status(phipia_ext4_readlink(mount->rust_mount,
         (const uint8_t *)path, length, output, capacity, read_bytes));
     close_status = end_operation(mount, NULL);
-    return status != PHIPFS_STATUS_OK ? status : close_status;
+    if (status == PHIPFS_STATUS_OK) status = close_status;
+    if (status != PHIPFS_STATUS_OK) *read_bytes = 0U;
+    return status;
 }

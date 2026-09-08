@@ -929,22 +929,28 @@ int main(void)
     assert(live_mounts == 1U && !ext4_mounts[PHIPFS_VOLUME_DATA].detaching);
     assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);
     assert(ext4_backend_close(first) == PHIPFS_STATUS_OK);
-    for (unsigned positioned = 0U; positioned < 2U; ++positioned) {
+    for (unsigned kind = 0U; kind < 4U; ++kind) {
         assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);
         assert(ext4_backend_seek(first, 3, PHIPFS_SEEK_START, &position) == PHIPFS_STATUS_OK);
         close_reports_failure = true;
         size_t count = 99U;
-        uint8_t byte = 0xa5U;
-        assert((positioned != 0U ? ext4_backend_pread(first, &byte, 1U, 7U, &count) :
-            ext4_backend_read(first, &byte, 1U, &count)) == PHIPFS_STATUS_IO);
+        uint8_t bytes[16] = {0};
+        enum phipfs_status read_status;
+        switch (kind) {
+        case 0U: read_status = ext4_backend_read(first, bytes, 1U, &count); break;
+        case 1U: read_status = ext4_backend_pread(first, bytes, 1U, 7U, &count); break;
+        case 2U: read_status = ext4_backend_readlink(PHIPFS_VOLUME_DATA, "file", bytes, sizeof(bytes), &count); break;
+        default: read_status = ext4_backend_get_xattr(PHIPFS_VOLUME_DATA, "file", "user.note", bytes, sizeof(bytes), &count); break;
+        }
+        assert(read_status == PHIPFS_STATUS_IO);
         assert(count == 0U);
         assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->offset == 3U);
         assert(ext4_mounts[PHIPFS_VOLUME_DATA].close_failed && ext4_mounts[PHIPFS_VOLUME_DATA].session.active);
         close_reports_failure = false;
         assert(ext4_backend_fsync(first) == PHIPFS_STATUS_OK);
         assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->offset == 3U);
-        assert(ext4_backend_read(first, &byte, 1U, &count) == PHIPFS_STATUS_OK);
-        assert(count == 1U && byte == 0x55U && state->offset == 4U);
+        assert(ext4_backend_read(first, bytes, 1U, &count) == PHIPFS_STATUS_OK);
+        assert(count == 1U && bytes[0] == 0x55U && state->offset == 4U);
         assert(ext4_backend_close(first) == PHIPFS_STATUS_OK && opens == closes);
     }
     for (unsigned directory = 0U; directory < 2U; ++directory) {
