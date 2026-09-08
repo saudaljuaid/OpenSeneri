@@ -234,7 +234,7 @@ static uint8_t paint_bmp_row[PAINT_MAX_ROW_BYTES];
 static uint8_t paint_bmp_batch[64U * 1024U];
 static uint8_t media_export_batch[64U * 1024U];
 static uint32_t camera_preview_row[UI_MAX_WIDTH];
-static uint8_t explorer_copy_buffer[4096U];
+static uint8_t explorer_copy_buffer[64U * 1024U];
 static uint32_t settings_wallpaper_thumbnail_pixels[128U * 72U];
 static uint64_t redraw_tile_hashes[
     UI_REDRAW_DIAGNOSTIC_COLUMNS * UI_REDRAW_DIAGNOSTIC_ROWS
@@ -2285,8 +2285,7 @@ static enum phipfs_status explorer_copy_file(const char *source,
         size_t read_bytes = 0U;
         size_t written_bytes = 0U;
 
-        status = phipfs_read(input, explorer_copy_buffer,
-            sizeof(explorer_copy_buffer), &read_bytes);
+        status = phipfs_read(input, explorer_copy_buffer, 4096U, &read_bytes);
         if (status != PHIPFS_STATUS_OK || read_bytes == 0U) {
             break;
         }

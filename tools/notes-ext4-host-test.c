@@ -508,7 +508,7 @@ int main(void)
         copy_failure = failure;
         expected_destination = "COPY.BIN";
         expected_scratch = "CPTMP0.TMP";
-        expected_length = failure == 7U ? 0U : 8192U - 3U;
+        expected_length = failure == 7U ? 0U : 2U * 65536U + 8192U - 3U;
         for (size_t index = 0U; index < expected_length; ++index) expected_bytes[index] = (uint8_t)(index * 17U);
         const enum phipfs_status status = explorer_copy_file("SOURCE.BIN", expected_destination);
         const bool succeeds = failure == 0U || failure == 7U;
@@ -518,7 +518,7 @@ int main(void)
         assert((status == PHIPFS_STATUS_OK) == succeeds);
         assert(!copy_source_live && live_handles == 0U && scratch_inode == 0U);
         if (succeeds) {
-            assert(publications == 1U && target_length == expected_length && copy_reads == (failure == 7U ? 0U : 2U));
+            assert(publications == 1U && target_length == expected_length && copy_reads == (failure == 7U ? 0U : 3U));
             assert(memcmp(target_bytes, expected_bytes, expected_length) == 0);
         } else assert(publications == 0U && target_length == 3U && memcmp(target_bytes, "old", 3U) == 0);
     }
