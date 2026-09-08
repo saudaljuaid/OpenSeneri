@@ -97,6 +97,13 @@ def boot(args, image, output, work, number, original, before):
                     raise RuntimeError("failed Paint save leaked blocks or an inode")
                 qmp.hmp("sendkey esc")
                 pointer.settle_guest(0.4)
+                if args.notes:
+                    offset = serial.stat().st_size
+                    click(pointer, 1001, 16)
+                    capture.wait_serial_after(serial, offset, b"Phipia: Notes close retained unsaved document", timeout=90.0)
+                    if dump_document(image, tools, output / "close-refused-NOTES.TXT", name) != original:
+                        raise RuntimeError("refused Notes close changed the original document")
+                    capture.capture_png(qmp, work, output, "notes-close-refused")
                 applications.terminal(qmp, pointer)
                 applications.command(qmp, serial, "rm system/release")
                 applications.command(qmp, serial, "sync", b"data synchronized")

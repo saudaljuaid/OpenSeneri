@@ -8328,6 +8328,20 @@ static enum ui_status set_panel(
     if (old_panel == panel) {
         return UI_STATUS_OK;
     }
+    // A refused autosave must leave focus and close notifications untouched.
+    if (panel == UI_PANEL_NONE && old_panel == UI_PANEL_NOTES && note_dirty &&
+            note_save() != PHIPFS_STATUS_OK) {
+        console_serial_write("Phipia: Notes close retained unsaved document\n");
+        *damage = rect_union(*damage, state.layout.panel);
+        return UI_STATUS_OK;
+    }
+    if (panel == UI_PANEL_NONE && old_panel == UI_PANEL_MEDIA_EDITOR &&
+            (media_source_dirty || media_editor_dirty) &&
+            media_editor_save() != PHIPFS_STATUS_OK) {
+        console_serial_write("Phipia: Media close retained unsaved document\n");
+        *damage = rect_union(*damage, state.layout.panel);
+        return UI_STATUS_OK;
+    }
     ui_anim_end(&panel_anim);
     panel_anim_pending = UI_ANIM_PENDING_NONE;
     panel_anim_panel = UI_PANEL_NONE;
@@ -8346,17 +8360,6 @@ static enum ui_status set_panel(
     }
     native_focus_emit(old_panel, false);
     phipia_set_panel_focus(old_panel, false);
-    if (panel == UI_PANEL_NONE && old_panel == UI_PANEL_NOTES && note_dirty &&
-            note_save() != PHIPFS_STATUS_OK) {
-        *damage = rect_union(*damage, state.layout.panel);
-        return UI_STATUS_OK;
-    }
-    if (panel == UI_PANEL_NONE && old_panel == UI_PANEL_MEDIA_EDITOR &&
-            (media_source_dirty || media_editor_dirty) &&
-            media_editor_save() != PHIPFS_STATUS_OK) {
-        *damage = rect_union(*damage, state.layout.panel);
-        return UI_STATUS_OK;
-    }
     for (size_t index = 0U; index < UI_DOCK_ITEM_COUNT; ++index) {
         if (state.layout.dock_items[index].panel == old_panel ||
             state.layout.dock_items[index].panel == panel) {
