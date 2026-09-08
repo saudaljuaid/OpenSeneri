@@ -7083,8 +7083,11 @@ static enum ui_status panel_anim_start(void)
 
 static enum ui_status draw_animated_panel(struct ui_rect damage)
 {
+    // Default launch origins can extend beyond a short taskbar. Animation
+    // invalidation includes that origin, but the renderer accepts only pixels
+    // inside the destination surface (including on subsequent flush frames).
     const struct ui_rect clip = rect_intersection(
-        ui_anim_bounds(&panel_anim), damage);
+        rect_intersection(ui_anim_bounds(&panel_anim), damage), state.layout.surface);
 
     if (clip.width == 0U || clip.height == 0U) {
         return UI_STATUS_OK;
