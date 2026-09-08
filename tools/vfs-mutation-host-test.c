@@ -21,6 +21,14 @@ static uint8_t expected_prepared_flags = PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCA
 static unsigned file_sync_calls;
 static unsigned file_stat_calls;
 static unsigned publication_calls;
+static unsigned held_unlink_calls;
+
+static enum phipfs_status held_unlink(phipfs_handle handle, const char *path)
+{
+    assert(handle == 77U && live_backend_handles == 1U && strcmp(path, expected_path) == 0);
+    ++held_unlink_calls;
+    return mutation_result;
+}
 
 static enum phipfs_status publish_file(phipfs_handle handle, const char *source, const char *destination)
 {
@@ -423,6 +431,7 @@ int main(void)
     backend.fsync = file_sync;
     backend.fstat = file_stat;
     backend.publish_file = publish_file;
+    backend.unlink_held_file = held_unlink;
     mutation_result = PHIPFS_STATUS_OK;
     assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,
         expected_prepared_flags, 01720U, &opened) == PHIPFS_STATUS_OK);
@@ -439,7 +448,14 @@ int main(void)
     mutation_result = PHIPFS_STATUS_OK;
     assert(phipfs_publish_file(opened, expected_path, "other/target") == PHIPFS_STATUS_OK);
     assert(publication_calls == 2U && stats == before_file_stat);
+    mutation_result = PHIPFS_STATUS_IO;
+    assert(phipfs_unlink_held_file(opened, expected_path) == PHIPFS_STATUS_IO);
+    mutation_result = PHIPFS_STATUS_OK;
+    assert(phipfs_unlink_held_file(opened, expected_path) == PHIPFS_STATUS_OK);
+    assert(held_unlink_calls == 2U && stats == before_file_stat);
     ++mounts[PHIPFS_VOLUME_DATA].generation;
+    assert(phipfs_unlink_held_file(opened, expected_path) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(held_unlink_calls == 2U);
     assert(phipfs_fsync(opened) == PHIPFS_STATUS_STALE_HANDLE && file_sync_calls == 2U);
     assert(phipfs_fstat(opened, &metadata) == PHIPFS_STATUS_STALE_HANDLE && file_stat_calls == 1U);
     assert(metadata.object_id == 0U);

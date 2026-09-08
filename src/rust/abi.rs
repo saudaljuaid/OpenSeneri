@@ -408,6 +408,31 @@ pub(crate) unsafe extern "C" fn phipia_ext4_publish_file(
     }
 }
 
+/// Unlink a temporary name only while it names the caller's held regular inode.
+///
+/// # Safety
+/// Mount, readable path and live-inode array must be valid and non-overlapping.
+/// C must hold the volume's writable storage lease throughout this call.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn phipia_ext4_unlink_held_file(
+    mounted: usize, path: *const u8, path_length: usize, inode: u64,
+    open_inodes: *const u64, open_count: usize,
+) -> i32 {
+    if mounted == 0 || path.is_null() || open_inodes.is_null() {
+        return ext4::Status::NullArgument as i32;
+    }
+    if open_count > 128 { return ext4::Status::Range as i32; }
+    // SAFETY: the complete readable ranges and mutable mount are the caller's contract.
+    let (mounted, path, open_inodes) = unsafe {
+        (&mut *(mounted as *mut ext4::Mounted), core::slice::from_raw_parts(path, path_length),
+            core::slice::from_raw_parts(open_inodes, open_count))
+    };
+    match ext4::unlink_held_file(mounted, path, inode, open_inodes) {
+        Ok(()) => ext4::Status::Ok as i32,
+        Err(status) => status as i32,
+    }
+}
+
 /// Prepare a file open while C holds the mount's exclusive storage lease.
 ///
 /// # Safety

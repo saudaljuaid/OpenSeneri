@@ -105,6 +105,7 @@ static const struct vfs_backend_ops ext4_backend_ops = {
     .fsync = ext4_backend_fsync,
     .fstat = ext4_backend_fstat,
     .publish_file = ext4_backend_publish_file,
+    .unlink_held_file = ext4_backend_unlink_held_file,
     .mount = ext4_backend_mount,
     .unmount = ext4_backend_unmount,
     .sync = ext4_backend_sync,
@@ -879,6 +880,21 @@ enum phipfs_status phipfs_publish_file(phipfs_handle handle, const char *source,
     status = resolve_metadata_path(vnode->volume, source, from);
     if (status == PHIPFS_STATUS_OK) status = resolve_metadata_path(vnode->volume, destination, to);
     return status == PHIPFS_STATUS_OK ? state->backend->publish_file(state->backend_handle, from, to) : status;
+}
+
+enum phipfs_status phipfs_unlink_held_file(phipfs_handle handle, const char *path)
+{
+    struct vfs_open_file_state *state;
+    char canonical[PHIPFS_MAX_PATH];
+    enum phipfs_status status = open_file_state(handle, &state);
+    if (status != PHIPFS_STATUS_OK) return status;
+    const struct vfs_vnode_state *vnode = &vnodes[state->vnode_index];
+    if (!vnode->active || vnode->generation != state->vnode_generation ||
+        !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
+        return PHIPFS_STATUS_STALE_HANDLE;
+    if (state->backend->unlink_held_file == NULL) return PHIPFS_STATUS_ACCESS;
+    status = resolve_metadata_path(vnode->volume, path, canonical);
+    return status == PHIPFS_STATUS_OK ? state->backend->unlink_held_file(state->backend_handle, canonical) : status;
 }
 
 enum phipfs_status phipfs_fsync(phipfs_handle handle)

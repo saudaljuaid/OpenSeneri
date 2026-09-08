@@ -792,6 +792,93 @@ fn append_uses_live_eof_through_aliases_and_refuses_overflow_without_writes() {
 }
 
 #[test]
+fn held_file_unlink_binds_identity_retries_and_recovers_without_leaking_allocations() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let free = ext4::free_bytes(&mounted).unwrap();
+    let name = b"system/owned-temp";
+    let owned = ext4::prepare_open(&mut mounted, name, 3, 5, 0o600).unwrap();
+    ext4::write_inode(&mut mounted, owned.inode, 4095, b"incomplete-save").unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    let initial = DEVICE.with_borrow_mut(|device| {
+        device.events.clear();
+        device.bytes.clone()
+    });
+    assert_eq!(ext4::unlink_held_file(&mut mounted, name, owned.inode, &[]), Err(Status::Stale));
+    assert_eq!(ext4::unlink_held_file(&mut mounted, name, 2, &[2]), Err(Status::Stale));
+    DEVICE.with_borrow(|device| assert!(device.events.is_empty()));
+    ext4::unlink_held_file(&mut mounted, name, owned.inode, &[owned.inode]).unwrap();
+    let expected = DEVICE.with_borrow(|device| device.events.clone());
+    assert_eq!(ext4::lstat(&mounted, name), Err(Status::NotFound));
+    assert_eq!(ext4::stat_inode(&mounted, owned.inode).unwrap().links, 0);
+    ext4::sync(&mut mounted).unwrap();
+    assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
+    fsck(&path, "coordinator-held-unlink-complete");
+    drop(mounted);
+    for accept in [false, true] {
+        for failed_at in 0..expected.len() {
+            let mut mounted = mount_bytes(initial.clone());
+            DEVICE.with_borrow_mut(|device| {
+                device.fail_event = Some(failed_at);
+                device.accept_failed_write = accept;
+            });
+            assert_eq!(ext4::unlink_held_file(&mut mounted, name, owned.inode, &[owned.inode]), Err(Status::Io));
+            let crash = DEVICE.with_borrow(|device| {
+                assert_eq!(device.events, expected[..=failed_at]);
+                device.bytes.clone()
+            });
+            if failed_at >= 2 {
+                assert_eq!(ext4::unlink_file_guarded(&mut mounted, name, &[owned.inode]), Err(Status::Invalid));
+                assert_eq!(ext4::unlink_held_file(&mut mounted, name, owned.inode + 1, &[owned.inode + 1]), Err(Status::Invalid));
+            }
+            DEVICE.with_borrow_mut(|device| { device.events.clear(); device.fail_event = None; });
+            ext4::unlink_held_file(&mut mounted, name, owned.inode, &[owned.inode]).unwrap();
+            let start = if failed_at < 2 { 0 } else if failed_at >= expected.len() - 2 { expected.len() - 2 } else { 2 };
+            DEVICE.with_borrow(|device| assert_eq!(device.events, expected[start..]));
+            ext4::sync(&mut mounted).unwrap();
+            assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
+            drop(mounted);
+            let mut recovered = mount_bytes(crash);
+            // A crash drops the held descriptor. A committed removal must also
+            // reclaim the orphan; an uncommitted one retains the original name.
+            match ext4::lstat(&recovered, name) {
+                Ok(metadata) => {
+                    assert_eq!(metadata.inode, owned.inode);
+                    let mut bytes = [0; 15];
+                    assert_eq!(ext4::pread_inode(&recovered, owned.inode, 4095, &mut bytes), Ok(15));
+                    assert_eq!(&bytes, b"incomplete-save");
+                    ext4::unlink_file_probe(&mut recovered, name).unwrap();
+                }
+                Err(Status::NotFound) => {}
+                other => panic!("invalid recovered namespace: {other:?}"),
+            }
+            ext4::sync(&mut recovered).unwrap();
+            assert_eq!(ext4::free_bytes(&recovered).unwrap(), free);
+            ext4::unmount(&recovered).unwrap();
+            fsck(&path, &format!("coordinator-held-unlink-{accept}-{failed_at}"));
+        }
+    }
+    let mut mounted = mount_bytes(initial);
+    ext4::rename_probe(&mut mounted, name, b"system/owned-moved").unwrap();
+    ext4::create_file_probe(&mut mounted, name, 0o640).unwrap();
+    let replacement = ext4::lstat(&mounted, name).unwrap();
+    ext4::symlink_probe(&mut mounted, b"system/owned-link", b"owned-moved").unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    DEVICE.with_borrow_mut(|device| device.events.clear());
+    for wrong_name in [name.as_slice(), b"system/owned-link".as_slice()] {
+        assert_eq!(ext4::unlink_held_file(&mut mounted, wrong_name, owned.inode, &[owned.inode]), Err(Status::Stale));
+    }
+    DEVICE.with_borrow(|device| assert!(device.events.is_empty()));
+    assert_eq!(ext4::lstat(&mounted, name).unwrap(), replacement);
+    ext4::link_file_probe(&mut mounted, b"system/owned-moved", b"system/owned-alias").unwrap();
+    ext4::unlink_held_file(&mut mounted, b"system/owned-alias", owned.inode, &[owned.inode]).unwrap();
+    assert_eq!(ext4::stat_inode(&mounted, owned.inode).unwrap().links, 1);
+    ext4::unlink_held_file(&mut mounted, b"system/owned-moved", owned.inode, &[owned.inode]).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    fsck(&path, "coordinator-held-unlink-name-reuse");
+}
+
+#[test]
 fn maximum_vfs_file_growth_keeps_holes_zero_and_reclaims_the_last_extent() {
     let Some(path) = fixture() else { return };
     let maximum = 64 * 1024 * 1024u64;

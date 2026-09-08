@@ -182,6 +182,7 @@ enum phipfs_status ext4_backend_lstat_path(enum phipfs_volume volume, const char
 enum phipfs_status ext4_backend_fsync(phipfs_handle handle);
 enum phipfs_status ext4_backend_fstat(phipfs_handle handle, struct phipfs_stat *stat);
 enum phipfs_status ext4_backend_publish_file(phipfs_handle handle, const char *source, const char *destination);
+enum phipfs_status ext4_backend_unlink_held_file(phipfs_handle handle, const char *path);
 int32_t phipia_ext4_publish_file(uintptr_t mounted, const uint8_t *source, size_t source_length,
     const uint8_t *destination, size_t destination_length, uint64_t inode,
     const uint64_t *open_inodes, size_t open_count);

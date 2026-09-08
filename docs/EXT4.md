@@ -62,6 +62,14 @@ operation when ext4 is admitted, and SDK `rename()` uses that syscall. Errors
 from the ext4 transaction return directly; they never trigger the multi-step
 backup-name replacement used by backends without atomic replacement.
 
+VFS `phipfs_unlink_held_file` removes a name only if it still names the caller's
+writable regular-file handle. The coordinator compares the final entry without
+following a symlink before arming recovery and binds the inode into a distinct
+retry key. Final-link removal uses the existing open-orphan chain; ordinary
+unlink cannot take over its retained plan. This supports owned scratch cleanup
+after draining failed application writes. New identity, storage-failure, replay,
+allocation and fsck fixtures require Linux verification before gate credit.
+
 C normally closes each NVMe filesystem session before returning. Failed
 teardown retains the ownership cookie and freezes ordinary I/O; explicit sync
 or unmount can retry teardown before resuming the journal coordinator. Ordinary reads acquire a

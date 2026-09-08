@@ -20,6 +20,7 @@ static uint64_t pending_size;
 static unsigned sync_refusals;
 static unsigned file_sync_calls;
 static unsigned publication_calls;
+static unsigned held_unlink_calls;
 static unsigned stat_refusals;
 static unsigned appends;
 static uint16_t changed_mode;
@@ -379,6 +380,16 @@ int32_t phipia_ext4_publish_file(uintptr_t mounted, const uint8_t *source, size_
     assert(destination_length == 5U && memcmp(destination, "moved", 5U) == 0);
     assert(open_count == 2U && open_inodes[0] == 42U && open_inodes[1] == 42U);
     ++publication_calls;
+    return permanent_status;
+}
+
+int32_t phipia_ext4_unlink_held_file(uintptr_t mounted, const uint8_t *path,
+    size_t length, uint64_t inode, const uint64_t *open_inodes, size_t open_count)
+{
+    assert(mounted == 1U && inode == 42U && ext4_mounts[PHIPFS_VOLUME_DATA].session.writable);
+    assert(length == 4U && memcmp(path, "file", 4U) == 0);
+    assert(open_count == 2U && open_inodes[0] == 42U && open_inodes[1] == 42U);
+    ++held_unlink_calls;
     return permanent_status;
 }
 
@@ -857,6 +868,15 @@ int main(void)
     permanent_status = PHIPIA_EXT4_STATUS_OK;
     assert(ext4_backend_publish_file(second, "file", "moved") == PHIPFS_STATUS_OK);
     assert(publication_calls == 2U && opens == closes);
+    assert(ext4_backend_unlink_held_file(first, "file") == PHIPFS_STATUS_ACCESS);
+    assert(held_unlink_calls == 0U);
+    permanent_status = PHIPIA_EXT4_STATUS_IO;
+    assert(ext4_backend_unlink_held_file(second, "file") == PHIPFS_STATUS_IO);
+    permanent_status = PHIPIA_EXT4_STATUS_STALE;
+    assert(ext4_backend_unlink_held_file(second, "file") == PHIPFS_STATUS_STALE_HANDLE);
+    permanent_status = PHIPIA_EXT4_STATUS_OK;
+    assert(ext4_backend_unlink_held_file(second, "file") == PHIPFS_STATUS_OK);
+    assert(held_unlink_calls == 3U && opens == closes);
     callback_handle = first;
     close_callback_kind = 3U;
     const unsigned sync_before_stale = file_sync_calls;
@@ -870,6 +890,11 @@ int main(void)
     assert(ext4_backend_fstat(first, &path_metadata) == PHIPFS_STATUS_STALE_HANDLE);
     assert(path_metadata.object_id == 0U && path_metadata.mode == 0U && opens == closes);
     assert(!volume_has_open_handles(PHIPFS_VOLUME_DATA));
+    assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ_WRITE, &first) == PHIPFS_STATUS_OK);
+    callback_handle = first;
+    close_callback_kind = 3U;
+    assert(ext4_backend_unlink_held_file(first, "file") == PHIPFS_STATUS_STALE_HANDLE);
+    assert(held_unlink_calls == 3U && opens == closes);
     unmount_refusals = 1U;
     assert(ext4_backend_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_CORRUPT);
     assert(live_mounts == 1U && !ext4_mounts[PHIPFS_VOLUME_DATA].detaching);

@@ -144,6 +144,7 @@ enum PendingMutationKind {
     Truncate,
     CreateFile,
     UnlinkFile,
+    UnlinkHeldFile,
     FinalizeOrphan,
     LinkFile,
     CreateDirectory,
@@ -1845,13 +1846,34 @@ pub(crate) fn unlink_file_guarded(
     path: &[u8],
     open_inodes: &[u64],
 ) -> Result<(), Status> {
+    unlink_file_transaction(mounted, path, open_inodes, None)
+}
+
+/// Remove a temporary name only while it still names the held regular inode.
+/// The live handle prevents inode reuse; retries bind both path and identity.
+pub(crate) fn unlink_held_file(mounted: &mut Mounted, path: &[u8],
+    inode: u64, open_inodes: &[u64]) -> Result<(), Status> {
+    inode_index(inode)?;
+    if !open_inodes.contains(&inode) { return Err(Status::Stale); }
+    unlink_file_transaction(mounted, path, open_inodes, Some(inode))
+}
+
+fn unlink_file_transaction(mounted: &mut Mounted, path: &[u8],
+    open_inodes: &[u64], expected_inode: Option<u64>) -> Result<(), Status> {
     let absolute = absolute_path(path)?;
+    let kind = if expected_inode.is_some() { PendingMutationKind::UnlinkHeldFile }
+        else { PendingMutationKind::UnlinkFile };
+    let mut key = absolute.clone();
+    if let Some(inode) = expected_inode {
+        key.push(0);
+        key.extend_from_slice(&inode.to_le_bytes());
+    }
     if let Some(pending) = &mounted.pending_reclaim {
-        if pending.kind != PendingMutationKind::UnlinkFile || pending.path != absolute { return Err(Status::Invalid); }
+        if pending.kind != kind || pending.path != key { return Err(Status::Invalid); }
         return resume_reclaim_request(mounted);
     }
     if mounted.pending_mutation.is_some() {
-        return resume_namespace_mutation(mounted, PendingMutationKind::UnlinkFile, &absolute);
+        return resume_namespace_mutation(mounted, kind, &key);
     }
     if !mounted.stage.is_empty() || mounted.stage.is_sealed() {
         let recovery = mounted
@@ -1859,6 +1881,10 @@ pub(crate) fn unlink_file_guarded(
             .filesystem_recovery_marker_is_durable()
             .map_err(|_| Status::Invalid)?;
         discard_uncommitted_stage(mounted, recovery)?;
+    }
+    if let Some(expected) = expected_inode {
+        let metadata = lstat(mounted, path)?;
+        if metadata.inode != expected || metadata.file_type != 1 { return Err(Status::Stale); }
     }
     arm_recovery_marker(mounted)?;
     let (parent, name) = parent_and_name(&absolute)?;
@@ -1906,8 +1932,8 @@ pub(crate) fn unlink_file_guarded(
                 return Err(map_error(error));
             }
             mounted.pending_reclaim = Some(PendingReclaim {
-                kind: PendingMutationKind::UnlinkFile,
-                path: absolute, argument: 0, inode, retain_unlinked: false, namespace_committed: false,
+                kind,
+                path: key, argument: 0, inode, retain_unlinked: false, namespace_committed: false,
             });
             return resume_reclaim_request(mounted);
         }
@@ -1924,7 +1950,7 @@ pub(crate) fn unlink_file_guarded(
         discard_uncommitted_stage(mounted, true)?;
         return Err(Status::Invalid);
     }
-    commit_namespace_mutation(mounted, PendingMutationKind::UnlinkFile, absolute)
+    commit_namespace_mutation(mounted, kind, key)
 }
 
 fn resume_reclaim_request(mounted: &mut Mounted) -> Result<(), Status> {

@@ -24,6 +24,7 @@ struct vfs_backend_ops {
     enum phipfs_status (*fsync)(phipfs_handle handle);
     enum phipfs_status (*fstat)(phipfs_handle handle, struct phipfs_stat *stat);
     enum phipfs_status (*publish_file)(phipfs_handle handle, const char *source, const char *destination);
+    enum phipfs_status (*unlink_held_file)(phipfs_handle handle, const char *path);
     enum phipfs_status (*read)(phipfs_handle handle, uint8_t *destination,
         size_t capacity, size_t *read_bytes);
     enum phipfs_status (*pread)(phipfs_handle handle, uint8_t *destination,

@@ -141,6 +141,8 @@ extern int32_t phipia_ext4_write_inode(uintptr_t mounted, uint64_t inode, uint64
     const uint8_t *source, size_t length, size_t *count);
 extern int32_t phipia_ext4_append_inode(uintptr_t mounted, uint64_t inode,
     const uint8_t *source, size_t length, uint64_t maximum_size, uint64_t *start, size_t *count);
+extern int32_t phipia_ext4_unlink_held_file(uintptr_t mounted, const uint8_t *path,
+    size_t path_length, uint64_t inode, const uint64_t *open_inodes, size_t open_count);
 
 _Static_assert(sizeof(struct phipia_ext4_metadata) == 80U,
     "ext4 metadata C/Rust ABI drift");
@@ -1027,6 +1029,29 @@ enum phipfs_status ext4_backend_unmount(enum phipfs_volume volume)
     }
     zero_bytes(mount, sizeof(*mount));
     return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status ext4_backend_unlink_held_file(phipfs_handle handle, const char *path)
+{
+    struct ext4_handle_state *state;
+    const size_t length = path_length(path);
+    if (length == 0U || length >= PHIPFS_MAX_PATH) return PHIPFS_STATUS_PATH;
+    enum phipfs_status status = handle_state(handle, &state);
+    if (status != PHIPFS_STATUS_OK) return status;
+    if (state->directory || (state->access & PHIPFS_ACCESS_WRITE) == 0U) return PHIPFS_STATUS_ACCESS;
+    struct ext4_mount_state *mount = &ext4_mounts[state->volume];
+    status = begin_operation(mount, true);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = leased_handle_state(handle, mount, &state);
+    if (status == PHIPFS_STATUS_OK) {
+        uint64_t open_inodes[EXT4_MAX_HANDLES];
+        const size_t open_count = collect_open_inodes(state->volume, open_inodes, true);
+        mount->orphan_cleanup_pending = true;
+        status = map_status(phipia_ext4_unlink_held_file(mount->rust_mount, (const uint8_t *)path,
+            length, state->inode, open_inodes, open_count));
+    }
+    const enum phipfs_status closed = end_operation(mount, NULL);
+    return status == PHIPFS_STATUS_OK ? closed : status;
 }
 
 static enum phipfs_status sync_volume_handle(enum phipfs_volume volume, phipfs_handle handle)
