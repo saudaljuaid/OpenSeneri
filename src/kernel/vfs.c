@@ -25,6 +25,7 @@ struct vfs_mount_state {
     size_t references;
     enum phipfs_volume volume;
     bool active;
+    bool mounting;
     bool unmounting;
 };
 
@@ -638,7 +639,7 @@ bool phipfs_self_test(size_t *completed_tests)
 bool phipfs_resources_released(void)
 {
     for (size_t index = 0U; index < PHIPFS_VOLUME_COUNT; ++index)
-        if (mounts[index].active || mounts[index].unmounting || mounts[index].references != 0U) return false;
+        if (mounts[index].active || mounts[index].mounting || mounts[index].unmounting || mounts[index].references != 0U) return false;
     for (size_t index = 0U; index < VFS_MAX_VNODES; ++index)
         if (vnodes[index].active || vnodes[index].references != 0U || vnode_reservations[index]) return false;
     for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index)
@@ -681,7 +682,7 @@ enum phipfs_status phipfs_mount(enum phipfs_volume volume)
     if (!valid_volume(volume)) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
-    if (mounts[volume].unmounting) return PHIPFS_STATUS_BUSY;
+    if (mounts[volume].mounting || mounts[volume].unmounting) return PHIPFS_STATUS_BUSY;
     if (mounts[volume].active) {
         return PHIPFS_STATUS_ALREADY_MOUNTED;
     }
@@ -689,10 +690,12 @@ enum phipfs_status phipfs_mount(enum phipfs_volume volume)
     if (backend == NULL) {
         return PHIPFS_STATUS_NOT_MOUNTED;
     }
+    mounts[volume].mounting = true;
     status = backend->mount(volume);
     if (status == PHIPFS_STATUS_OK) {
         install_mount(volume, backend);
     }
+    mounts[volume].mounting = false;
     return status;
 }
 
@@ -703,7 +706,7 @@ enum phipfs_status phipfs_unmount(enum phipfs_volume volume)
     if (!valid_volume(volume)) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
-    if (mounts[volume].unmounting) return PHIPFS_STATUS_BUSY;
+    if (mounts[volume].mounting || mounts[volume].unmounting) return PHIPFS_STATUS_BUSY;
     if (!mounts[volume].active) {
         return PHIPFS_STATUS_NOT_MOUNTED;
     }
