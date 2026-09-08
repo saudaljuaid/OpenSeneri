@@ -40,23 +40,23 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
     removed = "owned-cut" if replacement_inode is None else "replace-source"
     if operation == "rmdir":
         removed = "removed-directory"
-    if operation not in ("truncate", "grow", "xattr", "create", "mkdir") and f"/{removed}/" in namespace:
+    if operation not in ("truncate", "grow", "xattr", "xattr-remove", "create", "mkdir") and f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
     (output / "namespace.txt").write_text(namespace)
-    expected_files = {} if operation in ("truncate", "grow", "xattr", "create", "mkdir") else {f"data/user/{removed}": None}
+    expected_files = {} if operation in ("truncate", "grow", "xattr", "xattr-remove", "create", "mkdir") else {f"data/user/{removed}": None}
     if replacement_inode is not None:
         target_name = "truncate-target" if operation in ("truncate", "grow") else "replace-target"
         target_size = 1700 if operation == "truncate" else 4500
         if operation == "grow":
             target_size = 12345
-        if operation == "xattr":
+        if operation in ("xattr", "xattr-remove"):
             target_name, target_size = "attribute-target", 1700
         if operation == "create":
             target_name, target_size = "created-target", 0
         if operation == "mkdir":
             target_name, target_size = "created-directory", 4096
-        expected_content = (b"t" if operation in ("truncate", "xattr") else b"s") * target_size
+        expected_content = (b"t" if operation in ("truncate", "xattr", "xattr-remove") else b"s") * target_size
         if operation == "grow":
             expected_content = b"t" * 1700 + bytes(target_size - 1700)
         target_output = ext4_image._debugfs(tools, image, f"stat /data/user/{target_name}")
@@ -69,6 +69,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
             raise RuntimeError("sparse growth allocated physical hole blocks")
         if operation == "xattr" and target["block_count_512"] != 16:
             raise RuntimeError("external xattr physical allocation changed")
+        if operation == "xattr-remove" and target["block_count_512"] != 8:
+            raise RuntimeError("removed external xattr block was not reclaimed")
         if operation == "mkdir":
             if target["mode"] != "0750" or target["block_count_512"] != 8 or not re.search(r"Type:\s+directory\b", target_output):
                 raise RuntimeError("created directory mode type or allocation changed")
@@ -80,9 +82,9 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
                 raise RuntimeError("held-replace changed the published file contents")
             expected_files[f"data/user/{target_name}"] = {
                 "bytes": target_size, "sha256": hashlib.sha256(expected_content).hexdigest()}
-            if operation == "xattr":
+            if operation in ("xattr", "xattr-remove"):
                 expected_files[f"data/user/{target_name}"]["xattrs"] = {
-                    "user.cut": bytes(index % 251 for index in range(300)).hex()}
+                    "user.cut": None if operation == "xattr-remove" else bytes(index % 251 for index in range(300)).hex()}
         if operation in ("truncate", "grow"):
             mapping = ext4_image._debugfs(tools, image, "bmap /data/user/truncate-target 0")
             blocks = re.findall(r"^([0-9]+)$", mapping, re.MULTILINE)
@@ -116,7 +118,8 @@ def run(args):
     creating = args.operation in ("create", "mkdir")
     directory = args.operation == "mkdir"
     removing_directory = args.operation == "rmdir"
-    attributing = args.operation == "xattr"
+    attributing = args.operation in ("xattr", "xattr-remove")
+    removing_attribute = args.operation == "xattr-remove"
     pass_marker = PASS if not replacement else "ST EXT4 VFS held-replace old-or-new cleanup census exact"
     state_marker = "ST EXT4 HELD REPLACE initial" if replacement else "ST EXT4 HELD UNLINK initial"
     if truncating:
@@ -136,6 +139,8 @@ def run(args):
     if attributing:
         pass_marker = "ST EXT4 VFS external xattr bytes inode allocation census exact"
         state_marker = "ST EXT4 XATTR initial"
+        if removing_attribute:
+            pass_marker = "ST EXT4 VFS external xattr remove inode reclamation census exact"
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     tools = ext4_image.require_tools()
@@ -166,10 +171,15 @@ def run(args):
             files = [(empty, "CUTRMDIR.TST")]
         if attributing:
             source.write_bytes(b"t" * 1700)
-            files = [(source, "attribute-target"), (empty, "CUTXATTR.TST")]
+            files = [(source, "attribute-target"), (empty, "CUTXREM.TST" if removing_attribute else "CUTXATTR.TST")]
         for file, name in files:
             ext4_image._run([tools["debugfs"], "-w", "-R",
                 f'write "{file.as_posix()}" /data/user/{name}', initial])
+        if removing_attribute:
+            attribute = work / "attribute"
+            attribute.write_bytes(bytes(index % 251 for index in range(300)))
+            ext4_image._run([tools["debugfs"], "-w", "-R",
+                f'ea_set -f "{attribute.as_posix()}" /data/user/attribute-target user.cut', initial])
     before = ext4_image.inspect_image(initial, tools=tools)
     parent = ext4_image._parse_stat(ext4_image._debugfs(tools, initial, "stat /data/user"), "/data/user")
     expected_parent_links = parent["links"] + (1 if directory else (-1 if removing_directory else 0))
@@ -189,6 +199,8 @@ def run(args):
         reclaimed, initial_blocks, initial_size = 1, 1, 4096
     if attributing:
         reclaimed, initial_blocks, initial_size = -1, 1, 1700
+        if removing_attribute:
+            reclaimed, initial_blocks = 1, 2
     if not creating and (target["size"] != initial_size or target["block_count_512"] != initial_blocks * 8):
         raise RuntimeError("held-unlink input has unexpected allocation geometry")
     replacement_inode = target["inode"] if truncating or attributing else None
@@ -285,7 +297,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "create", "mkdir", "rmdir", "xattr"), default="unlink")
+    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "create", "mkdir", "rmdir", "xattr", "xattr-remove"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

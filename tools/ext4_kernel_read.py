@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -50,8 +51,14 @@ def mounted_read(root, expected):
             raise RuntimeError(f"Linux file length differs for {name}: {size} != {wanted['bytes']}")
         actual = {"bytes": size, "sha256": digest(target)}
         if "xattrs" in wanted:
-            actual["xattrs"] = {attribute: os.getxattr(target, attribute).hex()
-                for attribute in wanted["xattrs"]}
+            actual["xattrs"] = {}
+            for attribute, value in wanted["xattrs"].items():
+                try:
+                    actual["xattrs"][attribute] = os.getxattr(target, attribute).hex()
+                except OSError as error:
+                    if value is not None or error.errno != errno.ENODATA:
+                        raise
+                    actual["xattrs"][attribute] = None
         if actual != wanted:
             raise RuntimeError(f"Linux and e2fsprogs disagree for {name}: {actual!r} != {wanted!r}")
         result[name] = actual

@@ -318,6 +318,17 @@ class KernelReadTests(unittest.TestCase):
             with mock.patch.object(kernel_read.os, "getxattr", side_effect=OSError("missing attribute"), create=True):
                 with self.assertRaises(OSError):
                     kernel_read.mounted_read(root, expected)
+            expected[file.name]["xattrs"]["user.cut"] = None
+            with mock.patch.object(kernel_read.os, "getxattr",
+                    side_effect=OSError(kernel_read.errno.ENODATA, "removed"), create=True):
+                self.assertEqual(kernel_read.mounted_read(root, expected), expected)
+            with mock.patch.object(kernel_read.os, "getxattr", return_value=b"", create=True):
+                with self.assertRaises(RuntimeError):
+                    kernel_read.mounted_read(root, expected)
+            with mock.patch.object(kernel_read.os, "getxattr",
+                    side_effect=OSError(kernel_read.errno.EIO, "read failed"), create=True):
+                with self.assertRaises(OSError):
+                    kernel_read.mounted_read(root, expected)
 
     def test_manifest_checks_exact_contents_and_confines_paths(self):
         with tempfile.TemporaryDirectory() as temporary:
