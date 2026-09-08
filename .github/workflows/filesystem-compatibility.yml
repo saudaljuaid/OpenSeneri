@@ -17,6 +17,11 @@ on:
                 description: Diagnostic desktop cold-boot journey only (not full milestone verification)
                 type: boolean
                 default: false
+            ext4_cut_operation:
+                description: Single power-cut diagnostic (requires ext4_boot_probe; all preserves the complete probe)
+                type: choice
+                default: all
+                options: [all, unlink, replace, truncate, grow, create, mkdir, rmdir, xattr]
 
 permissions:
     contents: read
@@ -32,6 +37,7 @@ jobs:
         timeout-minutes: 360
         env:
             PHIPIA_EXT4_KERNEL_INTEROP: "1"
+            PHIPIA_EXT4_CUT_OPERATION: ${{ inputs.ext4_cut_operation || 'all' }}
             # Exact Ubuntu package used by the successful 8520fa7 evidence.
             PHIPIA_E2FSPROGS_VERSION: "1.47.0-2.4~exp1ubuntu4.1"
         steps:
@@ -76,6 +82,10 @@ jobs:
                   set -o pipefail
                   mkdir -p evidence/ext4
                   git rev-parse HEAD >evidence/ext4/head.txt
+                  if [[ "$PHIPIA_EXT4_CUT_OPERATION" != 'all' ]]; then
+                      echo 'A selected cut requires the explicit boot diagnostic mode.'
+                      exit 1
+                  fi
                   make verify 2>&1 | tee evidence/ext4/verify.log
             - name: Build the diagnostic kernel (not milestone verification)
               if: ${{ inputs.ext4_boot_probe || inputs.ext4_application_probe }}
@@ -88,6 +98,14 @@ jobs:
                       echo 'Choose only one diagnostic mode.'
                       exit 1
                   fi
+                  if [[ "$PHIPIA_EXT4_CUT_OPERATION" != 'all' && '${{ inputs.ext4_boot_probe }}' != 'true' ]]; then
+                      echo 'A selected cut requires the explicit boot diagnostic mode.'
+                      exit 1
+                  fi
+                  case "$PHIPIA_EXT4_CUT_OPERATION" in
+                      all|unlink|replace|truncate|grow|create|mkdir|rmdir|xattr) ;;
+                      *) echo 'Unsupported cut diagnostic.'; exit 1 ;;
+                  esac
                   printf '%s\n' 'Targeted ext4 diagnostic only; all milestone gates remain required.' \
                       >evidence/ext4/DIAGNOSTIC-ONLY.txt
                   make kernel lint 2>&1 | tee evidence/ext4/diagnostic-build.log
@@ -124,6 +142,11 @@ jobs:
                       targets+=(qemu-test-ext4-powercuts)
                   else
                       targets+=(qemu-test-ext4-replace-powercuts qemu-test-ext4-truncate-powercuts qemu-test-ext4-grow-powercuts qemu-test-ext4-create-powercuts qemu-test-ext4-mkdir-powercuts qemu-test-ext4-rmdir-powercuts qemu-test-ext4-xattr-powercuts)
+                      if [[ "$PHIPIA_EXT4_CUT_OPERATION" != 'all' ]]; then
+                          targets=("qemu-test-ext4-${PHIPIA_EXT4_CUT_OPERATION}-powercuts")
+                          printf 'Single operation diagnostic: %s. Full recovery and milestone gates remain required.\n' \
+                              "$PHIPIA_EXT4_CUT_OPERATION" >evidence/ext4/SINGLE-CUT-DIAGNOSTIC.txt
+                      fi
                   fi
                   make "${targets[@]}" QEMU_ACCEL=tcg \
                       2>&1 | tee evidence/ext4/qemu.log
