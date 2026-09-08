@@ -137,6 +137,7 @@ jobs:
                   build/ext4-storage-cut-host-test 2>&1 | tee evidence/ext4/ext4-storage-cut-host.log
                   make build/keyboard-channel-host-test
                   build/keyboard-channel-host-test 2>&1 | tee evidence/ext4/application-keyboard-host.log
+                  make package-upload-tests 2>&1 | tee evidence/ext4/package-upload-host.log
                   if [[ '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
                       printf '%s\n' 'Application probe: full host, recovery and release suites remain required.' \
                           >evidence/ext4/APPLICATION-PROBE.txt
@@ -225,7 +226,7 @@ jobs:
                   done
                   exit "$result"
             - name: Exercise ext4 package repair removal and SDL reboot persistence
-              if: ${{ !cancelled() && !inputs.ext4_boot_probe && !inputs.ext4_application_probe }}
+              if: ${{ !cancelled() && !inputs.ext4_boot_probe }}
               shell: bash
               run: |
                   set -o pipefail

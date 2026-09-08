@@ -590,6 +590,12 @@ enum package_upload_status package_upload_close(
             slot, index);
     }
     servicing = true;
+    /* Cleanup may durably trim the payload in several transactions before
+     * unlink or sync refuses. The retained token is then cleanup-only: it
+     * must never advertise the old digest or expose partly removed bytes. */
+    slot->poisoned = true;
+    slot->sealed = false;
+    slot->durable = false;
     if (slot->file_open) {
         (void)phipfs_close(slot->file);
         slot->file_open = false;

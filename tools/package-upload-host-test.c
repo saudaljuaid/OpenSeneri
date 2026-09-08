@@ -541,6 +541,41 @@ static int refused_open_preserves_namespace_test(void)
     return 0;
 }
 
+static int failed_close_retires_sealed_view_test(void)
+{
+    static const uint8_t payload[] = "sealed upload";
+    uint8_t digest[PACKAGE_STATE_SHA256_BYTES], copy[sizeof(payload)];
+    struct package_upload_report report;
+    size_t completed;
+
+    CHECK(package_state_sha256(payload, sizeof(payload), digest) ==
+        PACKAGE_STATE_STATUS_OK, 80);
+    CHECK(package_upload_open(91U, &report) == PACKAGE_UPLOAD_STATUS_OK, 81);
+    const package_upload_token token = report.token;
+    CHECK(package_upload_write(91U, token, payload, sizeof(payload),
+        &completed, &report) == PACKAGE_UPLOAD_STATUS_OK &&
+        completed == sizeof(payload), 82);
+    CHECK(package_upload_seal(91U, token, sizeof(payload), digest, &report) ==
+        PACKAGE_UPLOAD_STATUS_OK, 83);
+    fail_next_unlink = true;
+    CHECK(package_upload_close(91U, token, &report) ==
+        PACKAGE_UPLOAD_STATUS_FILESYSTEM && !report.sealed && !report.durable &&
+        !package_upload_resources_released(), 84);
+    CHECK(files[0].present && files[0].size == 0U && !files[0].open, 85);
+    CHECK(package_upload_inspect(91U, token, &report) ==
+        PACKAGE_UPLOAD_STATUS_STATE && !report.sealed && !report.durable, 86);
+    CHECK(package_upload_read(91U, token, 0U, copy, sizeof(copy), &completed,
+        &report) == PACKAGE_UPLOAD_STATUS_STATE && completed == 0U, 87);
+    CHECK(package_upload_write(91U, token, payload, sizeof(payload),
+        &completed, &report) == PACKAGE_UPLOAD_STATUS_STATE && completed == 0U,
+        88);
+    CHECK(package_upload_seal(91U, token, sizeof(payload), digest, &report) ==
+        PACKAGE_UPLOAD_STATUS_STATE, 89);
+    CHECK(package_upload_close(91U, token, &report) == PACKAGE_UPLOAD_STATUS_OK &&
+        package_upload_resources_released() && !files[0].present, 90);
+    return 0;
+}
+
 int main(void)
 {
     int result = initialize_test();
@@ -562,6 +597,9 @@ int main(void)
     }
     if (result == 0) {
         result = refused_open_preserves_namespace_test();
+    }
+    if (result == 0) {
+        result = failed_close_retires_sealed_view_test();
     }
     if (result != 0) {
         (void)fprintf(stderr, "package upload host test failed: %d\n", result);
