@@ -900,8 +900,12 @@ struct phipfs_drive_info phipfs_drive(enum phipfs_volume volume)
     if (!valid_volume(volume)) {
         return absent;
     }
+    const bool restore_interrupts = vnode_metadata_acquire();
     backend = mounts[volume].active ? mounts[volume].backend :
         volume_backends[volume];
+    vnode_metadata_release(restore_interrupts);
+    // Backend operation tables have static lifetime; callbacks acquire their
+    // own metadata protection and must run outside the VFS metadata lock.
     return backend != NULL ? backend->drive(volume) : absent;
 }
 
@@ -912,8 +916,10 @@ uint64_t phipfs_completion_count(enum phipfs_volume volume)
     if (!valid_volume(volume)) {
         return 0U;
     }
+    const bool restore_interrupts = vnode_metadata_acquire();
     backend = mounts[volume].active ? mounts[volume].backend :
         volume_backends[volume];
+    vnode_metadata_release(restore_interrupts);
     return backend != NULL ? backend->completion_count(volume) : 0U;
 }
 
@@ -1609,8 +1615,12 @@ static enum phipfs_status vfs_rename_replace_pinned(enum phipfs_volume volume,
 
 bool phipfs_has_atomic_replace(enum phipfs_volume volume)
 {
-    return valid_volume(volume) && mounts[volume].active &&
+    if (!valid_volume(volume)) return false;
+    const bool restore_interrupts = vnode_metadata_acquire();
+    const bool supported = mounts[volume].active &&
         mounts[volume].backend->rename_replace != NULL;
+    vnode_metadata_release(restore_interrupts);
+    return supported;
 }
 
 static enum phipfs_status vfs_rmdir_pinned(enum phipfs_volume volume, const char *path)
