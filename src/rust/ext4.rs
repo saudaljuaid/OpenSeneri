@@ -700,7 +700,10 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
     let mut visited = 0usize;
     while let Some((path, index, parent)) = pending.pop() {
         let mut directory = filesystem.read_dir(path.as_slice()).map_err(map_error)?;
-        let mut names = BTreeSet::new();
+        // One allocation per name exhausts the kernel's bounded heap descriptor
+        // table even for the ordinary 256-entry Linux fixture. Keep complete
+        // names packed, then check exact duplicates before admitting the view.
+        let mut names: Vec<[u8; 256]> = Vec::new();
         let (mut dot, mut dotdot) = (false, false);
         for result in &mut directory {
             let entry = result.map_err(map_error)?;
@@ -725,7 +728,12 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
             if visited > MAX_VALIDATED_ENTRIES {
                 return Err(Status::Range);
             }
-            if !names.insert(name.as_ref().to_vec()) { return Err(Status::Invalid); }
+            let name_bytes: &[u8] = name.as_ref();
+            let mut name_key = [0u8; 256];
+            name_key[0] = u8::try_from(name_bytes.len()).map_err(|_| Status::Range)?;
+            name_key[1..1 + name_bytes.len()].copy_from_slice(name_bytes);
+            names.try_reserve(1).map_err(|_| Status::Range)?;
+            names.push(name_key);
             let entry_path = entry.path();
             let metadata = entry.metadata().map_err(map_error)?;
             // A zero-link orphan must never remain reachable by a directory.
@@ -772,7 +780,10 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
                 }
             }
         }
-        if !dot || !dotdot { return Err(Status::Invalid); }
+        names.sort_unstable();
+        if !dot || !dotdot || names.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(Status::Invalid);
+        }
     }
     if references.values().any(|(links, seen, untracked)| !*untracked && *seen != u32::from(*links)) {
         return Err(Status::Invalid);
