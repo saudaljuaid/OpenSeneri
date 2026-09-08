@@ -113,6 +113,8 @@ jobs:
                   build/notes-ext4-host-test 2>&1 | tee evidence/ext4/application-publication-host.log
                   make build/ui-animation-clip-host-test
                   build/ui-animation-clip-host-test 2>&1 | tee evidence/ext4/application-animation-host.log
+                  make build/shell-ext4-host-test
+                  build/shell-ext4-host-test 2>&1 | tee evidence/ext4/application-input-host.log
                   if [[ '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
                       printf '%s\n' 'Application probe: full host, recovery and release suites remain required.' \
                           >evidence/ext4/APPLICATION-PROBE.txt

@@ -1703,6 +1703,19 @@ void shell_process_keyboard_events(void)
     }
 }
 
+static void shell_idle_if_no_input(bool ui_operational)
+{
+    // Filesystem work and rendering can receive input after the last drain.
+    // Pair the final queue check with STI/HLT; otherwise already-delivered
+    // interrupts leave that input asleep until an unrelated interrupt arrives.
+    cpu_interrupt_disable();
+    if (keyboard_events_pending() || (ui_operational && ui_events_pending())) {
+        cpu_interrupt_enable();
+        return;
+    }
+    cpu_enable_and_halt();
+}
+
 _Noreturn void shell_run(void)
 {
     bool ui_operational = ui_is_active();
@@ -1779,7 +1792,7 @@ _Noreturn void shell_run(void)
          * halting - which is exactly the race that would otherwise leave the
          * machine asleep with a keystroke already waiting.
          */
-        cpu_enable_and_halt();
+        shell_idle_if_no_input(ui_operational);
     }
 }
 

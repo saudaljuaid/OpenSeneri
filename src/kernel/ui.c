@@ -4227,6 +4227,7 @@ static enum phipfs_status media_editor_save(void)
 {
     enum phipfs_status status;
 
+    console_serial_write("Phipia: Media save requested\n");
     media_source_playhead = editor_playhead_ms() / 1000U;
     status = media_source_dirty ? media_source_save() : PHIPFS_STATUS_OK;
     if (status == PHIPFS_STATUS_OK) {
@@ -7974,6 +7975,11 @@ bool ui_animation_active(void)
 bool ui_is_active(void)
 {
     return state.active;
+}
+
+bool ui_events_pending(void)
+{
+    return state.active && event_count != 0U;
 }
 
 const struct ui_state *ui_get_state(void)

@@ -10,6 +10,15 @@ static unsigned opened_count, closed_count, truncated_count, sync_count;
 static enum phipfs_status truncate_result, write_result;
 static char bytes[128];
 static size_t length;
+static bool interrupts_enabled, queued_keyboard, queued_ui, inject_on_disable;
+static unsigned halts;
+
+void cpu_interrupt_disable(void)
+{ assert(interrupts_enabled); if (inject_on_disable) queued_keyboard = true; interrupts_enabled = false; }
+void cpu_interrupt_enable(void) { assert(!interrupts_enabled); interrupts_enabled = true; }
+void cpu_enable_and_halt(void) { assert(!interrupts_enabled); ++halts; interrupts_enabled = true; }
+bool keyboard_events_pending(void) { assert(!interrupts_enabled); return queued_keyboard; }
+bool ui_events_pending(void) { assert(!interrupts_enabled); return queued_ui; }
 
 bool phipfs_has_atomic_replace(enum phipfs_volume volume)
 { assert(volume == PHIPFS_VOLUME_DATA); return ext4; }
@@ -49,6 +58,20 @@ enum phipfs_status phipfs_close(phipfs_handle handle)
 
 int main(void)
 {
+    interrupts_enabled = true;
+    shell_idle_if_no_input(true);
+    assert(halts == 1U && interrupts_enabled);
+    inject_on_disable = true; /* Input arrives after the main loop's last drain. */
+    shell_idle_if_no_input(true);
+    assert(halts == 1U && interrupts_enabled && queued_keyboard);
+    inject_on_disable = queued_keyboard = false;
+    queued_ui = true; /* Pointer or application event arrived during storage work. */
+    shell_idle_if_no_input(true);
+    assert(halts == 1U && interrupts_enabled);
+    shell_idle_if_no_input(false); /* Disabled UI must not prevent terminal idle. */
+    assert(halts == 2U && interrupts_enabled);
+    queued_ui = false;
+    puts("queued keyboard and application input after storage work prevents lost wakeup: PASS");
     strcpy(filesystem_cwd, ".");
     for (unsigned backend = 0U; backend < 2U; ++backend) {
         ext4 = backend != 0U; exists = false; length = 0U;

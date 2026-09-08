@@ -74,6 +74,8 @@ struct keyboard_state {
 enum keyboard_status keyboard_initialize(void);
 
 bool keyboard_is_initialized(void);
+/* Inspect under disabled interrupts when deciding whether the CPU may halt. */
+bool keyboard_events_pending(void);
 
 /*
  * Take the oldest event. Returns KEYBOARD_STATUS_EMPTY rather than blocking:

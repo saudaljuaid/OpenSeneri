@@ -498,6 +498,11 @@ bool keyboard_is_initialized(void)
     return state.active;
 }
 
+bool keyboard_events_pending(void)
+{
+    return state.active && queue_head != queue_tail;
+}
+
 enum keyboard_status keyboard_read(struct keyboard_event *event)
 {
     bool enabled;
