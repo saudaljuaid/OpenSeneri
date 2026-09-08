@@ -168,6 +168,87 @@ static enum phipfs_status truncate_file(enum phipfs_volume volume, const char *p
     return mutation(volume, path);
 }
 
+static bool nested_open;
+static bool fail_outer_open;
+static bool opening_directory;
+static phipfs_handle nested_handle;
+static unsigned nested_live;
+
+static enum phipfs_status nested_backend_open(enum phipfs_volume volume, const char *path,
+    enum phipfs_access access, uint8_t flags, uint16_t mode,
+    phipfs_handle *handle, struct phipfs_stat *result)
+{
+    (void)path; (void)access; (void)flags; (void)mode;
+    const bool outer = !nested_open;
+    if (outer) {
+        nested_open = true;
+        assert(phipfs_unmount(volume) == PHIPFS_STATUS_BUSY);
+        assert((opening_directory ? phipfs_directory_open(volume, expected_path, &nested_handle) :
+            phipfs_open(volume, expected_path, PHIPFS_ACCESS_READ, &nested_handle)) == PHIPFS_STATUS_OK);
+        if (fail_outer_open) return PHIPFS_STATUS_IO;
+    }
+    *handle = outer ? 81U : 82U;
+    memset(result, 0, sizeof(*result));
+    result->object_id = *handle;
+    result->directory = opening_directory;
+    ++nested_live;
+    return PHIPFS_STATUS_OK;
+}
+
+static enum phipfs_status nested_directory_open(enum phipfs_volume volume, const char *path,
+    phipfs_handle *handle, struct phipfs_stat *result)
+{
+    return nested_backend_open(volume, path, PHIPFS_ACCESS_READ, 0U, 0U, handle, result);
+}
+
+static enum phipfs_status nested_backend_close(phipfs_handle handle)
+{
+    assert((handle == 81U || handle == 82U) && nested_live != 0U);
+    --nested_live;
+    return PHIPFS_STATUS_OK;
+}
+
+static enum phipfs_status unexpected_unmount(enum phipfs_volume volume)
+{
+    (void)volume;
+    return PHIPFS_STATUS_IO;
+}
+
+static void nested_open_reservations(void)
+{
+    static const struct vfs_backend_ops backend = {
+        .open_options = nested_backend_open, .close = nested_backend_close,
+        .unmount = unexpected_unmount,
+        .stat_path = hidden_stat, .case_sensitive = true, .validates_mutation_paths = true,
+        .directory_open_with_stat = nested_directory_open,
+        .directory_read = replaced_directory_read, .directory_close = nested_backend_close,
+    };
+    mounts[PHIPFS_VOLUME_DATA].backend = &backend;
+    stat_succeeds = true;
+    for (unsigned kind = 0U; kind < 2U; ++kind) {
+        opening_directory = directory_metadata = kind != 0U;
+        for (unsigned failure = 0U; failure < 2U; ++failure) {
+            nested_open = false;
+            fail_outer_open = failure != 0U;
+            phipfs_handle outer = 0U;
+            const enum phipfs_status expected = failure != 0U ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK;
+            assert((opening_directory ? phipfs_directory_open(PHIPFS_VOLUME_DATA, expected_path, &outer) :
+                phipfs_open(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ, &outer)) == expected);
+            if (failure == 0U) {
+                assert((outer & 0xffU) != (nested_handle & 0xffU));
+                assert((opening_directory ? phipfs_directory_close(outer) : phipfs_close(outer)) == PHIPFS_STATUS_OK);
+            } else assert(outer == 0U);
+            assert((opening_directory ? phipfs_directory_close(nested_handle) : phipfs_close(nested_handle)) == PHIPFS_STATUS_OK);
+            assert(nested_live == 0U && mounts[PHIPFS_VOLUME_DATA].references == 0U);
+            for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) assert(!vnodes[index].active);
+            for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index)
+                assert(!open_files[index].active && !open_files[index].opening);
+            for (size_t index = 0U; index < VFS_MAX_DIRECTORY_ITERATORS; ++index)
+                assert(!directories[index].active && !directories[index].opening);
+        }
+    }
+}
+
 int main(void)
 {
     for (size_t index = 0U; index < VFS_VNODE_BUCKETS; ++index) vnode_buckets[index] = VFS_NO_INDEX;
@@ -370,6 +451,7 @@ int main(void)
     assert(phipfs_fstat(opened, &metadata) == PHIPFS_STATUS_STALE_HANDLE && file_stat_calls == 1U);
     assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
     for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) assert(!vnodes[index].active);
-    puts("VFS journal mutation retries, backend errors, path bounds and vnode census: PASS");
+    nested_open_reservations();
+    puts("VFS journal mutation retries, nested open reservations, backend errors, path bounds and vnode census: PASS");
     return 0;
 }

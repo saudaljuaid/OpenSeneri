@@ -45,6 +45,7 @@ struct vfs_open_file_state {
     phipfs_handle backend_handle;
     uint16_t vnode_index;
     bool active;
+    bool opening;
     bool append;
 };
 
@@ -59,6 +60,7 @@ struct vfs_directory_state {
     uint16_t vnode_index;
     bool streaming;
     bool active;
+    bool opening;
 };
 
 static struct vfs_mount_state mounts[PHIPFS_VOLUME_COUNT];
@@ -744,7 +746,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     if (status != PHIPFS_STATUS_OK) return status;
     const struct vfs_backend_ops *backend = mounts[volume].backend;
     for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index) {
-        if (!open_files[index].active) {
+        if (!open_files[index].active && !open_files[index].opening) {
             slot = index;
             break;
         }
@@ -752,6 +754,12 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     if (slot == VFS_MAX_OPEN_FILES) {
         return PHIPFS_STATUS_NO_HANDLES;
     }
+    // Backend callbacks can reenter VFS, including on another volume. Reserve
+    // the description before any create/truncate or open and pin this mount
+    // until the resulting vnode takes over its reference. No usable handle is
+    // published while the backend operation is incomplete.
+    open_files[slot].opening = true;
+    ++mounts[volume].references;
     struct phipfs_stat opened_stat;
     if (backend->open_options == NULL) {
         // Compatibility backends retain their checked parent traversal.
@@ -759,13 +767,13 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
             status = (flags & PHIPFS_OPEN_EXCLUSIVE) != 0U ? PHIPFS_STATUS_NOT_FOUND :
                 phipfs_stat_path(volume, path, &opened_stat);
             if (status == PHIPFS_STATUS_NOT_FOUND) status = phipfs_create_mode(volume, path, mode);
-            if (status != PHIPFS_STATUS_OK) return status;
+            if (status != PHIPFS_STATUS_OK) goto failed;
         }
         status = resolve_path(volume, path, canonical, &vnode_index);
-        if (status != PHIPFS_STATUS_OK) return status;
+        if (status != PHIPFS_STATUS_OK) goto failed;
         if (vnodes[vnode_index].stat.directory) {
-            vnode_release(vnode_index, vnodes[vnode_index].generation);
-            return PHIPFS_STATUS_IS_DIRECTORY;
+            status = PHIPFS_STATUS_IS_DIRECTORY;
+            goto failed;
         }
     }
     if (backend->open_options != NULL) {
@@ -778,17 +786,17 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
         status = backend->open(volume, canonical, access, &backend_handle);
     }
     if (status != PHIPFS_STATUS_OK) {
-        if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnodes[vnode_index].generation);
-        return status;
+        goto failed;
     }
     if (backend->open_options != NULL || backend->open_with_stat != NULL) {
         /* A rename/unlink/recreate may occur between resolve_path and open.
          * Bind the VFS description to the inode actually held by the backend. */
         if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnodes[vnode_index].generation);
+        vnode_index = VFS_NO_INDEX;
         status = vnode_retain(volume, canonical, &opened_stat, &vnode_index);
         if (status != PHIPFS_STATUS_OK) {
             (void)backend->close(backend_handle);
-            return status;
+            goto failed;
         }
     }
     zero_bytes(&open_files[slot], sizeof(open_files[slot]));
@@ -799,6 +807,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     open_files[slot].backend_handle = backend_handle;
     open_files[slot].vnode_index = (uint16_t)vnode_index;
     open_files[slot].active = true;
+    --mounts[volume].references;
     *handle = encode_handle(slot, open_files[slot].generation);
     if (backend->open_options == NULL && (flags & PHIPFS_OPEN_TRUNCATE) != 0U) {
         status = phipfs_ftruncate(*handle, 0U);
@@ -809,6 +818,11 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
         }
     }
     return PHIPFS_STATUS_OK;
+failed:
+    if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnodes[vnode_index].generation);
+    open_files[slot].opening = false;
+    --mounts[volume].references;
+    return status;
 }
 
 enum phipfs_status phipfs_close(phipfs_handle handle)
@@ -1046,7 +1060,7 @@ enum phipfs_status phipfs_directory_open(
         return PHIPFS_STATUS_NOT_DIRECTORY;
     }
     for (size_t index = 0U; index < VFS_MAX_DIRECTORY_ITERATORS; ++index) {
-        if (!directories[index].active) {
+        if (!directories[index].active && !directories[index].opening) {
             slot = index;
             break;
         }
@@ -1056,6 +1070,7 @@ enum phipfs_status phipfs_directory_open(
         return PHIPFS_STATUS_NO_HANDLES;
     }
     zero_bytes(&directories[slot], sizeof(directories[slot]));
+    directories[slot].opening = true;
     directories[slot].backend = mounts[volume].backend;
     struct phipfs_stat opened_stat;
     const struct vfs_backend_ops *backend = mounts[volume].backend;
@@ -1078,6 +1093,7 @@ enum phipfs_status phipfs_directory_open(
     }
     if (status != PHIPFS_STATUS_OK) {
         vnode_release(vnode_index, vnodes[vnode_index].generation);
+        zero_bytes(&directories[slot], sizeof(directories[slot]));
         return status;
     }
     if (directories[slot].streaming && backend->directory_open_with_stat != NULL) {
@@ -1094,6 +1110,7 @@ enum phipfs_status phipfs_directory_open(
     directories[slot].vnode_generation = vnodes[vnode_index].generation;
     directories[slot].vnode_index = (uint16_t)vnode_index;
     directories[slot].active = true;
+    directories[slot].opening = false;
     *handle = encode_handle(slot, directories[slot].generation);
     return PHIPFS_STATUS_OK;
 }
