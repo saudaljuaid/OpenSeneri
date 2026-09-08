@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Power-cut ordinary held-file unlink/replace, fsync and orphan reclaim."""
+"""Power-cut ordinary held-file unlink/replace/truncate and recovery."""
 
 from __future__ import annotations
 
@@ -27,28 +27,41 @@ def verify_exit(status, transcript, pass_marker=PASS):
         raise RuntimeError(f"held-unlink reboot failed ({status}):\n" + recovery._transcript_tail(transcript))
 
 
-def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_inode=None):
+def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_inode=None, operation="unlink"):
     report = ext4_image.inspect_image(image, tools=tools)
     if report["needs_recovery"] or report["free_blocks"] != expected_blocks or report["free_inodes"] != expected_inodes:
         raise RuntimeError("held-unlink recovery leaked allocations or retained recovery state")
     namespace = ext4_image._debugfs(tools, image, "ls -p /data/user")
     removed = "owned-cut" if replacement_inode is None else "replace-source"
-    if f"/{removed}/" in namespace:
+    if operation != "truncate" and f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
     (output / "namespace.txt").write_text(namespace)
-    expected_files = {f"data/user/{removed}": None}
+    expected_files = {} if operation == "truncate" else {f"data/user/{removed}": None}
     if replacement_inode is not None:
+        target_name = "truncate-target" if operation == "truncate" else "replace-target"
+        target_size = 1700 if operation == "truncate" else 4500
+        expected_content = (b"t" if operation == "truncate" else b"s") * target_size
         target = ext4_image._parse_stat(ext4_image._debugfs(tools, image,
-            "stat /data/user/replace-target"), "/data/user/replace-target")
-        if target["inode"] != replacement_inode or target["size"] != 4500 or target["links"] != 1:
+            f"stat /data/user/{target_name}"), f"/data/user/{target_name}")
+        if target["inode"] != replacement_inode or target["size"] != target_size or target["links"] != 1:
             raise RuntimeError("held-replace published the wrong inode or link count")
-        content = output / "replace-target.bin"
-        ext4_image._debugfs(tools, image, f'dump -p /data/user/replace-target "{content.as_posix()}"')
-        if content.read_bytes() != b"s" * 4500:
+        content = output / f"{target_name}.bin"
+        ext4_image._debugfs(tools, image, f'dump -p /data/user/{target_name} "{content.as_posix()}"')
+        if content.read_bytes() != expected_content:
             raise RuntimeError("held-replace changed the published file contents")
-        expected_files["data/user/replace-target"] = {
-            "bytes": 4500, "sha256": hashlib.sha256(b"s" * 4500).hexdigest()}
+        expected_files[f"data/user/{target_name}"] = {
+            "bytes": target_size, "sha256": hashlib.sha256(expected_content).hexdigest()}
+        if operation == "truncate":
+            mapping = ext4_image._debugfs(tools, image, "bmap /data/user/truncate-target 0")
+            blocks = re.findall(r"^([0-9]+)$", mapping, re.MULTILINE)
+            if len(blocks) != 1 or int(blocks[0]) == 0:
+                raise RuntimeError("truncate retained block mapping is missing or ambiguous")
+            physical = int(blocks[0])
+            with image.open("rb") as disk:
+                disk.seek(physical * 4096 + target_size)
+                if disk.read(4096 - target_size) != bytes(4096 - target_size):
+                    raise RuntimeError("truncate recovery failed to zero the retained block tail")
     for executable, arguments, name in (
         (tools["e2fsck"], ["-f", "-n"], "e2fsck.txt"),
         ("dumpe2fs", ["-h"], "dumpe2fs.txt"),
@@ -67,8 +80,12 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
 
 def run(args):
     replacement = args.operation == "replace"
+    truncating = args.operation == "truncate"
     pass_marker = PASS if not replacement else "ST EXT4 VFS held-replace old-or-new cleanup census exact"
     state_marker = "ST EXT4 HELD REPLACE initial" if replacement else "ST EXT4 HELD UNLINK initial"
+    if truncating:
+        pass_marker = "ST EXT4 VFS truncate old-or-new tail shared EOF census exact"
+        state_marker = "ST EXT4 TRUNCATE initial"
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     tools = ext4_image.require_tools()
@@ -89,26 +106,30 @@ def run(args):
             destination = work / "destination"
             destination.write_bytes(b"t" * 3000)
             files = [(source, "replace-source"), (destination, "replace-target"), (empty, "CUTREPLACE.TST")]
+        if truncating:
+            source.write_bytes(b"t" * 4500)
+            files = [(source, "truncate-target"), (empty, "CUTTRUNC.TST")]
         for file, name in files:
             ext4_image._run([tools["debugfs"], "-w", "-R",
                 f'write "{file.as_posix()}" /data/user/{name}', initial])
     before = ext4_image.inspect_image(initial, tools=tools)
-    # Final close reclaims only the removed inode: two blocks for unlink, one
-    # for replace. The replacement source remains allocated and is read back.
-    removed = "replace-target" if replacement else "owned-cut"
+    # Unlink/replace final close reclaims the removed inode. Shrink frees only
+    # the second data block and retains the inode and partial first block.
+    removed = "truncate-target" if truncating else ("replace-target" if replacement else "owned-cut")
     target = ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
         f"stat /data/user/{removed}"), f"/data/user/{removed}")
-    reclaimed = 1 if replacement else 2
-    if target["size"] != (3000 if replacement else 4500) or target["block_count_512"] != reclaimed * 8:
+    reclaimed = 1 if replacement or truncating else 2
+    initial_blocks = 1 if replacement else 2
+    if target["size"] != (3000 if replacement else 4500) or target["block_count_512"] != initial_blocks * 8:
         raise RuntimeError("held-unlink input has unexpected allocation geometry")
-    replacement_inode = None
+    replacement_inode = target["inode"] if truncating else None
     if replacement:
         source_stat = ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
             "stat /data/user/replace-source"), "/data/user/replace-source")
         if source_stat["size"] != 4500 or source_stat["block_count_512"] != 16:
             raise RuntimeError("held-replace source allocation geometry changed")
         replacement_inode = source_stat["inode"]
-    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + 1
+    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating else 1)
     iso = output / "verify.iso"
     recovery._build_iso(args.kernel.resolve(), iso, args.grub_mkrescue, args.grub_module_dir, None)
     baseline = output / "complete.raw"
@@ -116,7 +137,7 @@ def run(args):
     status, transcript = recovery._run_qemu(args.qemu, args.accel, iso, baseline,
         output / "complete.log", args.timeout)
     verify_exit(status, transcript, pass_marker)
-    inspect(baseline, tools, output / "complete", expected_blocks, expected_inodes, replacement_inode)
+    inspect(baseline, tools, output / "complete", expected_blocks, expected_inodes, replacement_inode, args.operation)
     boundaries = re.findall(r"^ST EXT4 DURABLE (\d+) ([a-z-]+)$", transcript, re.MULTILINE)
     if not 1 <= len(boundaries) <= 64 or [int(number) for number, _ in boundaries] != list(range(1, len(boundaries) + 1)):
         raise RuntimeError("held-unlink trace is not a bounded contiguous boundary sequence")
@@ -143,7 +164,7 @@ def run(args):
         expected_state = "new" if cut >= first_commit else "old"
         if transcript.count(f"{state_marker} {expected_state}\n") != 1:
             raise RuntimeError(f"held-unlink boundary {cut} violated durable {expected_state} namespace")
-        report = inspect(image, tools, output / f"cut-{cut:02d}", expected_blocks, expected_inodes, replacement_inode)
+        report = inspect(image, tools, output / f"cut-{cut:02d}", expected_blocks, expected_inodes, replacement_inode, args.operation)
         reports.append({"cut": cut, "boundary": boundary, "recovered_state": expected_state, "result": report,
             "crashed_sha256": hashlib.sha256(crashed.read_bytes()).hexdigest()})
         if cut == first_commit:
@@ -176,19 +197,19 @@ def run(args):
                 verify_exit(final_status, final_trace, pass_marker)
                 if final_trace.count(f"{state_marker} new\n") != 1:
                     raise RuntimeError("repeated recovery resurrected the committed removed name")
-                result = inspect(repeated_image, tools, output / prefix, expected_blocks, expected_inodes, replacement_inode)
+                result = inspect(repeated_image, tools, output / prefix, expected_blocks, expected_inodes, replacement_inode, args.operation)
                 repeated_recovery.append({"cut": second_cut, "boundary": recovery_boundary, "result": result,
                     "crashed_sha256": hashlib.sha256(second_crashed.read_bytes()).hexdigest()})
     (output / "report.json").write_text(json.dumps({"operation": args.operation, "before": before, "reports": reports,
         "repeated_recovery": repeated_recovery,
         "kernel_sha256": hashlib.sha256(args.kernel.read_bytes()).hexdigest(),
         "fixture_sha256": hashlib.sha256(args.fixture.read_bytes()).hexdigest()}, indent=2, sort_keys=True) + "\n")
-    print(f"ordinary VFS held {args.operation}: {len(boundaries)} operation cuts, {len(repeated_recovery)} repeated recovery cuts, orphan reclamation, census and read-only fsck PASS")
+    print(f"ordinary VFS held {args.operation}: {len(boundaries)} operation cuts, {len(repeated_recovery)} repeated recovery cuts, allocation accounting, census and read-only fsck PASS")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--operation", choices=("unlink", "replace"), default="unlink")
+    parser.add_argument("--operation", choices=("unlink", "replace", "truncate"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

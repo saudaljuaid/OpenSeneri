@@ -5213,6 +5213,50 @@ static _Noreturn void ext4_vfs_replace_powercut(void)
     kernel_test_pass();
 }
 
+static _Noreturn void ext4_vfs_truncate_powercut(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/truncate-target";
+    struct phipfs_stat metadata, held;
+    phipfs_handle file, reader;
+    uint8_t byte;
+    size_t count;
+    ext4_vfs_require(phipfs_stat_path(volume, name, &metadata), "truncate cut initial stat");
+    if (metadata.directory || metadata.links != 1U ||
+        (metadata.size != 4500U && metadata.size != 1700U))
+        kernel_test_fail("ext4 truncate cut state is neither old nor new");
+    console_write(metadata.size == 4500U ? "ST EXT4 TRUNCATE initial old\n" :
+        "ST EXT4 TRUNCATE initial new\n");
+    ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ_WRITE, &file), "truncate cut writer");
+    ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &reader), "truncate cut reader");
+    // Before the commit, all old bytes must survive, including the part of
+    // the retained physical block that the shrink will zero in the journal.
+    ext4_vfs_cut_contents(reader, metadata.size, 't');
+    if (metadata.size == 4500U)
+        ext4_vfs_require(phipfs_ftruncate(file, 1700U), "truncate cut shrink");
+    ext4_vfs_require(phipfs_fstat(reader, &held), "truncate cut shared EOF");
+    if (held.object_id != metadata.object_id || held.links != 1U || held.size != 1700U)
+        kernel_test_fail("ext4 truncate cut changed inode or retained stale reader EOF");
+    ext4_vfs_cut_contents(reader, 1700U, 't');
+    count = 99U;
+    ext4_vfs_require(phipfs_pread(reader, &byte, 1U, 1700U, &count), "truncate cut EOF read");
+    if (count != 0U) kernel_test_fail("ext4 truncate cut exposed removed tail");
+    ext4_vfs_require(phipfs_fsync(file), "truncate cut file sync");
+    ext4_vfs_require(phipfs_close(reader), "truncate cut reader close");
+    ext4_vfs_require(phipfs_close(file), "truncate cut writer close");
+    if (phipfs_fstat(file, &held) != PHIPFS_STATUS_STALE_HANDLE ||
+        phipfs_fstat(reader, &held) != PHIPFS_STATUS_STALE_HANDLE)
+        kernel_test_fail("ext4 truncate cut retained closed handles");
+    ext4_vfs_require(phipfs_sync(volume), "truncate cut final sync");
+    ext4_vfs_require(phipfs_unmount(volume), "truncate cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 truncate cut resource census failed");
+    console_write("ST EXT4 VFS truncate old-or-new tail shared EOF census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_inode_exhaustion(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5405,6 +5449,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         ext4_vfs_held_unlink_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTREPLACE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_replace_powercut();
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTTRUNC.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_truncate_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/LOWSPACE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_low_space();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/INOFULL.TST", &stat) == PHIPFS_STATUS_OK)
