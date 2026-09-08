@@ -27,7 +27,7 @@ pub struct BlockAllocationSnapshot<'a> {
     claimed_blocks: u64,
     validated_inodes: Vec<crate::inode::InodeIndex>,
     directory_counts: BTreeMap<u32, u32>,
-    xattr_references: BTreeMap<u64, (u32, u32, crate::inode::InodeIndex)>,
+    xattr_references: Vec<(u64, (u32, u32, crate::inode::InodeIndex))>,
     invalid: bool,
     fixed_reserved: bool,
 }
@@ -35,7 +35,7 @@ pub struct BlockAllocationSnapshot<'a> {
 impl<'a> BlockAllocationSnapshot<'a> {
     pub(crate) fn new(filesystem: &'a Ext4) -> Self {
         Self { filesystem, groups: BTreeMap::new(), extent_ranges: Vec::new(), claimed_blocks: 0,
-            validated_inodes: Vec::new(), directory_counts: BTreeMap::new(), xattr_references: BTreeMap::new(),
+            validated_inodes: Vec::new(), directory_counts: BTreeMap::new(), xattr_references: Vec::new(),
             invalid: false, fixed_reserved: false }
     }
 
@@ -162,17 +162,24 @@ impl<'a> BlockAllocationSnapshot<'a> {
     #[maybe_async::maybe_async]
     async fn validate_xattr_reference(&mut self, inode: &crate::inode::Inode) -> Result<bool, Ext4Error> {
         let Some((block, expected)) = inode.external_xattr_reference(self.filesystem).await? else { return Ok(false) };
-        if let Some((previous_expected, seen, _)) = self.xattr_references.get_mut(&block) {
-            if *previous_expected != expected || *seen >= expected {
-                return Err(CorruptKind::Xattr(inode.index).into());
+        match self.xattr_references.binary_search_by_key(&block, |entry| entry.0) {
+            Ok(index) => {
+                let (previous_expected, seen, _) = &mut self.xattr_references[index].1;
+                if *previous_expected != expected || *seen >= expected {
+                    return Err(CorruptKind::Xattr(inode.index).into());
+                }
+                *seen += 1;
             }
-            *seen += 1;
-        } else {
-            self.claim_extent_range(block, 1, inode.index)?;
-            if !self.range_is_allocated(block, 1).await? {
-                return Err(CorruptKind::Xattr(inode.index).into());
+            Err(index) => {
+                // Keep reference accounting fallible even when many distinct
+                // inodes own external attributes. Reserve before claiming.
+                self.xattr_references.try_reserve(1).map_err(|_| Ext4Error::FileTooLarge)?;
+                self.claim_extent_range(block, 1, inode.index)?;
+                if !self.range_is_allocated(block, 1).await? {
+                    return Err(CorruptKind::Xattr(inode.index).into());
+                }
+                self.xattr_references.insert(index, (block, (expected, 1, inode.index)));
             }
-            self.xattr_references.insert(block, (expected, 1, inode.index));
         }
         Ok(true)
     }

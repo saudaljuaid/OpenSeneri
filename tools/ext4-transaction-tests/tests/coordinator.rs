@@ -2080,6 +2080,8 @@ fn wide_nested_directory_census_preserves_paths_parents_and_mutation_reload() {
     for index in 0..384 {
         script.push_str(&format!("mkdir /wide/d-{index}\nmkdir /wide/d-{index}/{}\n",
             "x".repeat(index % 32 + 1)));
+        script.push_str(&format!("ea_set /wide/d-{index} user.wide {}\n",
+            char::from(b'a' + (index % 26) as u8).to_string().repeat(300)));
     }
     std::fs::write(&commands, script).unwrap();
     let result = std::process::Command::new("debugfs").args(["-w", "-f"])
@@ -2091,6 +2093,10 @@ fn wide_nested_directory_census_preserves_paths_parents_and_mutation_reload() {
     for index in 0..384 {
         let name = format!("wide/d-{index}/{}", "x".repeat(index % 32 + 1));
         assert_eq!(ext4::stat(&mounted, name.as_bytes()).unwrap().links, 2);
+        let mut attribute = [0u8; 300];
+        assert_eq!(ext4::get_xattr(&mounted, format!("wide/d-{index}").as_bytes(),
+            b"user.wide", &mut attribute), Ok(attribute.len()));
+        assert_eq!(attribute, [b'a' + (index % 26) as u8; 300]);
     }
     let source = b"wide/d-0/x/file";
     let target = b"wide/d-383/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/file";
