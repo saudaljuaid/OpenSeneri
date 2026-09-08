@@ -5541,11 +5541,42 @@ static _Noreturn void ext4_vfs_create_powercut(void)
     phipfs_handle file = 0U, reader = 0U, collision = 99U;
     uint8_t byte;
     size_t count = 99U;
+    uint32_t failure_ordinal = 0U;
+    const bool storage_probe = ext4_vfs_storage_probe_control(volume,
+        "data/user/CREATEFAIL.BIN", &failure_ordinal);
     const enum phipfs_status initial = phipfs_lstat_path(volume, name, &metadata);
     if (initial == PHIPFS_STATUS_NOT_FOUND) {
         console_write("ST EXT4 CREATE initial old\n");
-        ext4_vfs_require(phipfs_open_options(volume, name, PHIPFS_ACCESS_READ_WRITE,
-            PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0640U, &file), "create cut exclusive open");
+        if (storage_probe && !ext4_backend_test_fail_storage_once(
+                failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
+            kernel_test_fail("ext4 could not arm create storage refusal");
+        file = 99U;
+        enum phipfs_status status = phipfs_open_options(volume, name, PHIPFS_ACCESS_READ_WRITE,
+            PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0640U, &file);
+        if (storage_probe) {
+            uint32_t attempts;
+            enum phipia_ext4_test_storage_kind kind;
+            if (!ext4_backend_test_finish_storage_probe(&attempts, &kind) || attempts == 0U)
+                kernel_test_fail("ext4 create storage probe was not exercised");
+            if (failure_ordinal == 0U) {
+                if (status != PHIPFS_STATUS_OK || kind != PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
+                    kernel_test_fail("ext4 create storage baseline failed");
+                console_write("ST EXT4 CREATE storage attempts ");
+                console_write_u64(attempts);
+                console_putc('\n');
+            } else {
+                if (status != PHIPFS_STATUS_IO || file != 0U || attempts != failure_ordinal ||
+                    kind >= PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT ||
+                    phipfs_fstat(file, &held) != PHIPFS_STATUS_STALE_HANDLE)
+                    kernel_test_fail("ext4 refused create exposed a handle or changed its failure");
+                console_write("ST EXT4 CREATE storage refused ");
+                console_write_u64(attempts);
+                console_write(kind == PHIPIA_EXT4_TEST_STORAGE_WRITE ? " write\n" : " flush\n");
+                status = phipfs_open_options(volume, name, PHIPFS_ACCESS_READ_WRITE,
+                    PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0640U, &file);
+            }
+        }
+        ext4_vfs_require(status, "create cut identical exclusive open retry");
     } else if (initial == PHIPFS_STATUS_OK) {
         console_write("ST EXT4 CREATE initial new\n");
         ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ_WRITE, &file), "create cut existing open");

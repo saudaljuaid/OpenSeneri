@@ -205,7 +205,8 @@ def run(args):
     overwriting = args.operation == "overwrite"
     control_name = {"append": "APPFAIL.BIN", "overwrite": "OVERFAIL.BIN",
         "truncate": "TRUNCFAIL.BIN", "grow": "GROWFAIL.BIN",
-        "rename": "RENFAIL.BIN", "rename-cross": "RENFAIL.BIN"}.get(args.operation)
+        "rename": "RENFAIL.BIN", "rename-cross": "RENFAIL.BIN",
+        "create": "CREATEFAIL.BIN"}.get(args.operation)
     storage_marker = f"ST EXT4 {'RENAME' if renaming else args.operation.upper()} storage"
     metadata_change = args.operation in ("chmod", "times")
     creating = args.operation in ("create", "mkdir")
@@ -631,10 +632,10 @@ def main():
     parser.add_argument("--storage-failures", action="store_true")
     parser.add_argument("--physical-cuts", action="store_true")
     args = parser.parse_args()
-    if args.storage_failures and args.operation not in ("overwrite", "append", "truncate", "grow", "rename", "rename-cross"):
-        parser.error("--storage-failures requires --operation overwrite, append, truncate, grow, rename or rename-cross")
-    if args.physical_cuts and (args.storage_failures or args.operation not in ("rename", "rename-cross", "rename-wrap", "append", "truncate", "grow")):
-        parser.error("--physical-cuts requires rename, rename-cross, rename-wrap, append, truncate or grow and excludes --storage-failures")
+    if args.storage_failures and args.operation not in ("overwrite", "append", "truncate", "grow", "rename", "rename-cross", "create"):
+        parser.error("--storage-failures requires --operation overwrite, append, truncate, grow, rename, rename-cross or create")
+    if args.physical_cuts and (args.storage_failures or args.operation not in ("rename", "rename-cross", "rename-wrap", "append", "truncate", "grow", "create")):
+        parser.error("--physical-cuts requires rename, rename-cross, rename-wrap, append, truncate, grow or create and excludes --storage-failures")
     if args.operation == "rename-wrap" and not args.physical_cuts:
         parser.error("--operation rename-wrap requires --physical-cuts")
     run(args)
