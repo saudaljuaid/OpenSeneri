@@ -160,9 +160,12 @@ disabled. It covers bounded memory operations only and is released before any
 backend or storage call; the caller's interrupt state is restored. Mount
 reference increments refuse overflow. Host contention tests cover shared inode
 deduplication, coherent snapshots, reservation and final reclamation.
-These protections do not establish complete SMP filesystem support: concurrent
-mount transitions, path admission and published handle-state access still need
-their own lifecycle synchronization. The admitted execution model remains one
+Mount transitions reserve their state under the same metadata lock before
+backend calls. File opens, checked path lookups and filesystem sync pin their
+mount until completion, preventing teardown between lookup and vnode binding.
+These protections do not establish complete SMP filesystem support: remaining
+path mutations and published handle-state access still need their own
+lifecycle synchronization. The admitted execution model remains one
 core, with backend operations serialized by the volume guard.
 
 ## Read-write admission

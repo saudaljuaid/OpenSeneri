@@ -375,6 +375,20 @@ static void mount_release(enum phipfs_volume volume)
             references - 1U, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) { }
 }
 
+static enum phipfs_status mount_pin(enum phipfs_volume volume, const struct vfs_backend_ops **backend)
+{
+    if (!valid_volume(volume) || backend == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    *backend = NULL;
+    const bool restore_interrupts = vnode_metadata_acquire();
+    enum phipfs_status status = PHIPFS_STATUS_NOT_MOUNTED;
+    if (mounts[volume].active && !mounts[volume].mounting && !mounts[volume].unmounting) {
+        status = mount_retain(volume) ? PHIPFS_STATUS_OK : PHIPFS_STATUS_BUSY;
+        if (status == PHIPFS_STATUS_OK) *backend = mounts[volume].backend;
+    }
+    vnode_metadata_release(restore_interrupts);
+    return status;
+}
+
 static struct vfs_vnode_state vnode_snapshot(size_t index)
 {
     struct vfs_vnode_state snapshot = {0};
@@ -551,20 +565,22 @@ static enum phipfs_status resolve_path(
     enum phipfs_status status;
     size_t length;
 
-    if (!valid_volume(volume) || canonical == NULL || vnode_index == NULL ||
-        !mounts[volume].active) {
+    if (!valid_volume(volume) || canonical == NULL || vnode_index == NULL) {
         return PHIPFS_STATUS_NOT_MOUNTED;
     }
-    status = canonicalize_path(path, mounts[volume].backend->case_sensitive,
-        mounts[volume].backend->validates_mutation_paths, canonical);
+    const struct vfs_backend_ops *backend;
+    status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = canonicalize_path(path, backend->case_sensitive,
+        backend->validates_mutation_paths, canonical);
     if (status != PHIPFS_STATUS_OK) {
-        return status;
+        goto finished;
     }
-    if (mounts[volume].backend->validates_mutation_paths ||
+    if (backend->validates_mutation_paths ||
         (canonical[0] == '.' && canonical[1] == '\0')) {
-        status = mounts[volume].backend->stat_path(volume, canonical, &stat);
-        return status == PHIPFS_STATUS_OK ?
-            vnode_retain(volume, canonical, &stat, vnode_index) : status;
+        status = backend->stat_path(volume, canonical, &stat);
+        if (status == PHIPFS_STATUS_OK) status = vnode_retain(volume, canonical, &stat, vnode_index);
+        goto finished;
     }
     zero_bytes(partial, sizeof(partial));
     length = text_length(canonical);
@@ -574,26 +590,34 @@ static enum phipfs_status resolve_path(
             continue;
         }
         partial[index] = '\0';
-        status = mounts[volume].backend->stat_path(volume, partial, &stat);
+        status = backend->stat_path(volume, partial, &stat);
         if (status != PHIPFS_STATUS_OK) {
-            return status;
+            goto finished;
         }
         if (index != length && !stat.directory) {
-            return PHIPFS_STATUS_NOT_DIRECTORY;
+            status = PHIPFS_STATUS_NOT_DIRECTORY;
+            goto finished;
         }
         if (index != length) {
             partial[index] = '/';
         }
     }
-    return vnode_retain(volume, canonical, &stat, vnode_index);
+    status = vnode_retain(volume, canonical, &stat, vnode_index);
+finished:
+    mount_release(volume);
+    return status;
 }
 
 static enum phipfs_status resolve_metadata_path(enum phipfs_volume volume,
     const char *path, char canonical[PHIPFS_MAX_PATH])
 {
-    return valid_volume(volume) && mounts[volume].active ?
-        canonicalize_path(path, mounts[volume].backend->case_sensitive,
-            mounts[volume].backend->validates_mutation_paths, canonical) : PHIPFS_STATUS_NOT_MOUNTED;
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const bool restore_interrupts = vnode_metadata_acquire();
+    const struct vfs_backend_ops *backend = mounts[volume].active && !mounts[volume].mounting &&
+        !mounts[volume].unmounting ? mounts[volume].backend : NULL;
+    vnode_metadata_release(restore_interrupts);
+    return backend != NULL ? canonicalize_path(path, backend->case_sensitive,
+        backend->validates_mutation_paths, canonical) : PHIPFS_STATUS_NOT_MOUNTED;
 }
 
 static enum phipfs_status resolve_parent(
@@ -655,11 +679,13 @@ static void install_mount(
     if (!drive.mounted) {
         return;
     }
+    const bool restore_interrupts = vnode_metadata_acquire();
     mounts[volume].backend = backend;
     mounts[volume].generation = next_generation(
         &next_mount_generation, UINT64_MAX);
     mounts[volume].volume = volume;
     mounts[volume].active = true;
+    vnode_metadata_release(restore_interrupts);
 }
 
 static phipfs_handle encode_handle(size_t index, uint64_t generation)
@@ -779,59 +805,67 @@ enum phipfs_status phipfs_mount(enum phipfs_volume volume)
     if (!valid_volume(volume)) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
-    if (mounts[volume].mounting || mounts[volume].unmounting) return PHIPFS_STATUS_BUSY;
-    if (mounts[volume].active) {
-        return PHIPFS_STATUS_ALREADY_MOUNTED;
-    }
+    bool restore_interrupts = vnode_metadata_acquire();
     backend = volume_backends[volume];
-    if (backend == NULL) {
-        return PHIPFS_STATUS_NOT_MOUNTED;
-    }
-    mounts[volume].mounting = true;
+    if (mounts[volume].mounting || mounts[volume].unmounting) status = PHIPFS_STATUS_BUSY;
+    else if (mounts[volume].active) status = PHIPFS_STATUS_ALREADY_MOUNTED;
+    else if (backend == NULL) status = PHIPFS_STATUS_NOT_MOUNTED;
+    else { mounts[volume].mounting = true; status = PHIPFS_STATUS_OK; }
+    vnode_metadata_release(restore_interrupts);
+    if (status != PHIPFS_STATUS_OK) return status;
     status = backend->mount(volume);
     if (status == PHIPFS_STATUS_OK) {
         install_mount(volume, backend);
     }
+    restore_interrupts = vnode_metadata_acquire();
     mounts[volume].mounting = false;
+    vnode_metadata_release(restore_interrupts);
     return status;
 }
 
 enum phipfs_status phipfs_unmount(enum phipfs_volume volume)
 {
     enum phipfs_status status;
+    const struct vfs_backend_ops *backend = NULL;
 
     if (!valid_volume(volume)) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
-    if (mounts[volume].mounting || mounts[volume].unmounting) return PHIPFS_STATUS_BUSY;
-    if (!mounts[volume].active) {
-        return PHIPFS_STATUS_NOT_MOUNTED;
-    }
-    if (__atomic_load_n(&mounts[volume].references, __ATOMIC_ACQUIRE) != 0U) {
-        return PHIPFS_STATUS_BUSY;
+    bool restore_interrupts = vnode_metadata_acquire();
+    if (mounts[volume].mounting || mounts[volume].unmounting) status = PHIPFS_STATUS_BUSY;
+    else if (!mounts[volume].active) status = PHIPFS_STATUS_NOT_MOUNTED;
+    else if (__atomic_load_n(&mounts[volume].references, __ATOMIC_ACQUIRE) != 0U) status = PHIPFS_STATUS_BUSY;
+    else { backend = mounts[volume].backend; status = PHIPFS_STATUS_OK; }
+    if (status != PHIPFS_STATUS_OK) {
+        vnode_metadata_release(restore_interrupts);
+        return status;
     }
     // Reserve teardown before invoking storage: a callback must not admit a
     // new description that would be erased when this unmount completes.
     // A failure republishes the same generation for retry; it is never free.
     mounts[volume].unmounting = true;
     mounts[volume].active = false;
-    status = mounts[volume].backend->unmount(volume);
+    vnode_metadata_release(restore_interrupts);
+    status = backend->unmount(volume);
+    restore_interrupts = vnode_metadata_acquire();
     if (status == PHIPFS_STATUS_OK) {
         zero_bytes(&mounts[volume], sizeof(mounts[volume]));
     } else {
         mounts[volume].active = true;
         mounts[volume].unmounting = false;
     }
+    vnode_metadata_release(restore_interrupts);
     return status;
 }
 
 enum phipfs_status phipfs_sync(enum phipfs_volume volume)
 {
-    if (!valid_volume(volume)) {
-        return PHIPFS_STATUS_INVALID_ARGUMENT;
-    }
-    return mounts[volume].active ? mounts[volume].backend->sync(volume) :
-        PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = backend->sync(volume);
+    mount_release(volume);
+    return status;
 }
 
 struct phipfs_drive_info phipfs_drive(enum phipfs_volume volume)
@@ -889,11 +923,17 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     if ((flags & PHIPFS_OPEN_TRUNCATE) != 0U && (access & PHIPFS_ACCESS_WRITE) == 0U)
         return PHIPFS_STATUS_ACCESS;
-    status = resolve_metadata_path(volume, path, canonical);
+    const struct vfs_backend_ops *backend;
+    status = mount_pin(volume, &backend);
     if (status != PHIPFS_STATUS_OK) return status;
-    const struct vfs_backend_ops *backend = mounts[volume].backend;
+    status = resolve_metadata_path(volume, path, canonical);
+    if (status != PHIPFS_STATUS_OK) {
+        mount_release(volume);
+        return status;
+    }
     slot = phipia_slot_claim(open_file_claims, VFS_MAX_OPEN_FILES);
     if (slot == VFS_MAX_OPEN_FILES) {
+        mount_release(volume);
         return PHIPFS_STATUS_NO_HANDLES;
     }
     // Backend callbacks can reenter VFS, including on another volume. Reserve
@@ -901,11 +941,6 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     // until the resulting vnode takes over its reference. No usable handle is
     // published while the backend operation is incomplete.
     open_files[slot].opening = true;
-    if (!mount_retain(volume)) {
-        open_files[slot].opening = false;
-        phipia_slot_release(open_file_claims, slot);
-        return PHIPFS_STATUS_BUSY;
-    }
     if (backend->open_options != NULL && flags != 0U) {
         // Destructive prepared opens need storage for their resulting inode
         // before the backend can commit. Other callbacks must not consume it.
