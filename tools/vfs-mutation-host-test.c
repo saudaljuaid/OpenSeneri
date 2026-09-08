@@ -428,6 +428,8 @@ static void callback_slot_reuse(void)
     assert(mounts[PHIPFS_VOLUME_DATA].references == 1U);
     mounts[PHIPFS_VOLUME_DATA].references = SIZE_MAX;
     assert(phipfs_write(callback_old, &byte, 1U, &written) == PHIPFS_STATUS_BUSY && written == 0U);
+    uint64_t refused_position = 99U;
+    assert(phipfs_seek(callback_old, 0, PHIPFS_SEEK_START, &refused_position) == PHIPFS_STATUS_BUSY && refused_position == 0U);
     assert(phipfs_close(callback_old) == PHIPFS_STATUS_BUSY);
     assert(mounts[PHIPFS_VOLUME_DATA].references == SIZE_MAX && callback_writes == 0U);
     mounts[PHIPFS_VOLUME_DATA].references = 1U;
@@ -662,7 +664,7 @@ int main(void)
     ++mounts[PHIPFS_VOLUME_DATA].generation;
     stale_io_counts(opened);
     uint64_t stale_position = 123U;
-    assert(phipfs_seek(opened, 0, PHIPFS_SEEK_START, &stale_position) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(phipfs_seek(opened, 0, PHIPFS_SEEK_START, &stale_position) == PHIPFS_STATUS_STALE_HANDLE && stale_position == 0U);
     assert(phipfs_set_append(opened, true) == PHIPFS_STATUS_STALE_HANDLE);
     assert(phipfs_ftruncate(opened, 0U) == PHIPFS_STATUS_STALE_HANDLE);
     assert(phipfs_unlink_held_file(opened, expected_path) == PHIPFS_STATUS_STALE_HANDLE);

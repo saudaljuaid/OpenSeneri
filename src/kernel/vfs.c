@@ -1227,6 +1227,7 @@ enum phipfs_status phipfs_seek(
     uint64_t *position
 )
 {
+    if (position != NULL) *position = 0U;
     struct vfs_file_snapshot snapshot;
     enum phipfs_status status = file_snapshot_pin(handle, &snapshot);
     if (status != PHIPFS_STATUS_OK) return status;
