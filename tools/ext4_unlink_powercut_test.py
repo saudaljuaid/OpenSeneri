@@ -20,6 +20,12 @@ import ext4_powercut_test as recovery
 
 PASS = "ST EXT4 VFS held-unlink old-or-new cleanup census exact"
 LONG_SYMLINK_TARGET = "link-source-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz"
+STORAGE_CONTROLS = {"append": "APPFAIL.BIN", "overwrite": "OVERFAIL.BIN",
+    "truncate": "TRUNCFAIL.BIN", "grow": "GROWFAIL.BIN",
+    "rename": "RENFAIL.BIN", "rename-cross": "RENFAIL.BIN",
+    "create": "CREATEFAIL.BIN", "mkdir": "MKDIRFAIL.BIN", "rmdir": "RMDIRFAIL.BIN",
+    "chmod": "MODEFAIL.BIN", "times": "TIMEFAIL.BIN",
+    "xattr": "XATTRFAIL.BIN", "xattr-remove": "XRMFAIL.BIN"}
 
 
 def verify_exit(status, transcript, pass_marker=PASS):
@@ -203,12 +209,10 @@ def run(args):
     growing = args.operation == "grow"
     appending = args.operation == "append"
     overwriting = args.operation == "overwrite"
-    control_name = {"append": "APPFAIL.BIN", "overwrite": "OVERFAIL.BIN",
-        "truncate": "TRUNCFAIL.BIN", "grow": "GROWFAIL.BIN",
-        "rename": "RENFAIL.BIN", "rename-cross": "RENFAIL.BIN",
-        "create": "CREATEFAIL.BIN", "mkdir": "MKDIRFAIL.BIN",
-        "rmdir": "RMDIRFAIL.BIN"}.get(args.operation)
-    storage_marker = f"ST EXT4 {'RENAME' if renaming else args.operation.upper()} storage"
+    control_name = STORAGE_CONTROLS.get(args.operation)
+    storage_label = {"chmod": "METADATA", "times": "METADATA", "xattr": "XATTR",
+        "xattr-remove": "XATTR"}.get(args.operation, "RENAME" if renaming else args.operation.upper())
+    storage_marker = f"ST EXT4 {storage_label} storage"
     metadata_change = args.operation in ("chmod", "times")
     creating = args.operation in ("create", "mkdir")
     directory = args.operation == "mkdir"
@@ -633,8 +637,8 @@ def main():
     parser.add_argument("--storage-failures", action="store_true")
     parser.add_argument("--physical-cuts", action="store_true")
     args = parser.parse_args()
-    if args.storage_failures and args.operation not in ("overwrite", "append", "truncate", "grow", "rename", "rename-cross", "create", "mkdir", "rmdir"):
-        parser.error("--storage-failures requires --operation overwrite, append, truncate, grow, rename, rename-cross, create, mkdir or rmdir")
+    if args.storage_failures and args.operation not in STORAGE_CONTROLS:
+        parser.error("--storage-failures requires --operation " + ", ".join(STORAGE_CONTROLS))
     if args.physical_cuts and (args.storage_failures or args.operation not in ("rename", "rename-cross", "rename-wrap", "append", "truncate", "grow", "create")):
         parser.error("--physical-cuts requires rename, rename-cross, rename-wrap, append, truncate, grow or create and excludes --storage-failures")
     if args.operation == "rename-wrap" and not args.physical_cuts:

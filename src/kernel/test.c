@@ -5539,16 +5539,16 @@ static _Noreturn void ext4_vfs_rename_powercut(bool cross_directory, bool wrappe
     kernel_test_pass();
 }
 
-static bool ext4_vfs_finish_directory_storage_probe(enum phipfs_status status,
+static bool ext4_vfs_finish_mutation_storage_probe(enum phipfs_status status,
     uint32_t ordinal, const char *label)
 {
     uint32_t attempts;
     enum phipia_ext4_test_storage_kind kind;
     if (!ext4_backend_test_finish_storage_probe(&attempts, &kind) || attempts == 0U)
-        kernel_test_fail("ext4 directory storage probe was not exercised");
+        kernel_test_fail("ext4 mutation storage probe was not exercised");
     if (ordinal == 0U) {
         if (status != PHIPFS_STATUS_OK || kind != PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
-            kernel_test_fail("ext4 directory storage baseline failed");
+            kernel_test_fail("ext4 mutation storage baseline failed");
         console_write(label);
         console_write(" storage attempts ");
         console_write_u64(attempts);
@@ -5557,7 +5557,7 @@ static bool ext4_vfs_finish_directory_storage_probe(enum phipfs_status status,
     }
     if (status != PHIPFS_STATUS_IO || attempts != ordinal ||
         kind >= PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
-        kernel_test_fail("ext4 directory storage refusal changed its error or ordinal");
+        kernel_test_fail("ext4 mutation storage refusal changed its error or ordinal");
     console_write(label);
     console_write(" storage refused ");
     console_write_u64(attempts);
@@ -5584,7 +5584,7 @@ static _Noreturn void ext4_vfs_mkdir_powercut(void)
                 failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
             kernel_test_fail("ext4 could not arm mkdir storage refusal");
         enum phipfs_status status = phipfs_mkdir_mode(volume, name, 0750U);
-        if (storage_probe && ext4_vfs_finish_directory_storage_probe(status,
+        if (storage_probe && ext4_vfs_finish_mutation_storage_probe(status,
                 failure_ordinal, "ST EXT4 MKDIR"))
             status = phipfs_mkdir_mode(volume, name, 0750U);
         ext4_vfs_require(status, "mkdir cut identical mode retry");
@@ -5635,7 +5635,7 @@ static _Noreturn void ext4_vfs_rmdir_powercut(void)
                 failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
             kernel_test_fail("ext4 could not arm rmdir storage refusal");
         enum phipfs_status status = phipfs_rmdir(volume, name);
-        if (storage_probe && ext4_vfs_finish_directory_storage_probe(status,
+        if (storage_probe && ext4_vfs_finish_mutation_storage_probe(status,
                 failure_ordinal, "ST EXT4 RMDIR"))
             status = phipfs_rmdir(volume, name);
         ext4_vfs_require(status, "rmdir cut identical name retry");
@@ -6158,6 +6158,9 @@ static _Noreturn void ext4_vfs_metadata_powercut(bool changing_times)
         .atime_nanos = 123456789U, .mtime_nanos = 987654321U };
     struct phipfs_stat metadata, after;
     phipfs_handle file, reader;
+    uint32_t failure_ordinal = 0U;
+    const bool storage_probe = ext4_vfs_storage_probe_control(volume,
+        changing_times ? "data/user/TIMEFAIL.BIN" : "data/user/MODEFAIL.BIN", &failure_ordinal);
     ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &file), "metadata cut held file");
     ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &reader), "metadata cut second reader");
     ext4_vfs_require(phipfs_fstat(file, &metadata), "metadata cut initial inode");
@@ -6170,8 +6173,16 @@ static _Noreturn void ext4_vfs_metadata_powercut(bool changing_times)
     const uint64_t initial_free = phipfs_drive(volume).free_bytes;
     if (old) {
         console_write("ST EXT4 METADATA initial old\n");
-        ext4_vfs_require(changing_times ? phipfs_set_times(volume, name, &times) :
-            phipfs_chmod(volume, name, 0640U), "metadata cut mutation");
+        if (storage_probe && !ext4_backend_test_fail_storage_once(
+                failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
+            kernel_test_fail("ext4 could not arm metadata storage refusal");
+        enum phipfs_status status = changing_times ? phipfs_set_times(volume, name, &times) :
+            phipfs_chmod(volume, name, 0640U);
+        if (storage_probe && ext4_vfs_finish_mutation_storage_probe(status,
+                failure_ordinal, "ST EXT4 METADATA"))
+            status = changing_times ? phipfs_set_times(volume, name, &times) :
+                phipfs_chmod(volume, name, 0640U);
+        ext4_vfs_require(status, "metadata cut identical fields retry");
     } else console_write("ST EXT4 METADATA initial new\n");
     struct phipfs_times invalid = times;
     invalid.mtime_nanos = 1000000000U;
@@ -6210,6 +6221,9 @@ static _Noreturn void ext4_vfs_xattr_powercut(bool removing)
     phipfs_handle file;
     uint8_t expected[300], actual[300];
     size_t count = 99U;
+    uint32_t failure_ordinal = 0U;
+    const bool storage_probe = ext4_vfs_storage_probe_control(volume,
+        removing ? "data/user/XRMFAIL.BIN" : "data/user/XATTRFAIL.BIN", &failure_ordinal);
     for (size_t index = 0U; index < sizeof(expected); ++index)
         expected[index] = (uint8_t)(index % 251U);
     ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &file), "xattr cut held file");
@@ -6229,8 +6243,16 @@ static _Noreturn void ext4_vfs_xattr_powercut(bool removing)
     }
     if (present == removing) {
         console_write("ST EXT4 XATTR initial old\n");
-        ext4_vfs_require(phipfs_set_xattr(volume, name, "user.cut", removing ? NULL : expected,
-            removing ? 0U : sizeof(expected), removing), "xattr cut mutation");
+        if (storage_probe && !ext4_backend_test_fail_storage_once(
+                failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
+            kernel_test_fail("ext4 could not arm xattr storage refusal");
+        enum phipfs_status status = phipfs_set_xattr(volume, name, "user.cut", removing ? NULL : expected,
+            removing ? 0U : sizeof(expected), removing);
+        if (storage_probe && ext4_vfs_finish_mutation_storage_probe(status,
+                failure_ordinal, "ST EXT4 XATTR"))
+            status = phipfs_set_xattr(volume, name, "user.cut", removing ? NULL : expected,
+                removing ? 0U : sizeof(expected), removing);
+        ext4_vfs_require(status, "xattr cut identical value and flags retry");
         const uint64_t expected_free = removing ? initial_free + 4096U : initial_free - 4096U;
         if (phipfs_drive(volume).free_bytes != expected_free)
             kernel_test_fail("ext4 external xattr allocation changed");
