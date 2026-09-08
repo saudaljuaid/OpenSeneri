@@ -231,6 +231,8 @@ static uint64_t camera_seen_generation;
 static char camera_status[64U] = "No camera connected";
 static uint8_t camera_bmp_row[UI_CAMERA_CAPTURE_WIDTH * 3U];
 static uint8_t paint_bmp_row[PAINT_MAX_ROW_BYTES];
+static uint8_t paint_bmp_batch[64U * 1024U];
+static uint8_t media_export_batch[64U * 1024U];
 static uint32_t camera_preview_row[UI_MAX_WIDTH];
 static uint8_t explorer_copy_buffer[4096U];
 static uint32_t settings_wallpaper_thumbnail_pixels[128U * 72U];
@@ -3435,6 +3437,42 @@ static enum phipfs_status media_source_write_all(
         PHIPFS_STATUS_WRITEBACK : status;
 }
 
+struct bitmap_stream {
+    phipfs_handle handle;
+    uint8_t *buffer;
+    size_t used;
+    size_t capacity;
+};
+
+static enum phipfs_status bitmap_stream_flush(struct bitmap_stream *stream)
+{
+    if (stream->used == 0U) return PHIPFS_STATUS_OK;
+    const enum phipfs_status status = media_source_write_all(
+        stream->handle, stream->buffer, stream->used);
+    if (status == PHIPFS_STATUS_OK) stream->used = 0U;
+    return status;
+}
+
+static enum phipfs_status bitmap_stream_write(struct bitmap_stream *stream,
+    const uint8_t *bytes, size_t count)
+{
+    if (stream->buffer == NULL) return media_source_write_all(stream->handle, bytes, count);
+    while (count != 0U) {
+        const size_t available = stream->capacity - stream->used;
+        const size_t take = count < available ? count : available;
+        for (size_t index = 0U; index < take; ++index)
+            stream->buffer[stream->used + index] = bytes[index];
+        stream->used += take;
+        bytes += take;
+        count -= take;
+        if (stream->used == stream->capacity) {
+            const enum phipfs_status status = bitmap_stream_flush(stream);
+            if (status != PHIPFS_STATUS_OK) return status;
+        }
+    }
+    return PHIPFS_STATUS_OK;
+}
+
 static enum phipfs_status media_source_write_export_image(
     phipfs_handle handle,
     uint32_t *file_bytes_out
@@ -3453,6 +3491,9 @@ static enum phipfs_status media_source_write_export_image(
         (stage.height > media_source_preview_height ?
             (stage.height - media_source_preview_height) / 2U : 0U);
     enum phipfs_status status = PHIPFS_STATUS_OK;
+    struct bitmap_stream stream = { .handle = handle,
+        .buffer = phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA) ? media_export_batch : NULL,
+        .capacity = sizeof(media_export_batch) };
 
     if (file_bytes_out == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
     *file_bytes_out = file_bytes;
@@ -3468,7 +3509,7 @@ static enum phipfs_status media_source_write_export_image(
     media_source_store_u16(header, 28U, 24U);
     media_source_store_u32(header, 34U,
         row_stride * media_source_preview_height);
-    status = media_source_write_all(handle, header, sizeof(header));
+    status = bitmap_stream_write(&stream, header, sizeof(header));
     for (uint32_t row = 0U; row < media_source_preview_height &&
          status == PHIPFS_STATUS_OK; ++row) {
         const uint32_t source_y = media_source_preview_height - 1U - row;
@@ -3499,9 +3540,10 @@ static enum phipfs_status media_source_write_export_image(
                 (uint8_t)(pixel >> logo_red_shift);
         }
         if (status == PHIPFS_STATUS_OK) {
-            status = media_source_write_all(handle, media_source_bmp_row, row_stride);
+            status = bitmap_stream_write(&stream, media_source_bmp_row, row_stride);
         }
     }
+    if (status == PHIPFS_STATUS_OK) status = bitmap_stream_flush(&stream);
     return status;
 }
 
@@ -3655,6 +3697,12 @@ static enum phipfs_status paint_write_image(phipfs_handle handle, struct paint_i
     uint8_t header[UI_PAINT_BMP_HEADER_BYTES] = { 0U };
     const uint32_t file_bytes = UI_PAINT_BMP_HEADER_BYTES +
         image.row_stride * image.height;
+    // UI saves execute serially, with a separate owned batch for each image
+    // producer. Coalesce rows before the ordinary journaled VFS write; the
+    // scratch inode is still published only after every byte and fsync pass.
+    struct bitmap_stream stream = { .handle = handle,
+        .buffer = phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA) ? paint_bmp_batch : NULL,
+        .capacity = sizeof(paint_bmp_batch) };
 
     header[0U] = 'B';
     header[1U] = 'M';
@@ -3666,7 +3714,7 @@ static enum phipfs_status paint_write_image(phipfs_handle handle, struct paint_i
     media_source_store_u16(header, 26U, 1U);
     media_source_store_u16(header, 28U, 24U);
     media_source_store_u32(header, 34U, image.row_stride * image.height);
-    enum phipfs_status status = media_source_write_all(handle, header, sizeof(header));
+    enum phipfs_status status = bitmap_stream_write(&stream, header, sizeof(header));
     for (uint32_t row = 0U; row < image.height &&
          status == PHIPFS_STATUS_OK; ++row) {
         size_t bytes = 0U;
@@ -3678,8 +3726,9 @@ static enum phipfs_status paint_write_image(phipfs_handle handle, struct paint_i
             status = PHIPFS_STATUS_IO;
             break;
         }
-        status = media_source_write_all(handle, paint_bmp_row, bytes);
+        status = bitmap_stream_write(&stream, paint_bmp_row, bytes);
     }
+    if (status == PHIPFS_STATUS_OK) status = bitmap_stream_flush(&stream);
     return status;
 }
 

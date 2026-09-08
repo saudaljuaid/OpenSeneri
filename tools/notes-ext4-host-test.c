@@ -26,13 +26,15 @@ static size_t scratch_length;
 static uint16_t expected_mode;
 static bool pending_publication;
 static char scratch_name[PHIPFS_MAX_PATH + 1U];
-static uint8_t target_bytes[8192];
-static uint8_t scratch_bytes[8192];
-static uint8_t expected_bytes[8192];
+static uint8_t target_bytes[180U * 960U + 54U];
+static uint8_t scratch_bytes[180U * 960U + 54U];
+static uint8_t expected_bytes[180U * 960U + 54U];
 static size_t expected_length;
 static const char *expected_destination;
 static const char *expected_scratch;
 static unsigned fail_write_at;
+static unsigned short_write_at;
+static bool large_paint;
 static bool fail_paint_row;
 static bool paint_saved;
 static unsigned cleanup_calls;
@@ -138,7 +140,7 @@ enum phipfs_status phipfs_write(phipfs_handle handle, const uint8_t *bytes,
     assert(syncs == 0U && publications == 0U && scratch_length + length <= expected_length);
     ++writes;
     if (fault == WRITE_FAIL || writes == fail_write_at) return PHIPFS_STATUS_IO;
-    *written = fault == SHORT_WRITE ? length / 2U : length;
+    *written = fault == SHORT_WRITE || writes == short_write_at ? length / 2U : length;
     memcpy(scratch_bytes + scratch_length, bytes, *written);
     scratch_length += *written;
     return PHIPFS_STATUS_OK;
@@ -296,6 +298,8 @@ static void reset_save(enum save_fault next_fault)
     expected_destination = note_path;
     expected_scratch = "folder/SNTMP0.TMP";
     fail_write_at = 0U;
+    short_write_at = 0U;
+    large_paint = false;
     fail_paint_row = paint_saved = false;
     cleanup_calls = 0U;
     cleanup_sync_fails = cleanup_unlink_fails = cleanup_lost = pending_cleanup = false;
@@ -324,12 +328,21 @@ const struct editor_item *editor_item(size_t index)
 
 struct paint_image_info paint_image(void)
 {
+    if (large_paint)
+        return (struct paint_image_info){ .width = 320U, .height = 180U, .row_stride = 960U, .dirty = true };
     return (struct paint_image_info){ .width = 2U, .height = 2U, .row_stride = 8U, .dirty = true };
 }
 
 enum paint_status paint_copy_bgr24_row(uint32_t row, uint8_t *destination,
     size_t capacity, size_t *written)
 {
+    if (large_paint) {
+        assert(row < 180U && capacity >= 960U);
+        if (fail_paint_row && row == 0U) return PAINT_STATUS_SURFACE_FAILURE;
+        memset(destination, (int)(row % 251U + 1U), 960U);
+        *written = 960U;
+        return PAINT_STATUS_OK;
+    }
     assert(row < 2U && capacity >= 8U);
     if (fail_paint_row && row == 0U) return PAINT_STATUS_SURFACE_FAILURE;
     memset(destination, row == 0U ? 0x11 : 0x22, 6U);
@@ -395,6 +408,30 @@ static void reset_app(unsigned app, enum save_fault next_fault)
             }
         }
     }
+}
+
+static void reset_large_bitmap(unsigned app)
+{
+    reset_app(app, SAVE_OK);
+    large_paint = true;
+    expected_length = sizeof(expected_bytes);
+    memset(expected_bytes, 0, expected_length);
+    expected_bytes[0] = 'B'; expected_bytes[1] = 'M';
+    const uint32_t fields[][2] = { {2U, 172854U}, {10U, 54U}, {14U, 40U},
+        {18U, 320U}, {22U, 180U}, {34U, 172800U} };
+    for (size_t index = 0U; index < sizeof(fields) / sizeof(fields[0]); ++index)
+        for (unsigned byte = 0U; byte < 4U; ++byte)
+            expected_bytes[fields[index][0] + byte] = (uint8_t)(fields[index][1] >> (8U * byte));
+    expected_bytes[26] = 1U; expected_bytes[28] = 24U;
+    for (unsigned row = 0U; row < 180U; ++row) {
+        const uint8_t value = (uint8_t)(row % 251U + 1U);
+        memset(expected_bytes + 54U + (179U - row) * 960U, value, 960U);
+        for (unsigned x = 0U; x < 320U; ++x)
+            media_source_preview_pixels[row * UI_MEDIA_SOURCE_PREVIEW_WIDTH + x] =
+                (uint32_t)value * UINT32_C(0x010101);
+    }
+    media_source_preview_width = 320U;
+    media_source_preview_height = 180U;
 }
 
 static enum phipfs_status save_app(unsigned app)
@@ -471,7 +508,7 @@ int main(void)
         copy_failure = failure;
         expected_destination = "COPY.BIN";
         expected_scratch = "CPTMP0.TMP";
-        expected_length = failure == 7U ? 0U : sizeof(expected_bytes) - 3U;
+        expected_length = failure == 7U ? 0U : 8192U - 3U;
         for (size_t index = 0U; index < expected_length; ++index) expected_bytes[index] = (uint8_t)(index * 17U);
         const enum phipfs_status status = explorer_copy_file("SOURCE.BIN", expected_destination);
         const bool succeeds = failure == 0U || failure == 7U;
@@ -543,22 +580,29 @@ int main(void)
             }
         }
     }
-    for (unsigned boundary = 1U; boundary <= 3U; ++boundary) {
-        reset_app(2U, SAVE_OK);
-        fail_write_at = boundary;
-        assert(paint_save() == PHIPFS_STATUS_IO);
-        assert(!paint_saved && publications == 0U && closes == 1U && target_inode == 10U);
-        reset_app(3U, SAVE_OK);
-        fail_write_at = boundary;
-        assert(media_source_export() == PHIPFS_STATUS_IO);
-        assert(publications == 0U && closes == 1U && target_inode == 10U && scratch_inode == 0U);
+    for (unsigned app = 2U; app <= 3U; ++app) {
+        reset_large_bitmap(app);
+        assert(save_app(app) == PHIPFS_STATUS_OK && writes == 3U);
+        assert(target_length == expected_length && memcmp(target_bytes, expected_bytes, expected_length) == 0);
+        assert(publications == 1U && scratch_inode == 0U && live_handles == 0U);
+        for (unsigned boundary = 1U; boundary <= 3U; ++boundary) {
+            for (unsigned short_write = 0U; short_write <= 1U; ++short_write) {
+                reset_large_bitmap(app);
+                if (short_write) short_write_at = boundary;
+                else fail_write_at = boundary;
+                assert(save_app(app) == (short_write ? PHIPFS_STATUS_WRITEBACK : PHIPFS_STATUS_IO));
+                assert(!paint_saved && publications == 0U && closes == 1U && target_inode == 10U);
+                assert(scratch_inode == 0U && live_handles == 0U && target_length == 3U);
+                assert(memcmp(target_bytes, "old", 3U) == 0);
+            }
+        }
     }
     reset_app(3U, SAVE_OK);
     media_editor_export_active = true; /* Fail sampling after writing the BMP header. */
     assert(media_source_export() == PHIPFS_STATUS_IO && publications == 0U && live_handles == 0U);
     assert(target_inode == 10U && scratch_inode == 0U);
     media_editor_export_active = false;
-    reset_app(2U, SAVE_OK);
+    reset_large_bitmap(2U);
     fail_paint_row = true;
     assert(paint_save() == PHIPFS_STATUS_IO && publications == 0U && live_handles == 0U);
     /* Recovery must not promote either format's shared, incomplete legacy scratch. */

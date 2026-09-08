@@ -73,6 +73,8 @@ jobs:
                   printf '%s\n' 'Diagnostic ext4 boot only; all milestone gates remain required.' \
                       >evidence/ext4/DIAGNOSTIC-ONLY.txt
                   make kernel lint 2>&1 | tee evidence/ext4/diagnostic-build.log
+                  make build/notes-ext4-host-test
+                  build/notes-ext4-host-test 2>&1 | tee evidence/ext4/application-publication-host.log
                   make build/tests/ext4/phipia-ext4.raw
                   export PHIPIA_EXT4_RUST_FIXTURE="$PWD/build/tests/ext4/phipia-ext4.raw"
                   export CARGO_TARGET_DIR="$PWD/build/ext4-transaction-target"
