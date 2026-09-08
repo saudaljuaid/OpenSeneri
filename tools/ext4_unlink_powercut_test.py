@@ -20,6 +20,8 @@ import ext4_powercut_test as recovery
 
 PASS = "ST EXT4 VFS held-unlink old-or-new cleanup census exact"
 LONG_SYMLINK_TARGET = "link-source-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz"
+PHYSICAL_OPERATIONS = ("rename", "rename-cross", "rename-wrap", "append", "truncate", "grow", "create",
+    "chmod", "times", "xattr", "xattr-remove")
 STORAGE_CONTROLS = {"append": "APPFAIL.BIN", "overwrite": "OVERFAIL.BIN",
     "truncate": "TRUNCFAIL.BIN", "grow": "GROWFAIL.BIN",
     "rename": "RENFAIL.BIN", "rename-cross": "RENFAIL.BIN",
@@ -641,8 +643,9 @@ def main():
     args = parser.parse_args()
     if args.storage_failures and args.operation not in STORAGE_CONTROLS:
         parser.error("--storage-failures requires --operation " + ", ".join(STORAGE_CONTROLS))
-    if args.physical_cuts and (args.storage_failures or args.operation not in ("rename", "rename-cross", "rename-wrap", "append", "truncate", "grow", "create")):
-        parser.error("--physical-cuts requires rename, rename-cross, rename-wrap, append, truncate, grow or create and excludes --storage-failures")
+    if args.physical_cuts and (args.storage_failures or args.operation not in PHYSICAL_OPERATIONS):
+        parser.error("--physical-cuts requires --operation " + ", ".join(PHYSICAL_OPERATIONS) +
+            " and excludes --storage-failures")
     if args.operation == "rename-wrap" and not args.physical_cuts:
         parser.error("--operation rename-wrap requires --physical-cuts")
     run(args)
