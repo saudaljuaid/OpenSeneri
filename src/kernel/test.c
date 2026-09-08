@@ -5539,6 +5539,32 @@ static _Noreturn void ext4_vfs_rename_powercut(bool cross_directory, bool wrappe
     kernel_test_pass();
 }
 
+static bool ext4_vfs_finish_directory_storage_probe(enum phipfs_status status,
+    uint32_t ordinal, const char *label)
+{
+    uint32_t attempts;
+    enum phipia_ext4_test_storage_kind kind;
+    if (!ext4_backend_test_finish_storage_probe(&attempts, &kind) || attempts == 0U)
+        kernel_test_fail("ext4 directory storage probe was not exercised");
+    if (ordinal == 0U) {
+        if (status != PHIPFS_STATUS_OK || kind != PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
+            kernel_test_fail("ext4 directory storage baseline failed");
+        console_write(label);
+        console_write(" storage attempts ");
+        console_write_u64(attempts);
+        console_putc('\n');
+        return false;
+    }
+    if (status != PHIPFS_STATUS_IO || attempts != ordinal ||
+        kind >= PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
+        kernel_test_fail("ext4 directory storage refusal changed its error or ordinal");
+    console_write(label);
+    console_write(" storage refused ");
+    console_write_u64(attempts);
+    console_write(kind == PHIPIA_EXT4_TEST_STORAGE_WRITE ? " write\n" : " flush\n");
+    return true;
+}
+
 static _Noreturn void ext4_vfs_mkdir_powercut(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5547,11 +5573,21 @@ static _Noreturn void ext4_vfs_mkdir_powercut(void)
     phipfs_directory_handle directory;
     struct phipfs_list_entry entry;
     bool present = true;
+    uint32_t failure_ordinal = 0U;
+    const bool storage_probe = ext4_vfs_storage_probe_control(volume,
+        "data/user/MKDIRFAIL.BIN", &failure_ordinal);
     ext4_vfs_require(phipfs_stat_path(volume, "data/user", &parent), "mkdir cut parent");
     const enum phipfs_status initial = phipfs_lstat_path(volume, name, &metadata);
     if (initial == PHIPFS_STATUS_NOT_FOUND) {
         console_write("ST EXT4 MKDIR initial old\n");
-        ext4_vfs_require(phipfs_mkdir_mode(volume, name, 0750U), "mkdir cut create");
+        if (storage_probe && !ext4_backend_test_fail_storage_once(
+                failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
+            kernel_test_fail("ext4 could not arm mkdir storage refusal");
+        enum phipfs_status status = phipfs_mkdir_mode(volume, name, 0750U);
+        if (storage_probe && ext4_vfs_finish_directory_storage_probe(status,
+                failure_ordinal, "ST EXT4 MKDIR"))
+            status = phipfs_mkdir_mode(volume, name, 0750U);
+        ext4_vfs_require(status, "mkdir cut identical mode retry");
         ext4_vfs_require(phipfs_stat_path(volume, "data/user", &after), "mkdir cut parent links");
         if (after.object_id != parent.object_id || after.links != parent.links + 1U)
             kernel_test_fail("ext4 mkdir cut did not update parent links exactly once");
@@ -5585,6 +5621,9 @@ static _Noreturn void ext4_vfs_rmdir_powercut(void)
     phipfs_directory_handle directory;
     struct phipfs_list_entry entry;
     bool present = true;
+    uint32_t failure_ordinal = 0U;
+    const bool storage_probe = ext4_vfs_storage_probe_control(volume,
+        "data/user/RMDIRFAIL.BIN", &failure_ordinal);
     ext4_vfs_require(phipfs_stat_path(volume, "data/user", &parent), "rmdir cut parent");
     const enum phipfs_status initial = phipfs_lstat_path(volume, name, &metadata);
     if (initial == PHIPFS_STATUS_OK) {
@@ -5592,7 +5631,14 @@ static _Noreturn void ext4_vfs_rmdir_powercut(void)
             kernel_test_fail("ext4 rmdir cut initial directory changed");
         console_write("ST EXT4 RMDIR initial old\n");
         ext4_vfs_require(phipfs_directory_open(volume, name, &directory), "rmdir cut held snapshot");
-        ext4_vfs_require(phipfs_rmdir(volume, name), "rmdir cut remove");
+        if (storage_probe && !ext4_backend_test_fail_storage_once(
+                failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
+            kernel_test_fail("ext4 could not arm rmdir storage refusal");
+        enum phipfs_status status = phipfs_rmdir(volume, name);
+        if (storage_probe && ext4_vfs_finish_directory_storage_probe(status,
+                failure_ordinal, "ST EXT4 RMDIR"))
+            status = phipfs_rmdir(volume, name);
+        ext4_vfs_require(status, "rmdir cut identical name retry");
         ext4_vfs_require(phipfs_stat_path(volume, "data/user", &after), "rmdir cut parent links");
         if (after.object_id != parent.object_id || after.links + 1U != parent.links)
             kernel_test_fail("ext4 rmdir cut did not decrement parent links exactly once");
