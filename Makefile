@@ -2445,7 +2445,7 @@ qemu-test-ext4-powercuts: $(KERNEL) $(EXT4_FIXTURE) \
 		--output '$(TEST_BUILD_DIR)/ext4-powercuts' \
 		--qemu qemu-system-x86_64 --grub-mkrescue '$(GRUB_MKRESCUE)' \
 		$(if $(GRUB_MODULE_DIR),--grub-module-dir '$(GRUB_MODULE_DIR)') \
-		--accel '$(QEMU_ACCEL)' --timeout 90
+		--accel '$(QEMU_ACCEL)' --timeout 90 --keep-images
 
 qemu-test-%: $(TEST_BUILD_DIR)/%/phipia.iso
 	@for tool in qemu-system-x86_64 timeout grep; do \

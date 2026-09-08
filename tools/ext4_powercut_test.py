@@ -180,6 +180,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         raise PowerCutError("kernel or clean ext4 fixture is missing")
     output.mkdir(parents=True, exist_ok=True)
     tools = ext4_image.require_tools()
+    (output / "head.txt").write_text(subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], text=True), encoding="ascii")
+    for name, executable in {**tools, "dumpe2fs": "dumpe2fs"}.items():
+        version = subprocess.run([executable, "-V"], capture_output=True, text=True, check=False)
+        (output / f"{name}-version.txt").write_text(version.stdout + version.stderr, encoding="utf-8")
     verify_iso = output / "verify.iso"
     _build_iso(kernel, verify_iso, args.grub_mkrescue, args.grub_module_dir, None)
 
@@ -224,6 +229,17 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                 + _transcript_tail(transcript)
             )
         after_report = ext4_image.inspect_image(image, tools=tools)
+        for executable, arguments, suffix in (
+            (tools["e2fsck"], ["-f", "-n"], "e2fsck"),
+            ("dumpe2fs", ["-h"], "dumpe2fs"),
+            (tools["debugfs"], ["-R", "stat /system/README.TXT"], "debugfs"),
+        ):
+            inspected = subprocess.run([executable, *arguments, str(image)],
+                capture_output=True, text=True, check=False)
+            (output / f"cut-{cut:02d}.{suffix}.txt").write_text(
+                inspected.stdout + inspected.stderr, encoding="utf-8")
+            if inspected.returncode != 0:
+                raise PowerCutError(f"boundary {cut}: {suffix} refused the cleanly unmounted image")
         with tempfile.TemporaryDirectory(prefix="phipia-ext4-result-", dir=output) as raw:
             _verify_guest_result(image, tools, Path(raw))
         image_sha256 = hashlib.sha256(image.read_bytes()).hexdigest()
