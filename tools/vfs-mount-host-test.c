@@ -39,6 +39,7 @@ static enum phipfs_status backend_transition(enum phipfs_volume volume)
     const struct vfs_backend_ops *pinned = NULL;
     assert(mount_pin(volume, &pinned) == PHIPFS_STATUS_NOT_MOUNTED && pinned == NULL);
     assert(phipfs_mount(volume) == PHIPFS_STATUS_BUSY && phipfs_unmount(volume) == PHIPFS_STATUS_BUSY);
+    assert(!phipfs_resources_released());
     __atomic_store_n(&backend_entered, true, __ATOMIC_RELEASE);
     while (!__atomic_load_n(&release_backend, __ATOMIC_ACQUIRE)) yield_worker();
     return phase % 2U == 0U ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK;
@@ -71,6 +72,7 @@ static void observe_mount(void)
         assert(phipfs_drive(PHIPFS_VOLUME_DATA).mounted);
         assert(phipfs_completion_count(PHIPFS_VOLUME_DATA) == 77U);
         (void)phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA);
+        (void)phipfs_resources_released();
         assert(cpu_interrupts_enabled());
         __atomic_fetch_add(&observations, 1U, __ATOMIC_RELEASE);
     } while (!__atomic_load_n(&observer_done, __ATOMIC_ACQUIRE));
@@ -207,6 +209,16 @@ int main(void)
         }
     }
     assert(phipfs_resources_released());
+    const size_t file_slot = phipia_slot_claim(open_file_claims, VFS_MAX_OPEN_FILES);
+    assert(file_slot < VFS_MAX_OPEN_FILES && !phipfs_resources_released());
+    phipia_slot_release(open_file_claims, file_slot);
+    const size_t directory_slot = phipia_slot_claim(directory_claims, VFS_MAX_DIRECTORY_ITERATORS);
+    assert(directory_slot < VFS_MAX_DIRECTORY_ITERATORS && !phipfs_resources_released());
+    phipia_slot_release(directory_claims, directory_slot);
+    const size_t reserved = vnode_reserve();
+    assert(reserved < VFS_MAX_VNODES && !phipfs_resources_released());
+    vnode_unreserve(reserved);
+    assert(phipfs_resources_released() && cpu_interrupts_enabled());
     assert(!phipfs_drive(PHIPFS_VOLUME_COUNT).mounted);
     assert(phipfs_completion_count(PHIPFS_VOLUME_COUNT) == 0U);
     assert(!phipfs_has_atomic_replace(PHIPFS_VOLUME_COUNT));

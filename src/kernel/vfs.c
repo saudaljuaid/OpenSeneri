@@ -781,17 +781,20 @@ bool phipfs_self_test(size_t *completed_tests)
 
 bool phipfs_resources_released(void)
 {
+    if (!vnode_resources_released()) return false;
+    const bool restore_interrupts = vnode_metadata_acquire();
+    bool released = true;
     for (size_t index = 0U; index < PHIPFS_VOLUME_COUNT; ++index)
         if (mounts[index].active || mounts[index].mounting || mounts[index].unmounting ||
-            __atomic_load_n(&mounts[index].references, __ATOMIC_ACQUIRE) != 0U) return false;
-    if (!vnode_resources_released()) return false;
+            __atomic_load_n(&mounts[index].references, __ATOMIC_ACQUIRE) != 0U) released = false;
     for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index)
         if (open_files[index].active || open_files[index].opening || open_files[index].backend_handle != 0U ||
-            __atomic_load_n(&open_file_claims[index], __ATOMIC_ACQUIRE)) return false;
+            __atomic_load_n(&open_file_claims[index], __ATOMIC_ACQUIRE)) released = false;
     for (size_t index = 0U; index < VFS_MAX_DIRECTORY_ITERATORS; ++index)
         if (directories[index].active || directories[index].opening || directories[index].backend_handle != 0U ||
-            __atomic_load_n(&directory_claims[index], __ATOMIC_ACQUIRE)) return false;
-    return true;
+            __atomic_load_n(&directory_claims[index], __ATOMIC_ACQUIRE)) released = false;
+    vnode_metadata_release(restore_interrupts);
+    return released;
 }
 
 void phipfs_initialize(void)
@@ -970,7 +973,9 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     // the description before any create/truncate or open and pin this mount
     // until the resulting vnode takes over its reference. No usable handle is
     // published while the backend operation is incomplete.
+    const bool restore_reservation_interrupts = vnode_metadata_acquire();
     open_files[slot].opening = true;
+    vnode_metadata_release(restore_reservation_interrupts);
     if (backend->open_options != NULL && flags != 0U) {
         // Destructive prepared opens need storage for their resulting inode
         // before the backend can commit. Other callbacks must not consume it.
@@ -1044,7 +1049,9 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
 failed:
     vnode_unreserve(reserved_vnode);
     if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
+    const bool restore_failure_interrupts = vnode_metadata_acquire();
     open_files[slot].opening = false;
+    vnode_metadata_release(restore_failure_interrupts);
     mount_release(volume);
     phipia_slot_release(open_file_claims, slot);
     return status;
