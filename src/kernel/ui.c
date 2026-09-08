@@ -3646,7 +3646,10 @@ static enum phipfs_status media_source_export(void)
             status = data_publication_finish(&save, file_bytes, status);
         media_source_set_status(status == PHIPFS_STATUS_OK ?
             "EXPORT.BMP written to data" : "Export failed");
-        if (status == PHIPFS_STATUS_OK) (void)files_refresh();
+        if (status == PHIPFS_STATUS_OK) {
+            (void)files_refresh();
+            console_serial_write("Phipia: Media exported EXPORT.BMP\n");
+        }
         return status;
     }
     status = media_source_recover_export();
@@ -3702,6 +3705,7 @@ static enum phipfs_status media_source_export(void)
     if (status == PHIPFS_STATUS_OK) {
         media_source_set_status("EXPORT.BMP written to data");
         (void)files_refresh();
+        console_serial_write("Phipia: Media exported EXPORT.BMP\n");
     } else {
         media_source_set_status("Export failed / previous output retained");
     }
@@ -4227,6 +4231,9 @@ static enum phipfs_status media_editor_save(void)
     status = media_source_dirty ? media_source_save() : PHIPFS_STATUS_OK;
     if (status == PHIPFS_STATUS_OK) {
         status = media_editor_save_timeline();
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        console_serial_write("Phipia: Media project saved\n");
     }
     return status;
 }

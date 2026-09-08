@@ -852,7 +852,7 @@ def capture_phipia_session(
     # Media Editor is the fourth window at (124,73). The data volume already
     # carries a real BMP, so opening imports it. Add text and a warm effect,
     # adjust the effect strength, seek, save both project layers, and export
-    # the composed stage through the real FAT32/NVMe path.
+    # the composed stage through the admitted Data/NVMe path.
     open_app(DOCK_MEDIA_EDITOR, 1.10)
     pointer.move_to(915, 89)
     pointer.click()
@@ -875,10 +875,16 @@ def capture_phipia_session(
     pointer.click()
     pointer.move_to(500, 534)
     pointer.click()
+    offset = serial.stat().st_size if serial.exists() else 0
     qmp.hmp("sendkey ctrl-s")
+    # Publication can occupy the guest longer than a keyboard chord. Wait for
+    # both project saves before delivering the next shortcut and its releases.
+    wait_serial_after(serial, offset, b"Phipia: Media project saved", timeout=60.0)
     pointer.settle_guest(0.45)
     snapshot("phipia-media-editor", "media_editor_saved")
+    offset = serial.stat().st_size if serial.exists() else 0
     qmp.hmp("sendkey ctrl-e")
+    wait_serial_after(serial, offset, b"Phipia: Media exported EXPORT.BMP", timeout=60.0)
     wait_for_export(durable_data, filesystem=getattr(args, "data_filesystem", "fat32"))
     pointer.settle_guest(0.35)
     snapshot("phipia-media-editor-exported", "media_editor_exported")
