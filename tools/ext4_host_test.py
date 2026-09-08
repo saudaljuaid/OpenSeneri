@@ -308,7 +308,10 @@ class KernelReadTests(unittest.TestCase):
             file.write_bytes(b"guest data")
             expected = {file.name: {"bytes": 10, "sha256": kernel_read.digest(file)}}
             self.assertEqual(kernel_read.mounted_read(root, expected), expected)
+            self.assertEqual(kernel_read.mounted_read(root, {"removed": None}), {"removed": None})
+            (root / "directory").mkdir()
             for name, metadata in (("../escape", expected[file.name]),
+                    ("../escape", None), (file.name, None), ("directory", None),
                     (file.name, {"bytes": 10, "sha256": "0" * 64}),
                     (file.name, {"bytes": 11, "sha256": expected[file.name]["sha256"]})):
                 with self.assertRaises(RuntimeError):

@@ -24,6 +24,16 @@ def mounted_read(root, expected):
         relative = PurePosixPath(name)
         if relative.is_absolute() or not relative.parts or ".." in relative.parts:
             raise RuntimeError(f"invalid kernel read path: {name!r}")
+        if wanted is None:
+            parent = root.joinpath(*relative.parts[:-1]).resolve(strict=True)
+            if not parent.is_relative_to(root):
+                raise RuntimeError(f"kernel absence check escaped mount: {name!r}")
+            try:
+                (parent / relative.name).lstat()
+            except FileNotFoundError:
+                result[name] = None
+                continue
+            raise RuntimeError(f"Linux retained removed name: {name!r}")
         target = root.joinpath(*relative.parts).resolve(strict=True)
         if not target.is_relative_to(root) or not target.is_file():
             raise RuntimeError(f"kernel read escaped mount or is not a regular file: {name!r}")

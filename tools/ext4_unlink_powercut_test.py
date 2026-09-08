@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 
 import ext4_image
+import ext4_kernel_read
 import ext4_powercut_test as recovery
 
 
@@ -36,6 +37,7 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
     (output / "namespace.txt").write_text(namespace)
+    expected_files = {f"data/user/{removed}": None}
     if replacement_inode is not None:
         target = ext4_image._parse_stat(ext4_image._debugfs(tools, image,
             "stat /data/user/replace-target"), "/data/user/replace-target")
@@ -45,6 +47,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
         ext4_image._debugfs(tools, image, f'dump -p /data/user/replace-target "{content.as_posix()}"')
         if content.read_bytes() != b"s" * 4500:
             raise RuntimeError("held-replace changed the published file contents")
+        expected_files["data/user/replace-target"] = {
+            "bytes": 4500, "sha256": hashlib.sha256(b"s" * 4500).hexdigest()}
     for executable, arguments, name in (
         (tools["e2fsck"], ["-f", "-n"], "e2fsck.txt"),
         ("dumpe2fs", ["-h"], "dumpe2fs.txt"),
@@ -54,6 +58,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
         (output / name).write_text(result.stdout + result.stderr)
         if result.returncode != 0:
             raise RuntimeError(f"held-unlink {name} refused the clean image")
+    report["linux_kernel_read"] = ext4_kernel_read.verify_files(
+        image, output / "linux-kernel", expected_files)
     report["image_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
     (output / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     return report
