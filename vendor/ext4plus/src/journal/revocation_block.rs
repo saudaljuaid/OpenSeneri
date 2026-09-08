@@ -71,6 +71,8 @@ pub(super) fn read_revocation_block_table(
     )?;
 
     // Read each entry and append to `table`.
+    table.try_reserve_exact(num_bytes / BLOCK_INDEX_SIZE_IN_BYTES)
+        .map_err(|_| Ext4Error::FileTooLarge)?;
     while !data.is_empty() {
         let block_index = u64::from_be_bytes(
             // OK to unwrap: `BLOCK_INDEX_SIZE_IN_BYTES` matches the

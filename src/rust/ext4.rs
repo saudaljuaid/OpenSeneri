@@ -641,7 +641,7 @@ fn recover_dirty_journal(
         _ => None,
     }).ok_or(Status::Invalid)?;
     let projected = Ext4::load(Box::new(RecoveryValidationReader {
-        context, images: recovery.replay_images().to_vec(),
+        context, images: recovery.try_replay_images().map_err(|_| Status::Range)?,
         superblock: checkpointed.with_recovery_state(false),
     })).map_err(map_error)?;
     projected.orphan_inodes().map_err(map_error)?;
