@@ -13,12 +13,16 @@ on:
                 description: Diagnostic kernel and targeted ext4 recovery cases (no milestone gate credit)
                 type: boolean
                 default: false
+            ext4_application_probe:
+                description: Diagnostic desktop cold-boot journey only (not full milestone verification)
+                type: boolean
+                default: false
 
 permissions:
     contents: read
 
 concurrency:
-    group: filesystem-compatibility-${{ github.ref }}${{ inputs.ext4_boot_probe && '-ext4-probe' || (inputs.ext4_only && '-ext4' || '') }}
+    group: filesystem-compatibility-${{ github.ref }}${{ inputs.ext4_application_probe && '-ext4-app-probe' || (inputs.ext4_boot_probe && '-ext4-probe' || (inputs.ext4_only && '-ext4' || '')) }}
     cancel-in-progress: true
 
 jobs:
@@ -64,7 +68,7 @@ jobs:
                   qemu-system-x86_64 -accel help \
                       | tee evidence/filesystem/accelerator-help.txt
             - name: Verify the kernel artifact
-              if: ${{ !inputs.ext4_boot_probe }}
+              if: ${{ !inputs.ext4_boot_probe && !inputs.ext4_application_probe }}
               env:
                   PHIPIA_EXT4_KERNEL_INTEROP: "1"
               shell: bash
@@ -74,17 +78,26 @@ jobs:
                   git rev-parse HEAD >evidence/ext4/head.txt
                   make verify 2>&1 | tee evidence/ext4/verify.log
             - name: Build the diagnostic kernel (not milestone verification)
-              if: ${{ inputs.ext4_boot_probe }}
+              if: ${{ inputs.ext4_boot_probe || inputs.ext4_application_probe }}
               shell: bash
               run: |
                   set -o pipefail
                   mkdir -p evidence/ext4
                   git rev-parse HEAD >evidence/ext4/head.txt
-                  printf '%s\n' 'Diagnostic ext4 boot only; all milestone gates remain required.' \
+                  if [[ '${{ inputs.ext4_boot_probe }}' == 'true' && '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
+                      echo 'Choose only one diagnostic mode.'
+                      exit 1
+                  fi
+                  printf '%s\n' 'Targeted ext4 diagnostic only; all milestone gates remain required.' \
                       >evidence/ext4/DIAGNOSTIC-ONLY.txt
                   make kernel lint 2>&1 | tee evidence/ext4/diagnostic-build.log
                   make build/notes-ext4-host-test
                   build/notes-ext4-host-test 2>&1 | tee evidence/ext4/application-publication-host.log
+                  if [[ '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
+                      printf '%s\n' 'Application probe: full host, recovery and release suites remain required.' \
+                          >evidence/ext4/APPLICATION-PROBE.txt
+                      exit 0
+                  fi
                   make build/tests/ext4/phipia-ext4.raw
                   export PHIPIA_EXT4_RUST_FIXTURE="$PWD/build/tests/ext4/phipia-ext4.raw"
                   export CARGO_TARGET_DIR="$PWD/build/ext4-transaction-target"
@@ -100,7 +113,7 @@ jobs:
                           2>&1 | tee "evidence/ext4/${regression}.log"
                   done
             - name: Exercise ext4 VFS recovery and durability boundaries
-              if: ${{ !cancelled() }}
+              if: ${{ !cancelled() && !inputs.ext4_application_probe }}
               shell: bash
               run: |
                   set -o pipefail
@@ -120,19 +133,19 @@ jobs:
                   make qemu-test-fat32-data qemu-test-ext4-applications QEMU_ACCEL=tcg \
                       2>&1 | tee evidence/ext4/applications.log
             - name: Exercise ordinary ext4 VFS ENOSPC rollback
-              if: ${{ !cancelled() && !inputs.ext4_boot_probe }}
+              if: ${{ !cancelled() && !inputs.ext4_boot_probe && !inputs.ext4_application_probe }}
               shell: bash
               run: |
                   set -o pipefail
                   make qemu-test-ext4-space QEMU_ACCEL=tcg 2>&1 | tee evidence/ext4/space.log
             - name: Exercise ordinary ext4 VFS inode exhaustion
-              if: ${{ !cancelled() && !inputs.ext4_boot_probe }}
+              if: ${{ !cancelled() && !inputs.ext4_boot_probe && !inputs.ext4_application_probe }}
               shell: bash
               run: |
                   set -o pipefail
                   make qemu-test-ext4-inodes QEMU_ACCEL=tcg 2>&1 | tee evidence/ext4/inodes.log
             - name: Exercise ordinary ext4 held-file mutation power cuts
-              if: ${{ !cancelled() && !inputs.ext4_boot_probe }}
+              if: ${{ !cancelled() && !inputs.ext4_boot_probe && !inputs.ext4_application_probe }}
               shell: bash
               run: |
                   set -o pipefail
@@ -143,7 +156,7 @@ jobs:
                   done
                   exit "$result"
             - name: Exercise ext4 package repair removal and SDL reboot persistence
-              if: ${{ !cancelled() && !inputs.ext4_boot_probe }}
+              if: ${{ !cancelled() && !inputs.ext4_boot_probe && !inputs.ext4_application_probe }}
               shell: bash
               run: |
                   set -o pipefail
@@ -169,7 +182,7 @@ jobs:
                   if-no-files-found: error
                   retention-days: 30
             - name: Run ten complete serial TCG sweeps
-              if: ${{ !inputs.ext4_only && !inputs.ext4_boot_probe }}
+              if: ${{ !inputs.ext4_only && !inputs.ext4_boot_probe && !inputs.ext4_application_probe }}
               shell: bash
               run: |
                   set -o pipefail
@@ -197,7 +210,7 @@ jobs:
                           "evidence/filesystem/scenario-isos/${scenario}.iso"
                   done
             - name: Record the accelerator safety boundary
-              if: ${{ !inputs.ext4_only && !inputs.ext4_boot_probe }}
+              if: ${{ !inputs.ext4_only && !inputs.ext4_boot_probe && !inputs.ext4_application_probe }}
               shell: bash
               run: |
                   printf '%s\n' \
@@ -207,7 +220,7 @@ jobs:
                       'Linux runner hardware acceleration is therefore unmeasured by design; TCG completed ten full sweeps.' \
                       >>evidence/filesystem/accelerator-results.txt
             - name: Assemble release evidence
-              if: ${{ !inputs.ext4_only && !inputs.ext4_boot_probe }}
+              if: ${{ !inputs.ext4_only && !inputs.ext4_boot_probe && !inputs.ext4_application_probe }}
               shell: bash
               run: |
                   set -o pipefail
@@ -305,7 +318,7 @@ jobs:
                   cat evidence/filesystem/verification-summary.txt
                   cat evidence/filesystem/SHA256SUMS
             - name: Upload the bounded milestone evidence
-              if: ${{ !inputs.ext4_only && !inputs.ext4_boot_probe }}
+              if: ${{ !inputs.ext4_only && !inputs.ext4_boot_probe && !inputs.ext4_application_probe }}
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
                   name: phipia-filesystem-milestone-${{ github.sha }}
