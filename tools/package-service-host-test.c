@@ -57,6 +57,10 @@ static void (*drive_observer)(void);
 static bool drive_unavailable;
 static bool claim_probe_failed;
 static unsigned claim_probe_calls;
+static unsigned prepared_opens;
+static unsigned legacy_creates;
+static unsigned unlink_calls;
+static bool prepared_collision;
 
 static void event(enum mock_event value)
 {
@@ -137,6 +141,10 @@ static void reset_filesystem(void)
     fail_next_sync = false;
     fail_sync_ordinal = 0U;
     sync_attempts = 0U;
+    prepared_opens = 0U;
+    legacy_creates = 0U;
+    unlink_calls = 0U;
+    prepared_collision = false;
     add_directory("pkgstate");
     add_directory("pkgstate/gen");
     add_directory("pkgstate/gen/00000000");
@@ -253,6 +261,30 @@ enum phipfs_status phipfs_open(
         }
     }
     return PHIPFS_STATUS_NO_HANDLES;
+}
+
+enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *path,
+    enum phipfs_access access, uint8_t flags, uint16_t mode, phipfs_handle *handle)
+{
+    (void)volume;
+    (void)access;
+    *handle = 0U;
+    if (flags != (PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE))
+        return PHIPFS_STATUS_INVALID_ARGUMENT;
+    ++prepared_opens;
+    if (prepared_collision) {
+        prepared_collision = false;
+        add_file(path, (const uint8_t *)"foreign", 7U, UINT16_C(0600));
+    }
+    if (find_node(path) != MOCK_MAX_NODES) return PHIPFS_STATUS_EXISTS;
+    size_t slot = 0U;
+    while (slot < MOCK_MAX_HANDLES && handles[slot].active) ++slot;
+    if (slot == MOCK_MAX_HANDLES) return PHIPFS_STATUS_NO_HANDLES;
+    const size_t node = add_node(path, false, NULL, 0U, mode);
+    if (node == MOCK_MAX_NODES) return PHIPFS_STATUS_FULL;
+    handles[slot] = (struct mock_handle){ .active = true, .node = node, .offset = 0U };
+    *handle = slot + 1U;
+    return PHIPFS_STATUS_OK;
 }
 
 static struct mock_handle *mock_handle(phipfs_handle handle)
@@ -384,6 +416,7 @@ enum phipfs_status phipfs_list(
 enum phipfs_status phipfs_create(enum phipfs_volume volume, const char *path)
 {
     (void)volume;
+    ++legacy_creates;
     if (find_node(path) != MOCK_MAX_NODES) {
         return PHIPFS_STATUS_EXISTS;
     }
@@ -466,6 +499,7 @@ enum phipfs_status phipfs_rename(
 enum phipfs_status phipfs_unlink(enum phipfs_volume volume, const char *path)
 {
     (void)volume;
+    ++unlink_calls;
     size_t node = find_node(path);
     if (node == MOCK_MAX_NODES) {
         return PHIPFS_STATUS_NOT_FOUND;
@@ -1820,6 +1854,46 @@ static int test_service_request_claim(void)
     return 0;
 }
 
+static int test_prepared_file_ownership(void)
+{
+    struct package_service_report report;
+    phipfs_handle borrowed[MOCK_MAX_HANDLES];
+    struct mock_handle before[MOCK_MAX_HANDLES];
+
+    reset_filesystem();
+    add_file("borrowed", (const uint8_t *)"old", 3U, UINT16_C(0600));
+    for (size_t index = 0U; index < MOCK_MAX_HANDLES; ++index)
+        CHECK(phipfs_open(PHIPFS_VOLUME_DATA, "borrowed", PHIPFS_ACCESS_READ,
+            &borrowed[index]) == PHIPFS_STATUS_OK, 300);
+    memcpy(before, handles, sizeof(before));
+    CHECK(package_service_repository_floor_advance(1U, &report) == PACKAGE_SERVICE_STATUS_FILESYSTEM &&
+        report.filesystem_status == PHIPFS_STATUS_NO_HANDLES && prepared_opens == 1U &&
+        legacy_creates == 0U && unlink_calls == 0U && report.live_file_handles == 0U &&
+        report.live_allocations == 0U && memcmp(before, handles, sizeof(before)) == 0 &&
+        find_node(PACKAGE_SERVICE_REPOSITORY_FLOOR_NEW_PATH) == MOCK_MAX_NODES &&
+        find_node(PACKAGE_SERVICE_REPOSITORY_FLOOR_PATH) == MOCK_MAX_NODES, 301);
+    for (size_t index = 0U; index < MOCK_MAX_HANDLES; ++index)
+        CHECK(phipfs_close(borrowed[index]) == PHIPFS_STATUS_OK, 302);
+    CHECK(package_service_repository_floor_advance(1U, &report) == PACKAGE_SERVICE_STATUS_OK &&
+        prepared_opens == 2U && legacy_creates == 0U && report.repository_floor == 1U &&
+        report.live_file_handles == 0U && report.live_allocations == 0U, 303);
+    size_t current = find_node(PACKAGE_SERVICE_REPOSITORY_FLOOR_PATH);
+    CHECK(current != MOCK_MAX_NODES && nodes[current].mode == UINT16_C(0644), 304);
+
+    reset_filesystem();
+    prepared_collision = true;
+    CHECK(package_service_repository_floor_advance(1U, &report) == PACKAGE_SERVICE_STATUS_FILESYSTEM &&
+        report.filesystem_status == PHIPFS_STATUS_EXISTS && !prepared_collision && prepared_opens == 1U &&
+        legacy_creates == 0U && unlink_calls == 0U && report.live_file_handles == 0U &&
+        report.live_allocations == 0U, 305);
+    current = find_node(PACKAGE_SERVICE_REPOSITORY_FLOOR_NEW_PATH);
+    CHECK(current != MOCK_MAX_NODES && nodes[current].byte_count == 7U &&
+        nodes[current].mode == UINT16_C(0600) && memcmp(nodes[current].bytes, "foreign", 7U) == 0, 306);
+    for (size_t index = 0U; index < MOCK_MAX_HANDLES; ++index)
+        CHECK(!handles[index].active, 307);
+    return 0;
+}
+
 int main(void)
 {
     static uint8_t old_database[OLD_DATABASE_BYTES];
@@ -1843,6 +1917,9 @@ int main(void)
         NEW_DATABASE_BYTES);
     build_journal(journal, old_database, new_database);
     result = test_service_request_claim();
+    if (result == 0) {
+        result = test_prepared_file_ownership();
+    }
     if (result == 0) {
         result = test_absent_state_is_distinct();
     }

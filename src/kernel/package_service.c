@@ -891,14 +891,9 @@ static enum package_service_status write_new_file(
     if (bytes == NULL && count != 0U) {
         return PACKAGE_SERVICE_STATUS_NULL_ARGUMENT;
     }
-    fs_status = phipfs_create(PHIPFS_VOLUME_DATA, path);
+    fs_status = phipfs_open_options(PHIPFS_VOLUME_DATA, path, PHIPFS_ACCESS_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, UINT16_C(0644), &handle);
     if (fs_status != PHIPFS_STATUS_OK) {
-        return filesystem_failure(context, fs_status);
-    }
-    fs_status = phipfs_open(PHIPFS_VOLUME_DATA, path, PHIPFS_ACCESS_WRITE,
-        &handle);
-    if (fs_status != PHIPFS_STATUS_OK) {
-        (void)phipfs_unlink(PHIPFS_VOLUME_DATA, path);
         return filesystem_failure(context, fs_status);
     }
     handle_acquired(context);
@@ -1198,16 +1193,9 @@ static enum package_service_status write_generation_file(
     } else {
         return PACKAGE_SERVICE_STATUS_STATE;
     }
-    fs_status = phipfs_create_mode(PHIPFS_VOLUME_DATA, destination,
-        (uint16_t)file->mode);
+    fs_status = phipfs_open_options(PHIPFS_VOLUME_DATA, destination, PHIPFS_ACCESS_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, (uint16_t)file->mode, &output);
     if (fs_status != PHIPFS_STATUS_OK) {
-        status = filesystem_failure(context, fs_status);
-        goto close_input;
-    }
-    fs_status = phipfs_open(PHIPFS_VOLUME_DATA, destination,
-        PHIPFS_ACCESS_WRITE, &output);
-    if (fs_status != PHIPFS_STATUS_OK) {
-        (void)phipfs_unlink(PHIPFS_VOLUME_DATA, destination);
         status = filesystem_failure(context, fs_status);
         goto close_input;
     }
@@ -1305,17 +1293,11 @@ static enum package_service_status write_authority_file(
     if (fs_status != PHIPFS_STATUS_OK && fs_status != PHIPFS_STATUS_NOT_FOUND) {
         return filesystem_failure(context, fs_status);
     }
-    fs_status = phipfs_create(PHIPFS_VOLUME_DATA,
-        PACKAGE_SERVICE_AUTHORITY_NEW_PATH);
-    if (fs_status != PHIPFS_STATUS_OK) {
-        return filesystem_failure(context, fs_status);
-    }
     phipfs_handle handle;
-    fs_status = phipfs_open(PHIPFS_VOLUME_DATA,
-        PACKAGE_SERVICE_AUTHORITY_NEW_PATH, PHIPFS_ACCESS_WRITE, &handle);
+    fs_status = phipfs_open_options(PHIPFS_VOLUME_DATA,
+        PACKAGE_SERVICE_AUTHORITY_NEW_PATH, PHIPFS_ACCESS_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, UINT16_C(0644), &handle);
     if (fs_status != PHIPFS_STATUS_OK) {
-        (void)phipfs_unlink(PHIPFS_VOLUME_DATA,
-            PACKAGE_SERVICE_AUTHORITY_NEW_PATH);
         return filesystem_failure(context, fs_status);
     }
     handle_acquired(context);
