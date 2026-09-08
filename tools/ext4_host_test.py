@@ -301,6 +301,24 @@ class E2fsprogsIntegrationTests(unittest.TestCase):
 
 
 class KernelReadTests(unittest.TestCase):
+    def test_kernel_xattrs_require_exact_value_and_presence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            file = root / "attribute-target"
+            file.write_bytes(b"retained")
+            value = bytes(index % 251 for index in range(300))
+            expected = {file.name: {"bytes": 8, "sha256": kernel_read.digest(file),
+                "xattrs": {"user.cut": value.hex()}}}
+            with mock.patch.object(kernel_read.os, "getxattr", return_value=value, create=True) as read:
+                self.assertEqual(kernel_read.mounted_read(root, expected), expected)
+                read.assert_called_once_with(file, "user.cut")
+            with mock.patch.object(kernel_read.os, "getxattr", return_value=value[:-1], create=True):
+                with self.assertRaises(RuntimeError):
+                    kernel_read.mounted_read(root, expected)
+            with mock.patch.object(kernel_read.os, "getxattr", side_effect=OSError("missing attribute"), create=True):
+                with self.assertRaises(OSError):
+                    kernel_read.mounted_read(root, expected)
+
     def test_manifest_checks_exact_contents_and_confines_paths(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

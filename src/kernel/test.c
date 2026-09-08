@@ -5491,6 +5491,54 @@ static _Noreturn void ext4_vfs_truncate_powercut(bool growing)
     kernel_test_pass();
 }
 
+static _Noreturn void ext4_vfs_xattr_powercut(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/attribute-target";
+    struct phipfs_stat metadata, after;
+    phipfs_handle file;
+    uint8_t expected[300], actual[300];
+    size_t count = 99U;
+    for (size_t index = 0U; index < sizeof(expected); ++index)
+        expected[index] = (uint8_t)(index % 251U);
+    ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &file), "xattr cut held file");
+    ext4_vfs_require(phipfs_fstat(file, &metadata), "xattr cut inode");
+    if (metadata.directory || metadata.size != 1700U || metadata.links != 1U)
+        kernel_test_fail("ext4 xattr cut source changed");
+    const uint64_t initial_free = phipfs_drive(volume).free_bytes;
+    const enum phipfs_status initial = phipfs_get_xattr(volume, name, "user.cut", NULL, 0U, &count);
+    if (initial == PHIPFS_STATUS_NOT_FOUND) {
+        if (count != 0U) kernel_test_fail("ext4 missing xattr retained length");
+        console_write("ST EXT4 XATTR initial old\n");
+        ext4_vfs_require(phipfs_set_xattr(volume, name, "user.cut", expected, sizeof(expected), false), "xattr cut set");
+        if (phipfs_drive(volume).free_bytes + 4096U != initial_free)
+            kernel_test_fail("ext4 external xattr allocation changed");
+    } else if (initial == PHIPFS_STATUS_OK && count == sizeof(expected)) {
+        console_write("ST EXT4 XATTR initial new\n");
+    } else kernel_test_fail("ext4 xattr cut state is neither absent nor committed");
+    ext4_vfs_require(phipfs_get_xattr(volume, name, "user.cut", actual, sizeof(actual), &count), "xattr cut read");
+    if (count != sizeof(expected)) kernel_test_fail("ext4 xattr cut returned short value");
+    for (size_t index = 0U; index < count; ++index)
+        if (actual[index] != expected[index]) kernel_test_fail("ext4 xattr cut changed value bytes");
+    count = 99U;
+    if (phipfs_get_xattr(volume, name, "user.cut", actual, sizeof(actual) - 1U, &count) != PHIPFS_STATUS_RANGE || count != 0U)
+        kernel_test_fail("ext4 xattr cut failed short-buffer refusal");
+    ext4_vfs_require(phipfs_fstat(file, &after), "xattr cut retained inode");
+    if (after.object_id != metadata.object_id || after.size != metadata.size || after.mode != metadata.mode || after.links != 1U)
+        kernel_test_fail("ext4 xattr cut changed file identity or metadata");
+    ext4_vfs_cut_contents(file, 1700U, 't');
+    ext4_vfs_require(phipfs_fsync(file), "xattr cut fsync");
+    ext4_vfs_require(phipfs_close(file), "xattr cut close");
+    ext4_vfs_require(phipfs_sync(volume), "xattr cut final sync");
+    ext4_vfs_require(phipfs_unmount(volume), "xattr cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 xattr cut resource census failed");
+    console_write("ST EXT4 VFS external xattr bytes inode allocation census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_inode_exhaustion(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5689,6 +5737,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         ext4_vfs_truncate_powercut(true);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTRMDIR.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_rmdir_powercut();
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTXATTR.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_xattr_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTCREATE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_create_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTMKDIR.TST", &stat) == PHIPFS_STATUS_OK)

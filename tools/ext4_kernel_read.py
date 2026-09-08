@@ -49,6 +49,9 @@ def mounted_read(root, expected):
         if size != wanted["bytes"]:
             raise RuntimeError(f"Linux file length differs for {name}: {size} != {wanted['bytes']}")
         actual = {"bytes": size, "sha256": digest(target)}
+        if "xattrs" in wanted:
+            actual["xattrs"] = {attribute: os.getxattr(target, attribute).hex()
+                for attribute in wanted["xattrs"]}
         if actual != wanted:
             raise RuntimeError(f"Linux and e2fsprogs disagree for {name}: {actual!r} != {wanted!r}")
         result[name] = actual

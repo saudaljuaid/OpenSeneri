@@ -40,21 +40,23 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
     removed = "owned-cut" if replacement_inode is None else "replace-source"
     if operation == "rmdir":
         removed = "removed-directory"
-    if operation not in ("truncate", "grow", "create", "mkdir") and f"/{removed}/" in namespace:
+    if operation not in ("truncate", "grow", "xattr", "create", "mkdir") and f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
     (output / "namespace.txt").write_text(namespace)
-    expected_files = {} if operation in ("truncate", "grow", "create", "mkdir") else {f"data/user/{removed}": None}
+    expected_files = {} if operation in ("truncate", "grow", "xattr", "create", "mkdir") else {f"data/user/{removed}": None}
     if replacement_inode is not None:
         target_name = "truncate-target" if operation in ("truncate", "grow") else "replace-target"
         target_size = 1700 if operation == "truncate" else 4500
         if operation == "grow":
             target_size = 12345
+        if operation == "xattr":
+            target_name, target_size = "attribute-target", 1700
         if operation == "create":
             target_name, target_size = "created-target", 0
         if operation == "mkdir":
             target_name, target_size = "created-directory", 4096
-        expected_content = (b"t" if operation == "truncate" else b"s") * target_size
+        expected_content = (b"t" if operation in ("truncate", "xattr") else b"s") * target_size
         if operation == "grow":
             expected_content = b"t" * 1700 + bytes(target_size - 1700)
         target_output = ext4_image._debugfs(tools, image, f"stat /data/user/{target_name}")
@@ -65,6 +67,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
             raise RuntimeError("created inode mode or empty allocation changed")
         if operation == "grow" and target["block_count_512"] != 8:
             raise RuntimeError("sparse growth allocated physical hole blocks")
+        if operation == "xattr" and target["block_count_512"] != 16:
+            raise RuntimeError("external xattr physical allocation changed")
         if operation == "mkdir":
             if target["mode"] != "0750" or target["block_count_512"] != 8 or not re.search(r"Type:\s+directory\b", target_output):
                 raise RuntimeError("created directory mode type or allocation changed")
@@ -76,6 +80,9 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
                 raise RuntimeError("held-replace changed the published file contents")
             expected_files[f"data/user/{target_name}"] = {
                 "bytes": target_size, "sha256": hashlib.sha256(expected_content).hexdigest()}
+            if operation == "xattr":
+                expected_files[f"data/user/{target_name}"]["xattrs"] = {
+                    "user.cut": bytes(index % 251 for index in range(300)).hex()}
         if operation in ("truncate", "grow"):
             mapping = ext4_image._debugfs(tools, image, "bmap /data/user/truncate-target 0")
             blocks = re.findall(r"^([0-9]+)$", mapping, re.MULTILINE)
@@ -109,6 +116,7 @@ def run(args):
     creating = args.operation in ("create", "mkdir")
     directory = args.operation == "mkdir"
     removing_directory = args.operation == "rmdir"
+    attributing = args.operation == "xattr"
     pass_marker = PASS if not replacement else "ST EXT4 VFS held-replace old-or-new cleanup census exact"
     state_marker = "ST EXT4 HELD REPLACE initial" if replacement else "ST EXT4 HELD UNLINK initial"
     if truncating:
@@ -125,6 +133,9 @@ def run(args):
     if removing_directory:
         pass_marker = "ST EXT4 VFS rmdir parent links held snapshot census exact"
         state_marker = "ST EXT4 RMDIR initial"
+    if attributing:
+        pass_marker = "ST EXT4 VFS external xattr bytes inode allocation census exact"
+        state_marker = "ST EXT4 XATTR initial"
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     tools = ext4_image.require_tools()
@@ -153,6 +164,9 @@ def run(args):
         if removing_directory:
             ext4_image._run([tools["debugfs"], "-w", "-R", "mkdir /data/user/removed-directory", initial])
             files = [(empty, "CUTRMDIR.TST")]
+        if attributing:
+            source.write_bytes(b"t" * 1700)
+            files = [(source, "attribute-target"), (empty, "CUTXATTR.TST")]
         for file, name in files:
             ext4_image._run([tools["debugfs"], "-w", "-R",
                 f'write "{file.as_posix()}" /data/user/{name}', initial])
@@ -164,6 +178,8 @@ def run(args):
     removed = "truncate-target" if truncating else ("replace-target" if replacement else "owned-cut")
     if removing_directory:
         removed = "removed-directory"
+    if attributing:
+        removed = "attribute-target"
     target = None if creating else ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
         f"stat /data/user/{removed}"), f"/data/user/{removed}")
     reclaimed = 0 if growing else (1 if replacement or truncating else 2)
@@ -171,16 +187,18 @@ def run(args):
     initial_size = 1700 if growing else (3000 if replacement else 4500)
     if removing_directory:
         reclaimed, initial_blocks, initial_size = 1, 1, 4096
+    if attributing:
+        reclaimed, initial_blocks, initial_size = -1, 1, 1700
     if not creating and (target["size"] != initial_size or target["block_count_512"] != initial_blocks * 8):
         raise RuntimeError("held-unlink input has unexpected allocation geometry")
-    replacement_inode = target["inode"] if truncating else None
+    replacement_inode = target["inode"] if truncating or attributing else None
     if replacement:
         source_stat = ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
             "stat /data/user/replace-source"), "/data/user/replace-source")
         if source_stat["size"] != 4500 or source_stat["block_count_512"] != 16:
             raise RuntimeError("held-replace source allocation geometry changed")
         replacement_inode = source_stat["inode"]
-    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating else 1)
+    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating or attributing else 1)
     if creating:
         expected_blocks, expected_inodes = before["free_blocks"] - (1 if directory else 0), before["free_inodes"] - 1
     iso = output / "verify.iso"
@@ -267,7 +285,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "create", "mkdir", "rmdir"), default="unlink")
+    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "create", "mkdir", "rmdir", "xattr"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
