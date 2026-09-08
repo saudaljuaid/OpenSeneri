@@ -38,6 +38,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
         if parent["links"] != expected_parent_links:
             raise RuntimeError("recovered directory parent link count changed")
     removed = "owned-cut" if replacement_inode is None else "replace-source"
+    if operation == "rmdir":
+        removed = "removed-directory"
     if operation not in ("truncate", "grow", "create", "mkdir") and f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
@@ -106,6 +108,7 @@ def run(args):
     growing = args.operation == "grow"
     creating = args.operation in ("create", "mkdir")
     directory = args.operation == "mkdir"
+    removing_directory = args.operation == "rmdir"
     pass_marker = PASS if not replacement else "ST EXT4 VFS held-replace old-or-new cleanup census exact"
     state_marker = "ST EXT4 HELD REPLACE initial" if replacement else "ST EXT4 HELD UNLINK initial"
     if truncating:
@@ -119,6 +122,9 @@ def run(args):
     if directory:
         pass_marker = "ST EXT4 VFS mkdir mode parent links empty snapshot census exact"
         state_marker = "ST EXT4 MKDIR initial"
+    if removing_directory:
+        pass_marker = "ST EXT4 VFS rmdir parent links held snapshot census exact"
+        state_marker = "ST EXT4 RMDIR initial"
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     tools = ext4_image.require_tools()
@@ -144,20 +150,27 @@ def run(args):
             files = [(source, "truncate-target"), (empty, "CUTGROW.TST" if growing else "CUTTRUNC.TST")]
         if creating:
             files = [(empty, "CUTMKDIR.TST" if directory else "CUTCREATE.TST")]
+        if removing_directory:
+            ext4_image._run([tools["debugfs"], "-w", "-R", "mkdir /data/user/removed-directory", initial])
+            files = [(empty, "CUTRMDIR.TST")]
         for file, name in files:
             ext4_image._run([tools["debugfs"], "-w", "-R",
                 f'write "{file.as_posix()}" /data/user/{name}', initial])
     before = ext4_image.inspect_image(initial, tools=tools)
     parent = ext4_image._parse_stat(ext4_image._debugfs(tools, initial, "stat /data/user"), "/data/user")
-    expected_parent_links = parent["links"] + (1 if directory else 0)
+    expected_parent_links = parent["links"] + (1 if directory else (-1 if removing_directory else 0))
     # Unlink/replace final close reclaims the removed inode. Shrink frees only
     # the second data block and retains the inode and partial first block.
     removed = "truncate-target" if truncating else ("replace-target" if replacement else "owned-cut")
+    if removing_directory:
+        removed = "removed-directory"
     target = None if creating else ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
         f"stat /data/user/{removed}"), f"/data/user/{removed}")
     reclaimed = 0 if growing else (1 if replacement or truncating else 2)
     initial_blocks = 1 if replacement or growing else 2
     initial_size = 1700 if growing else (3000 if replacement else 4500)
+    if removing_directory:
+        reclaimed, initial_blocks, initial_size = 1, 1, 4096
     if not creating and (target["size"] != initial_size or target["block_count_512"] != initial_blocks * 8):
         raise RuntimeError("held-unlink input has unexpected allocation geometry")
     replacement_inode = target["inode"] if truncating else None
@@ -254,7 +267,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "create", "mkdir"), default="unlink")
+    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "create", "mkdir", "rmdir"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

@@ -5334,6 +5334,45 @@ static _Noreturn void ext4_vfs_mkdir_powercut(void)
     kernel_test_pass();
 }
 
+static _Noreturn void ext4_vfs_rmdir_powercut(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/removed-directory";
+    struct phipfs_stat metadata, parent, after;
+    phipfs_directory_handle directory;
+    struct phipfs_list_entry entry;
+    bool present = true;
+    ext4_vfs_require(phipfs_stat_path(volume, "data/user", &parent), "rmdir cut parent");
+    const enum phipfs_status initial = phipfs_lstat_path(volume, name, &metadata);
+    if (initial == PHIPFS_STATUS_OK) {
+        if (!metadata.directory || metadata.links != 2U || metadata.size != 4096U)
+            kernel_test_fail("ext4 rmdir cut initial directory changed");
+        console_write("ST EXT4 RMDIR initial old\n");
+        ext4_vfs_require(phipfs_directory_open(volume, name, &directory), "rmdir cut held snapshot");
+        ext4_vfs_require(phipfs_rmdir(volume, name), "rmdir cut remove");
+        ext4_vfs_require(phipfs_stat_path(volume, "data/user", &after), "rmdir cut parent links");
+        if (after.object_id != parent.object_id || after.links + 1U != parent.links)
+            kernel_test_fail("ext4 rmdir cut did not decrement parent links exactly once");
+        ext4_vfs_require(phipfs_directory_read(directory, &entry, &present), "rmdir cut removed snapshot read");
+        if (present) kernel_test_fail("ext4 rmdir cut changed held empty snapshot");
+        ext4_vfs_require(phipfs_directory_close(directory), "rmdir cut snapshot close");
+        if (phipfs_directory_read(directory, &entry, &present) != PHIPFS_STATUS_STALE_HANDLE)
+            kernel_test_fail("ext4 rmdir cut retained closed snapshot");
+    } else if (initial == PHIPFS_STATUS_NOT_FOUND) console_write("ST EXT4 RMDIR initial new\n");
+    else kernel_test_fail("ext4 rmdir cut state is neither old nor new");
+    if (phipfs_lstat_path(volume, name, &metadata) != PHIPFS_STATUS_NOT_FOUND ||
+        phipfs_rmdir(volume, name) != PHIPFS_STATUS_NOT_FOUND)
+        kernel_test_fail("ext4 rmdir cut retained removed namespace");
+    ext4_vfs_require(phipfs_sync(volume), "rmdir cut final sync");
+    ext4_vfs_require(phipfs_unmount(volume), "rmdir cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 rmdir cut resource census failed");
+    console_write("ST EXT4 VFS rmdir parent links held snapshot census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_create_powercut(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5639,6 +5678,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         ext4_vfs_truncate_powercut(false);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTGROW.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_truncate_powercut(true);
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTRMDIR.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_rmdir_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTCREATE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_create_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTMKDIR.TST", &stat) == PHIPFS_STATUS_OK)
