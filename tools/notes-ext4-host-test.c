@@ -8,7 +8,7 @@
 enum save_fault {
     SAVE_OK, CREATE_FAIL, CREATE_LOST, STAT_FAIL, WRITE_FAIL, SHORT_WRITE,
     FIRST_SYNC_FAIL, PUBLISH_FAIL, PUBLISH_LOST, PUBLISH_WRONG_INODE,
-    SOURCE_REPLACED, SECOND_SYNC_FAIL, CLOSE_FAIL
+    SOURCE_REPLACED, SECOND_SYNC_FAIL, CLOSE_FAIL, CREATE_FULL
 };
 
 static enum save_fault fault;
@@ -49,6 +49,19 @@ static bool settings_close_fails;
 static bool data_admitted = true;
 static bool restored_show_desktop;
 static unsigned applied_settings;
+static unsigned storage_error_dialogs;
+
+enum dialog_status dialog_open(const struct dialog_request *request, struct ui_rect *damage)
+{
+    assert(state.active && request->icon == DIALOG_ICON_ERROR && request->buttons == 1U);
+    assert(strcmp(request->title, "Save failed") == 0 || strcmp(request->title, "Export failed") == 0);
+    assert(request->detail[0] != '\0' && strstr(request->message, "work remains open") != NULL);
+    *damage = (struct ui_rect){ 0U, 0U, 100U, 100U };
+    ++storage_error_dialogs;
+    return DIALOG_STATUS_OK;
+}
+
+uint32_t editor_playhead_ms(void) { return 0U; }
 static bool copy_source_live;
 static unsigned copy_failure;
 static size_t copy_position;
@@ -134,6 +147,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     assert(scratch_inode == 0U); /* Successful cleanup makes the same name reusable. */
     strcpy(scratch_name, path);
     if (fault == CREATE_FAIL) return PHIPFS_STATUS_IO;
+    if (fault == CREATE_FULL) return PHIPFS_STATUS_FULL;
     scratch_inode = 20U;
     if (fault == CREATE_LOST) return PHIPFS_STATUS_IO;
     *handle = 77U;
@@ -490,6 +504,35 @@ static enum phipfs_status save_app(unsigned app)
         app == 2U ? paint_save() : media_source_export();
 }
 
+static void storage_errors_keep_application_open(void)
+{
+    for (unsigned app = 1U; app <= 3U; ++app) {
+        const enum application_storage_action action = app == 1U ? APPLICATION_MEDIA_SAVE :
+            (app == 2U ? APPLICATION_PAINT_SAVE : APPLICATION_MEDIA_EXPORT);
+        const enum save_fault failures[] = { CREATE_FULL, WRITE_FAIL };
+        for (size_t index = 0U; index < sizeof(failures) / sizeof(failures[0]); ++index) {
+            reset_app(app, failures[index]);
+            media_source_dirty = false; /* Test the second project publication directly. */
+            storage_error_dialogs = 0U;
+            state.active = true;
+            state.layout.panel = (struct ui_rect){ 0U, 0U, 200U, 200U };
+            struct ui_rect damage = { 0U, 0U, 0U, 0U };
+            assert(application_storage_action(action, &damage) == UI_STATUS_OK);
+            assert(state.active && storage_error_dialogs == 1U && damage.width != 0U);
+            assert(live_handles == 0U && scratch_inode == 0U && !media_editor_export_active);
+            assert(target_length == 3U && memcmp(target_bytes, "old", 3U) == 0);
+            if (app == 1U) assert(media_editor_dirty);
+            if (app == 2U) assert(!paint_saved);
+        }
+    }
+    reset_app(2U, SAVE_OK);
+    storage_error_dialogs = 0U;
+    struct ui_rect damage = { 0U, 0U, 0U, 0U };
+    assert(application_storage_action(APPLICATION_PAINT_SAVE, &damage) == UI_STATUS_OK);
+    assert(paint_saved && storage_error_dialogs == 0U && live_handles == 0U);
+    puts("Paint and Media ENOSPC/IO failures retain documents, close ownership and keep the desktop active: PASS");
+}
+
 static void settings_persistence(void)
 {
     static const uint8_t initial[16] = { 'P', 'H', 'I', 'P', 'C', 'F', 'G', 1U, 3U, 1U, 0U, 1U, 1U };
@@ -578,6 +621,7 @@ static void settings_persistence(void)
 
 int main(void)
 {
+    storage_errors_keep_application_open();
     for (unsigned failure = 0U; failure <= 6U; ++failure) {
         if (failure == 5U) continue; /* Copy's second-fstat growth case is separate. */
         reset_large_bitmap(3U);

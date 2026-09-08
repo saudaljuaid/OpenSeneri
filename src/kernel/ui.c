@@ -4239,6 +4239,35 @@ static enum phipfs_status media_editor_save(void)
     return status;
 }
 
+enum application_storage_action {
+    APPLICATION_PAINT_SAVE, APPLICATION_MEDIA_SAVE, APPLICATION_MEDIA_EXPORT
+};
+
+static enum ui_status application_storage_action(
+    enum application_storage_action action, struct ui_rect *damage)
+{
+    enum phipfs_status status;
+    if (action == APPLICATION_PAINT_SAVE) status = paint_save();
+    else if (action == APPLICATION_MEDIA_SAVE) status = media_editor_save();
+    else {
+        media_editor_export_active = true;
+        status = media_source_export();
+        media_editor_export_active = false;
+    }
+    *damage = rect_union(*damage, state.layout.panel);
+    if (status == PHIPFS_STATUS_OK) return UI_STATUS_OK;
+    // A storage refusal leaves the editor and its dirty document available.
+    // It must not be promoted to the shell's fatal renderer error path.
+    struct dialog_request request = {
+        .message = "The operation did not report success. Your work remains open.",
+        .icon = DIALOG_ICON_ERROR, .button = { "OK" }, .buttons = 1U
+    };
+    (void)copy_string(request.title, sizeof(request.title),
+        action == APPLICATION_MEDIA_EXPORT ? "Export failed" : "Save failed");
+    (void)copy_string(request.detail, sizeof(request.detail), phipfs_status_string(status));
+    return dialog_open(&request, damage) == DIALOG_STATUS_OK ? UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
+}
+
 static struct ui_rect settings_back_rect(void)
 {
     const struct ui_rect client = state.layout.panel_client;
@@ -6435,9 +6464,7 @@ static enum ui_status phipia_pointer_press_active(
         if (status != PAINT_STATUS_OK) {
             return UI_STATUS_BAD_ELEMENT;
         }
-        if (paint_take_save_request() && paint_save() != PHIPFS_STATUS_OK) {
-            return UI_STATUS_FILESYSTEM_FAILURE;
-        }
+        if (paint_take_save_request()) return application_storage_action(APPLICATION_PAINT_SAVE, damage);
         return UI_STATUS_OK;
     }
     case UI_PANEL_STORE:
@@ -9337,8 +9364,7 @@ static enum ui_status apply_event(
 
         if (event->control && (event->character == 's' ||
                 event->character == 'S')) {
-            return paint_save() == PHIPFS_STATUS_OK ? UI_STATUS_OK :
-                UI_STATUS_FILESYSTEM_FAILURE;
+            return application_storage_action(APPLICATION_PAINT_SAVE, damage);
         }
         if (event->character == '\b') {
             paint_status = paint_key_backspace(damage);
@@ -9715,21 +9741,13 @@ static enum ui_status apply_event(
     } else if (event->type == UI_EVENT_TEXT_INPUT &&
             state.active_panel == UI_PANEL_MEDIA_EDITOR && event->control) {
         if (event->character == 's') {
-            if (media_editor_save() != PHIPFS_STATUS_OK) {
-                return UI_STATUS_FILESYSTEM_FAILURE;
-            }
+            return application_storage_action(APPLICATION_MEDIA_SAVE, damage);
         } else if (event->character == 'o') {
             media_source_import_clip();
             media_editor_sync_clip();
             media_editor_dirty = true;
         } else if (event->character == 'e') {
-            media_editor_export_active = true;
-            const enum phipfs_status status = media_source_export();
-
-            media_editor_export_active = false;
-            if (status != PHIPFS_STATUS_OK) {
-                return UI_STATUS_FILESYSTEM_FAILURE;
-            }
+            return application_storage_action(APPLICATION_MEDIA_EXPORT, damage);
         } else if (event->character == 'n') {
             media_source_reset(true);
             media_editor_clear_items();
