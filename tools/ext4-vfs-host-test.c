@@ -49,6 +49,7 @@ static bool steal_last_handle;
 static unsigned unmount_refusals;
 static unsigned live_mounts = 1U;
 static uint32_t logical_block_bytes = 4096U;
+static uint64_t namespace_blocks = 32768U;
 static phipfs_handle callback_handle;
 static unsigned close_callback_kind;
 static phipfs_handle moved_cursor_handle;
@@ -238,7 +239,7 @@ enum nvme_status nvme_volume_open(struct nvme_volume_session *session,
     }
     if (open_reports_failure) return NVME_STATUS_TEARDOWN_FAILURE;
     memset(session, 0, sizeof(*session));
-    session->namespace_blocks = 32768U;
+    session->namespace_blocks = namespace_blocks;
     session->logical_block_bytes = logical_block_bytes;
     session->controller_index = controller_index;
     session->writable = writable;
@@ -1056,6 +1057,29 @@ int main(void)
     close_reports_failure = false;
     assert(ext4_backend_mount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK);
     assert(ext4_backend_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK);
+    const uint32_t refused_sectors[] = {512U, 1024U, 2048U, 8192U};
+    for (size_t index = 0U; index < sizeof(refused_sectors) / sizeof(refused_sectors[0]); ++index) {
+        logical_block_bytes = refused_sectors[index];
+        namespace_blocks = (32768ULL * 4096U) / logical_block_bytes;
+        const unsigned before_mount = opens;
+        assert(ext4_backend_mount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_RANGE);
+        assert(opens == before_mount + 1U && opens == closes && live_mounts == 0U);
+        assert(ext4_backend_resources_released());
+    }
+    logical_block_bytes = 4096U;
+    namespace_blocks = 32768U;
+    assert(ext4_backend_mount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK);
+    logical_block_bytes = 512U;
+    namespace_blocks *= 8U; /* Same byte capacity must still refuse the lease. */
+    const unsigned before_geometry_stat = stats;
+    memset(&path_metadata, 0xff, sizeof(path_metadata));
+    assert(ext4_backend_stat_path(PHIPFS_VOLUME_DATA, "file", &path_metadata) == PHIPFS_STATUS_RANGE);
+    assert(stats == before_geometry_stat && path_metadata.object_id == 0U);
+    assert(opens == closes && live_mounts == 1U);
+    logical_block_bytes = 4096U;
+    namespace_blocks = 32768U;
+    assert(ext4_backend_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK);
+    assert(ext4_backend_resources_released());
     logical_block_bytes = 0U;
     close_reports_failure = true;
     assert(ext4_backend_mount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_IO);

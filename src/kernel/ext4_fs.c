@@ -568,7 +568,11 @@ static enum phipfs_status begin_operation(struct ext4_mount_state *mount, bool w
         release_operation(mount);
         return PHIPFS_STATUS_IO;
     }
-    if (mount->session.logical_block_bytes == 0U ||
+    /* The admitted executor writes each 4 KiB journal/metadata image in one
+     * logical-block command. In particular, 512-byte commands can separate
+     * the ext4 recovery flag from its superblock checksum before journaling.
+     * Recheck every lease, including equal-capacity geometry changes. */
+    if (mount->session.logical_block_bytes != 4096U ||
         mount->session.namespace_blocks >
             UINT64_MAX / mount->session.logical_block_bytes) {
         return end_operation(mount, NULL) == PHIPFS_STATUS_OK ?

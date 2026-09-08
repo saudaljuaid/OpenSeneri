@@ -135,6 +135,7 @@ _Static_assert(
 
 volatile uint8_t kernel_test_double_fault_armed;
 static enum kernel_test_scenario active_scenario;
+static bool ext4_geometry_refusal_test;
 
 static size_t literal_length(const char *text)
 {
@@ -605,6 +606,10 @@ static enum kernel_test_scenario scenario_from_value(
     if (token_equals(value, length, "native-phip")) {
         return KERNEL_TEST_NATIVE_PHIP;
     }
+    if (token_equals(value, length, "ext4-geometry-refusal")) {
+        ext4_geometry_refusal_test = true;
+        return KERNEL_TEST_EXT4_RECOVERY;
+    }
     if (token_equals(value, length, "ext4-recovery")) {
         return KERNEL_TEST_EXT4_RECOVERY;
     }
@@ -994,6 +999,7 @@ enum kernel_test_scenario kernel_test_select(
 
     kernel_test_double_fault_armed = 0U;
     active_scenario = KERNEL_TEST_NONE;
+    ext4_geometry_refusal_test = false;
 
     if (context == NULL || context->command_line == NULL) {
         return KERNEL_TEST_NONE;
@@ -6371,6 +6377,24 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         boot_ledger_has_capability(ledger,
             BOOT_CAPABILITY_FILESYSTEM_FILE_PROOF_COMPLETE)) {
         kernel_test_fail("ext4 namespace proof skips are invalid");
+    }
+    if (ext4_geometry_refusal_test) {
+        if (drive.mounted ||
+            ext4_backend_last_mount_status(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_RANGE ||
+            !ext4_backend_mount_diagnostic(PHIPFS_VOLUME_SYSTEM, &mount_diagnostic) ||
+            mount_diagnostic.begin_status != PHIPFS_STATUS_RANGE ||
+            mount_diagnostic.rust_status != PHIPIA_EXT4_STATUS_COUNT)
+            kernel_test_fail("ext4 sector geometry reached Rust admission");
+        handle = UINT64_MAX;
+        if (phipfs_open(PHIPFS_VOLUME_SYSTEM, "system/README.TXT", PHIPFS_ACCESS_READ, &handle) !=
+                PHIPFS_STATUS_NOT_MOUNTED || handle != 0U ||
+            phipfs_create(PHIPFS_VOLUME_SYSTEM, "data/user/refused-sector") != PHIPFS_STATUS_NOT_MOUNTED ||
+            !phipfs_resources_released() || !ext4_backend_resources_released() ||
+            !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+            paging_verify() != PAGING_STATUS_OK)
+            kernel_test_fail("ext4 sector refusal admitted a VFS view or retained resources");
+        console_write("ST EXT4 geometry refused before Rust VFS unavailable census exact\n");
+        kernel_test_pass();
     }
     if (!drive.present || !drive.mounted || drive.read_only || !drive.healthy) {
         if (!ext4_backend_mount_diagnostic(PHIPFS_VOLUME_SYSTEM,

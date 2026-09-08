@@ -47,7 +47,11 @@ def _build_iso(
     grub_module_dir: Path | None,
     cut: int | None,
     storage_cut: int | None = None,
+    *,
+    scenario: str = "ext4-recovery",
 ) -> None:
+    if scenario not in ("ext4-recovery", "ext4-geometry-refusal"):
+        raise PowerCutError("unsupported ext4 test scenario")
     if cut is not None and storage_cut is not None:
         raise PowerCutError("durability and device-command cuts are mutually exclusive")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +61,7 @@ def _build_iso(
         grub = boot / "grub"
         grub.mkdir(parents=True)
         shutil.copyfile(kernel, boot / "phipia.elf")
-        command_line = "phipia.test=ext4-recovery"
+        command_line = f"phipia.test={scenario}"
         if cut is not None:
             command_line += f" phipia.ext4-cut={cut}"
         if storage_cut is not None:
@@ -102,7 +106,11 @@ def _run_qemu(
     image: Path,
     log: Path,
     timeout: int,
+    *,
+    logical_block_bytes: int = 4096,
 ) -> tuple[int, str]:
+    if logical_block_bytes not in (512, 4096):
+        raise PowerCutError("unsupported QEMU logical block size")
     command = (
         qemu,
         "-machine",
@@ -118,7 +126,7 @@ def _run_qemu(
         "-blockdev",
         "driver=raw,file=ext4-file,node-name=ext4-raw,read-only=off",
         "-device",
-        "nvme,serial=phipia-ext4-powercut,drive=ext4-raw,logical_block_size=4096,physical_block_size=4096,max_ioqpairs=1,msix_qsize=1",
+        f"nvme,serial=phipia-ext4-powercut,drive=ext4-raw,logical_block_size={logical_block_bytes},physical_block_size={logical_block_bytes},max_ioqpairs=1,msix_qsize=1",
         "-cdrom",
         str(iso),
         "-display",

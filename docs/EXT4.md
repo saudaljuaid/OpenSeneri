@@ -195,6 +195,19 @@ serialized by the volume guard.
 
 ## Read-write admission
 
+The platform backend admits only 4096-byte NVMe logical blocks, checked on
+every storage lease before mount or mutation. The executor issues one command
+per logical block; smaller sectors would split a journal or metadata image
+across commands. With 512-byte sectors, the recovery flag at superblock offset
+0x60 and checksum at 0x3fc fall in separate commands. A completed prefix can
+therefore leave the flag changed with the old checksum before any journal
+transaction exists. See the [Linux ext4 superblock layout](https://cdn.kernel.org/doc/html/latest/filesystems/ext4/super.html)
+and [NVMe NVM Command Set 1.0, section 2.1.4.2](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-2021.06.02-Ratified.pdf).
+The host backend tests reject other logical sizes, including an equal-capacity
+geometry change, and verify session cleanup without admitting a Rust mount.
+This restriction matches the executed QEMU profile; completed-command power
+cuts do not prove torn-sector or volatile-cache-loss behavior on real hardware.
+
 Upstream reads an existing JBD2 journal but does not journal new mutations, so
 Phipia gives ext4plus only a bounded `JournalMutationStage` as its reader and
 writer. That copy-on-write overlay cannot write through to its immutable
