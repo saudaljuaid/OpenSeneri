@@ -153,7 +153,7 @@ def _run_qemu(
         if isinstance(transcript, bytes):
             transcript = transcript.decode("utf-8", errors="replace")
         log.write_text(transcript, encoding="utf-8", newline="\n")
-        raise PowerCutError(f"QEMU timed out; transcript: {log}") from error
+        raise PowerCutError(f"QEMU timed out; transcript: {log}\n" + _transcript_tail(transcript)) from error
     log.write_text(result.stdout, encoding="utf-8", newline="\n")
     return result.returncode, result.stdout
 

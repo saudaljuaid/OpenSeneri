@@ -58,11 +58,13 @@ def run(args):
     expected_digest = pattern_digest()
     reports = []
     for boot in (1, 2, 3):
+        print(f"dense file boot {boot}: starting guest write/read/reclaim checks", flush=True)
         started = time.perf_counter()
         status, trace = recovery._run_qemu(args.qemu, args.accel, iso, image,
             output / f"boot-{boot}.log", args.timeout)
         elapsed = time.perf_counter() - started
         cuts.verify_exit(status, trace, PASS)
+        print(f"dense file boot {boot}: guest completed in {elapsed:.3f}s; checking Linux readback and fsck", flush=True)
         required = {1: ("ST EXT4 DENSE written 67108864",),
             2: ("ST EXT4 DENSE cold read 67108864", "ST EXT4 DENSE reclaimed"),
             3: ("ST EXT4 DENSE cleanup retained",)}[boot]
@@ -106,6 +108,7 @@ def run(args):
         after["qemu_seconds_including_boot_and_guest_verification"] = elapsed
         (target / "report.json").write_text(json.dumps(after, indent=2, sort_keys=True) + "\n")
         reports.append(after)
+        print(f"dense file boot {boot}: Linux contents, allocation, fsck and census PASS", flush=True)
     (output / "report.json").write_text(json.dumps({"before": before, "reports": reports,
         "bytes": MAXIMUM, "content_sha256": expected_digest,
         "scope": "fully allocated VFS file bound, split writes, cold read, truncate and unlink; no power-cut claim",
