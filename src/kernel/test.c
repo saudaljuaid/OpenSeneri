@@ -5021,6 +5021,52 @@ static void ext4_vfs_semantics(void)
     ext4_vfs_directory_semantics();
 }
 
+static _Noreturn void ext4_vfs_held_unlink_powercut(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/owned-cut";
+    struct phipfs_stat metadata;
+    phipfs_handle file;
+    uint8_t bytes[4096];
+    size_t count;
+    const enum phipfs_status status = phipfs_lstat_path(volume, name, &metadata);
+    if (status == PHIPFS_STATUS_OK) {
+        if (metadata.directory || metadata.size != 4500U || metadata.links != 1U)
+            kernel_test_fail("ext4 held-unlink cut changed old inode");
+        console_write("ST EXT4 HELD UNLINK initial old\n");
+        ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ_WRITE, &file), "cut held open");
+        ext4_vfs_require(phipfs_unlink_held_file(file, name), "cut held unlink");
+        ext4_vfs_require(phipfs_fstat(file, &metadata), "cut held orphan");
+        if (metadata.links != 0U || metadata.size != 4500U)
+            kernel_test_fail("ext4 held-unlink cut lost open orphan");
+        for (uint64_t offset = 0U; offset < 4500U; offset += count) {
+            const size_t capacity = 4500U - offset < sizeof(bytes) ? (size_t)(4500U - offset) : sizeof(bytes);
+            ext4_vfs_require(phipfs_pread(file, bytes, capacity, offset, &count), "cut orphan read");
+            if (count != capacity) kernel_test_fail("ext4 held-unlink cut shortened open data");
+            for (size_t index = 0U; index < count; ++index)
+                if (bytes[index] != 0x63U) kernel_test_fail("ext4 held-unlink cut changed open data");
+        }
+        ext4_vfs_require(phipfs_fsync(file), "cut orphan fsync");
+        ext4_vfs_require(phipfs_close(file), "cut orphan final close");
+        if (phipfs_fstat(file, &metadata) != PHIPFS_STATUS_STALE_HANDLE)
+            kernel_test_fail("ext4 held-unlink cut left a usable closed handle");
+    } else if (status == PHIPFS_STATUS_NOT_FOUND) {
+        console_write("ST EXT4 HELD UNLINK initial new\n");
+    } else {
+        kernel_test_fail("ext4 held-unlink cut namespace is neither old nor new");
+    }
+    ext4_vfs_require(phipfs_sync(volume), "cut final orphan reclaim");
+    if (phipfs_lstat_path(volume, name, &metadata) != PHIPFS_STATUS_NOT_FOUND)
+        kernel_test_fail("ext4 held-unlink cut retained removed name");
+    ext4_vfs_require(phipfs_unmount(volume), "cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 held-unlink cut resource census failed");
+    console_write("ST EXT4 VFS held-unlink old-or-new cleanup census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_inode_exhaustion(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5209,6 +5255,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
     if (drive.free_bytes == 0U || drive.free_bytes >= drive.total_bytes) {
         kernel_test_fail("ext4 allocator capacity was not exported");
     }
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTUNLINK.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_held_unlink_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/LOWSPACE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_low_space();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/INOFULL.TST", &stat) == PHIPFS_STATUS_OK)

@@ -82,6 +82,12 @@ jobs:
               run: |
                   set -o pipefail
                   make qemu-test-ext4-inodes QEMU_ACCEL=tcg 2>&1 | tee evidence/ext4/inodes.log
+            - name: Exercise ordinary ext4 held-unlink power cuts
+              if: ${{ !cancelled() }}
+              shell: bash
+              run: |
+                  set -o pipefail
+                  make qemu-test-ext4-unlink-powercuts QEMU_ACCEL=tcg 2>&1 | tee evidence/ext4/unlink-powercuts.log
             - name: Exercise ext4 package repair removal and SDL reboot persistence
               if: ${{ !cancelled() }}
               shell: bash
@@ -101,6 +107,7 @@ jobs:
                       build/tests/ext4-applications
                       build/tests/ext4-space
                       build/tests/ext4-inodes
+                      build/tests/ext4-unlink-powercuts
                       build/tests/fat32-data/serial.log
                       build/tests/native-phip
                       build/*.e2fsck.txt
