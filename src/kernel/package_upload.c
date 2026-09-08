@@ -265,6 +265,7 @@ enum package_upload_status package_upload_open(
     size_t index = PACKAGE_UPLOAD_SLOT_LIMIT;
     char path[PHIPFS_MAX_PATH];
     phipfs_handle file;
+    struct package_state_sha256_context sha256;
 
     report_clear(report);
     if (report == NULL || owner == 0U) {
@@ -291,26 +292,19 @@ enum package_upload_status package_upload_open(
         return finish(report, PACKAGE_UPLOAD_STATUS_NO_SLOT, PHIPFS_STATUS_OK,
             NULL, 0U);
     }
-    slot_path(index, path);
-    enum phipfs_status fs_status = phipfs_create(PHIPFS_VOLUME_DATA, path);
-
-    if (fs_status != PHIPFS_STATUS_OK) {
+    if (package_state_sha256_initialize(&sha256) != PACKAGE_STATE_STATUS_OK) {
         servicing = false;
-        return finish(report, PACKAGE_UPLOAD_STATUS_FILESYSTEM, fs_status,
+        return finish(report, PACKAGE_UPLOAD_STATUS_STATE, PHIPFS_STATUS_OK,
             NULL, 0U);
     }
-    fs_status = phipfs_open(PHIPFS_VOLUME_DATA, path, PHIPFS_ACCESS_WRITE, &file);
+    slot_path(index, path);
+    /* The ext4 prepared open reserves the handle and binds the newly created
+     * inode in one coordinator operation. No pathname cleanup is safe when
+     * that operation refuses to return an owned handle. */
+    enum phipfs_status fs_status = phipfs_open_options(PHIPFS_VOLUME_DATA,
+        path, PHIPFS_ACCESS_WRITE, PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE,
+        0600U, &file);
     if (fs_status != PHIPFS_STATUS_OK) {
-        enum phipfs_status cleanup_status = phipfs_unlink(PHIPFS_VOLUME_DATA,
-            path);
-
-        if (cleanup_status == PHIPFS_STATUS_OK) {
-            cleanup_status = phipfs_sync(PHIPFS_VOLUME_DATA);
-        }
-        if (cleanup_status != PHIPFS_STATUS_OK &&
-            cleanup_status != PHIPFS_STATUS_NOT_FOUND) {
-            initialized = false;
-        }
         servicing = false;
         return finish(report, PACKAGE_UPLOAD_STATUS_FILESYSTEM, fs_status,
             NULL, 0U);
@@ -325,16 +319,7 @@ enum package_upload_status package_upload_open(
     slot->active = true;
     slot->file_open = true;
     slot->file_present = true;
-    if (package_state_sha256_initialize(&slot->sha256) !=
-            PACKAGE_STATE_STATUS_OK) {
-        (void)phipfs_close(file);
-        (void)phipfs_unlink(PHIPFS_VOLUME_DATA, path);
-        (void)phipfs_sync(PHIPFS_VOLUME_DATA);
-        release_slot(slot);
-        servicing = false;
-        return finish(report, PACKAGE_UPLOAD_STATUS_STATE, PHIPFS_STATUS_OK,
-            NULL, 0U);
-    }
+    slot->sha256 = sha256;
     servicing = false;
     return finish(report, PACKAGE_UPLOAD_STATUS_OK, PHIPFS_STATUS_OK, slot,
         index);

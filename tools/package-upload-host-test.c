@@ -25,11 +25,14 @@ static struct mock_file files[PACKAGE_UPLOAD_SLOT_LIMIT];
 static bool directory_present;
 static bool fail_next_sync;
 static bool fail_next_open;
+static bool replace_on_refused_open;
 static bool fail_next_unlink;
 static size_t write_failure_at = NO_WRITE_FAILURE;
 static uint32_t sync_count;
 static uint32_t unlink_count;
 static uint32_t truncate_count;
+static uint32_t create_count;
+static uint32_t prepared_open_count;
 
 static int path_index(const char *path)
 {
@@ -151,6 +154,7 @@ enum phipfs_status phipfs_create(enum phipfs_volume volume, const char *path)
 {
     int index = path_index(path);
 
+    ++create_count;
     if (volume != PHIPFS_VOLUME_DATA || index < 0 || !directory_present) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
@@ -159,6 +163,36 @@ enum phipfs_status phipfs_create(enum phipfs_volume volume, const char *path)
     }
     files[index] = (struct mock_file){0};
     files[index].present = true;
+    return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_open_options(enum phipfs_volume volume,
+    const char *path, enum phipfs_access access, uint8_t flags, uint16_t mode,
+    phipfs_handle *handle)
+{
+    int index = path_index(path);
+
+    if (volume != PHIPFS_VOLUME_DATA || index < 0 || handle == NULL ||
+        !directory_present || access != PHIPFS_ACCESS_WRITE || mode != 0600U ||
+        flags != (PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE)) {
+        return PHIPFS_STATUS_INVALID_ARGUMENT;
+    }
+    ++prepared_open_count;
+    *handle = 0U;
+    if (fail_next_open) {
+        fail_next_open = false;
+        if (replace_on_refused_open) {
+            replace_on_refused_open = false;
+            files[index] = (struct mock_file){.present = true, .size = 1U};
+            files[index].bytes[0] = 'R';
+        }
+        return PHIPFS_STATUS_IO;
+    }
+    if (files[index].present) {
+        return PHIPFS_STATUS_EXISTS;
+    }
+    files[index] = (struct mock_file){.present = true, .open = true};
+    *handle = (phipfs_handle)(index + 1);
     return PHIPFS_STATUS_OK;
 }
 
@@ -475,6 +509,38 @@ static int failure_recovery_test(void)
     return 0;
 }
 
+static int refused_open_preserves_namespace_test(void)
+{
+    struct package_upload_report report;
+    const uint32_t previous_unlinks = unlink_count;
+    const uint32_t previous_syncs = sync_count;
+    const uint32_t previous_opens = prepared_open_count;
+
+    /* A failed prepared open supplies no inode ownership receipt. A name
+     * appearing before its return must neither be opened nor cleaned up. */
+    fail_next_open = true;
+    replace_on_refused_open = true;
+    CHECK(package_upload_open(90U, &report) == PACKAGE_UPLOAD_STATUS_FILESYSTEM &&
+        report.filesystem_status == PHIPFS_STATUS_IO && report.token == 0U &&
+        package_upload_resources_released(), 70);
+    CHECK(files[0].present && !files[0].open && files[0].size == 1U &&
+        files[0].bytes[0] == 'R' && unlink_count == previous_unlinks &&
+        sync_count == previous_syncs, 71);
+    CHECK(package_upload_open(90U, &report) == PACKAGE_UPLOAD_STATUS_FILESYSTEM &&
+        report.filesystem_status == PHIPFS_STATUS_EXISTS && report.token == 0U &&
+        package_upload_resources_released(), 72);
+    CHECK(files[0].present && !files[0].open && files[0].size == 1U &&
+        files[0].bytes[0] == 'R' && unlink_count == previous_unlinks &&
+        sync_count == previous_syncs && create_count == 0U &&
+        prepared_open_count == previous_opens + 2U, 73);
+    /* The external owner removes its collision before a fresh request. */
+    files[0] = (struct mock_file){0};
+    CHECK(package_upload_open(90U, &report) == PACKAGE_UPLOAD_STATUS_OK, 74);
+    CHECK(package_upload_close(90U, report.token, &report) ==
+        PACKAGE_UPLOAD_STATUS_OK && package_upload_resources_released(), 75);
+    return 0;
+}
+
 int main(void)
 {
     int result = initialize_test();
@@ -494,11 +560,14 @@ int main(void)
     if (result == 0) {
         result = bounded_large_cleanup_test();
     }
+    if (result == 0) {
+        result = refused_open_preserves_namespace_test();
+    }
     if (result != 0) {
         (void)fprintf(stderr, "package upload host test failed: %d\n", result);
         return result;
     }
-    (void)printf("package upload host tests passed: lifecycle/failure matrix, "
+    (void)printf("package upload host tests passed: lifecycle/failure/owned-open matrix, "
         "slots=%u max_bytes=%u syncs=%u unlinks=%u truncates=%u\n",
         PACKAGE_UPLOAD_SLOT_LIMIT, PACKAGE_UPLOAD_MAX_BYTES, sync_count,
         unlink_count, truncate_count);
