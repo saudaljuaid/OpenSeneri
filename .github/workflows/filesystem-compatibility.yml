@@ -153,7 +153,7 @@ jobs:
                           >evidence/ext4/APPLICATION-PROBE.txt
                   fi
                   export CARGO_TARGET_DIR="$PWD/build/ext4-transaction-target"
-                  if [[ "$PHIPIA_EXT4_CUT_OPERATION" == 'storage-refusals' || '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
+                  if [[ "$PHIPIA_EXT4_CUT_OPERATION" == 'storage-refusals' || "$PHIPIA_EXT4_CUT_OPERATION" == 'admission-refusals' || '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
                       cargo test --manifest-path tools/ext4-transaction-tests/Cargo.toml \
                           --locked --offline --lib --test coordinator -- --nocapture \
                           2>&1 | tee evidence/ext4/journal-and-coordinator-host.log
