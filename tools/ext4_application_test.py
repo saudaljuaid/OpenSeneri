@@ -27,6 +27,7 @@ REBOOT = b"restarting after clean synchronization"
 CENSUS = b"Phipia: reboot ext4 mounts closed NVMe released heap paging valid"
 EXPECTED = {
     "PHIPIA.BMP": 54 + 320 * 180 * 3,
+    "PHIPIA - Copy.BMP": 54 + 320 * 180 * 3,
     "PAINT.BMP": 54 + 320 * 180 * 3,
     "MEDIAEDT.PHI": 424,
     "PHIPMED.PHI": 688,
@@ -54,7 +55,7 @@ def inspect_results(image, output, label):
                 raise RuntimeError(f"application cleanup leaked {name}")
     for name in (*EXPECTED, "NOTES.TXT", "JOURNEY.TXT"):
         destination = target / name
-        ext4_image._debugfs(tools, image, f'dump /{name} "{destination.as_posix()}"')
+        ext4_image._debugfs(tools, image, f'dump "/{name}" "{destination.as_posix()}"')
         data = destination.read_bytes()
         if name in EXPECTED and len(data) != EXPECTED[name]:
             raise RuntimeError(f"wrong application output length: {name}: {len(data)}")
@@ -65,6 +66,8 @@ def inspect_results(image, output, label):
         if name == "SETTINGS.PHI" and data != b"PHIPCFG\x01\x03\x00\x00\x01\x01\x00\x00\x00":
             raise RuntimeError(f"Settings control was not saved: {data.hex()}")
         files[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    if files["PHIPIA.BMP"] != files["PHIPIA - Copy.BMP"]:
+        raise RuntimeError("Files copy changed the source bitmap bytes")
     report["application_files"] = files
     report["image_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
     (target / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
@@ -111,7 +114,7 @@ def boot(args, image, output, work, number):
                 session = SimpleNamespace(data_filesystem="ext4")
                 events, frames, timestamps = capture.capture_phipia_session(
                     session, qmp, pointer, work, output, image, serial)
-                if not capture.PHIPIA_REQUIRED_EVENTS.issubset(events):
+                if not (capture.PHIPIA_REQUIRED_EVENTS | {"files_copied"}).issubset(events):
                     raise RuntimeError("desktop application actions were omitted")
                 capture.encode(args.ffmpeg, frames, timestamps, 24,
                     timestamps[-1] - timestamps[0] + 2.0, output / "ext4-applications.mp4")

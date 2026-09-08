@@ -229,7 +229,7 @@ def wait_for_named_file(data_image, name, expected_size, timeout=20.0, filesyste
                 # final admission/fsck happens only after guest clean unmount.
                 tools = ext4_image.require_tools()
                 path = "/" + name
-                metadata = ext4_image._parse_stat(ext4_image._debugfs(tools, data_image, f"stat {path}"), path)
+                metadata = ext4_image._parse_stat(ext4_image._debugfs(tools, data_image, f'stat "{path}"'), path)
                 if metadata["size"] == expected_size:
                     return
                 last_error = f"{name} had {metadata['size']} bytes, expected {expected_size}"
@@ -736,6 +736,23 @@ def capture_phipia_session(
     pointer.click()
     pointer.settle_guest(0.45)
     snapshot("phipia-files-maximized", "files_maximized")
+    if getattr(args, "data_filesystem", "fat32") == "ext4":
+        # Filter the real Data listing, select its only row, then use the
+        # production command bar's Copy and Paste buttons. The new long name
+        # must hold the complete imported bitmap before this journey proceeds.
+        pointer.move_to(900, 90)
+        pointer.click()
+        send_text(qmp, "PHIPIA.BMP", 0.025)
+        qmp.hmp("sendkey ret")
+        pointer.settle_guest(0.35)
+        pointer.move_to(300, 145)
+        pointer.click()
+        pointer.move_to(158, 53)
+        pointer.click()
+        pointer.move_to(198, 53)
+        pointer.click()
+        wait_for_named_file(durable_data, "PHIPIA - Copy.BMP", 54 + 320 * 180 * 3, filesystem="ext4")
+        snapshot("phipia-files-copy", "files_copied")
     pointer.move_to(909, 16)
     pointer.click()
     pointer.settle_guest(0.55)
