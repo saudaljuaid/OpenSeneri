@@ -23,7 +23,7 @@ pub struct InodeAllocationSnapshot<'a> {
 pub struct BlockAllocationSnapshot<'a> {
     filesystem: &'a Ext4,
     groups: BTreeMap<u32, Vec<u8>>,
-    extent_ranges: BTreeMap<u64, u64>,
+    extent_ranges: Vec<(u64, u64)>,
     claimed_blocks: u64,
     validated_inodes: Vec<crate::inode::InodeIndex>,
     directory_counts: BTreeMap<u32, u32>,
@@ -34,7 +34,7 @@ pub struct BlockAllocationSnapshot<'a> {
 
 impl<'a> BlockAllocationSnapshot<'a> {
     pub(crate) fn new(filesystem: &'a Ext4) -> Self {
-        Self { filesystem, groups: BTreeMap::new(), extent_ranges: BTreeMap::new(), claimed_blocks: 0,
+        Self { filesystem, groups: BTreeMap::new(), extent_ranges: Vec::new(), claimed_blocks: 0,
             validated_inodes: Vec::new(), directory_counts: BTreeMap::new(), xattr_references: BTreeMap::new(),
             invalid: false, fixed_reserved: false }
     }
@@ -90,14 +90,19 @@ impl<'a> BlockAllocationSnapshot<'a> {
         inode: crate::inode::InodeIndex) -> Result<(), Ext4Error> {
         let end = start.checked_add(u64::from(count)).ok_or(CorruptKind::ExtentBlock(inode))?;
         if self.extent_ranges.len() >= 65_536 { return Err(Ext4Error::FileTooLarge); }
+        let insertion = self.extent_ranges.partition_point(|&(previous_start, _)| previous_start < end);
         if self.invalid || count == 0
-            || self.extent_ranges.range(..end).next_back().is_some_and(|(_, previous_end)| *previous_end > start)
+            || insertion.checked_sub(1).is_some_and(|index| self.extent_ranges[index].1 > start)
         {
             return Err(CorruptKind::ExtentBlock(inode).into());
         }
-        self.claimed_blocks = self.claimed_blocks.checked_add(u64::from(count))
+        let claimed_blocks = self.claimed_blocks.checked_add(u64::from(count))
             .ok_or(CorruptKind::TooManyBlocksInFile)?;
-        self.extent_ranges.insert(start, end);
+        // A fragmented mapping must not consume one kernel heap descriptor per
+        // tree node. Reserve fallibly before changing ownership or counters.
+        self.extent_ranges.try_reserve(1).map_err(|_| Ext4Error::FileTooLarge)?;
+        self.extent_ranges.insert(insertion, (start, end));
+        self.claimed_blocks = claimed_blocks;
         Ok(())
     }
 
@@ -219,10 +224,11 @@ impl<'a> BlockAllocationSnapshot<'a> {
             let mut expected = vec![0xffu8; sb.block_size().to_usize()];
             expected.get_mut(..bits / 8).ok_or(CorruptKind::BlockGroupDescriptor(group))?.fill(0);
             if bits % 8 != 0 { expected[bits / 8] = 0xff << (bits % 8); }
-            // Include a range that began in the previous group, then ranges
-            // starting here. No physical block needs a separate map lookup.
-            for (&range_start, &range_end) in self.extent_ranges.range(..start).next_back().into_iter()
-                .chain(self.extent_ranges.range(start..end)) {
+            // Sorted disjoint ranges also have increasing ends. Include any
+            // range crossing this group's start, then ranges starting here.
+            let first = self.extent_ranges.partition_point(|&(_, range_end)| range_end <= start);
+            for &(range_start, range_end) in self.extent_ranges[first..].iter()
+                .take_while(|&&(range_start, _)| range_start < end) {
                 for block in range_start.max(start)..range_end.min(end) {
                     let bit = (block - start) as usize;
                     expected[bit / 8] |= 1 << (bit % 8);

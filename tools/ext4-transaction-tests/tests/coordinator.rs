@@ -2749,6 +2749,9 @@ fn extent_data_and_nodes_cannot_be_shared_between_live_or_orphan_inodes() {
     let raw = ext4plus::Ext4::load(Box::new(pristine.clone())).unwrap();
     let owner = raw.open("/system/extent-owner").unwrap();
     let data_block = owner.filesystem_block_at_offset(4096).unwrap().unwrap();
+    let first_data_block = owner.filesystem_block_at_offset(0).unwrap().unwrap();
+    let last_data_block = owner.filesystem_block_at_offset(8192).unwrap().unwrap();
+    assert_eq!((first_data_block + 1, last_data_block - 1), (data_block, data_block));
     let directory_inode = raw.path_to_inode(ext4plus::path::Path::try_from("/system/directory-owner").unwrap(),
         ext4plus::FollowSymlinks::All).unwrap();
     let directory = ext4plus::file::File::open_inode(&raw, directory_inode).unwrap();
@@ -2761,7 +2764,9 @@ fn extent_data_and_nodes_cannot_be_shared_between_live_or_orphan_inodes() {
     let leaf = u64::from(u32::from_le_bytes(pristine[inode_start + 0x38..inode_start + 0x3c].try_into().unwrap()));
     let image = path.with_extension("coordinator-shared-extent.img");
     let journal_block = ext4plus::load_journal_inode_map(&raw).unwrap().physical_blocks()[1];
-    for target in [data_block, directory_block, leaf, journal_block] {
+    // Reject equal-start, interior and last-block overlap in either ownership
+    // traversal order, including zero-size files and recovery orphans.
+    for target in [first_data_block, data_block, last_data_block, directory_block, leaf, journal_block] {
         for zero_size in [false, true] {
             for orphan in [false, true] {
                 std::fs::write(&image, &pristine).unwrap();
