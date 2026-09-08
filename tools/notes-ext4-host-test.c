@@ -265,6 +265,16 @@ enum phipfs_status phipfs_read(phipfs_handle handle, uint8_t *bytes, size_t capa
 }
 
 uint32_t settings_row_state(size_t page, size_t row) { return setting_values[page][row]; }
+enum phipfs_status phipfs_pread(phipfs_handle handle, uint8_t *bytes,
+    size_t capacity, uint64_t offset, size_t *count)
+{
+    assert(handle == 89U && offset <= expected_length);
+    const size_t saved = copy_position;
+    copy_position = (size_t)offset;
+    const enum phipfs_status status = phipfs_read(handle, bytes, capacity, count);
+    copy_position = saved;
+    return status;
+}
 uint32_t framebuffer_pack(uint8_t red, uint8_t green, uint8_t blue)
 {
     return ((uint32_t)red << 16U) | ((uint32_t)green << 8U) | blue;
@@ -526,13 +536,22 @@ int main(void)
         assert(media_source_preview_loaded == (failure == 0U));
         assert(!copy_source_live && live_handles == 0U && writes == 0U && publications == 0U);
         if (failure == 0U) {
-            assert(copy_stats == 1U && media_source_preview_width == 320U && media_source_preview_height == 180U);
+            assert(copy_stats == 1U && copy_reads == 4U && media_source_preview_width == 320U && media_source_preview_height == 180U);
             for (unsigned y = 0U; y < 180U; ++y)
                 for (unsigned x = 0U; x < 320U; ++x)
                     assert(media_source_preview_pixels[y * UI_MEDIA_SOURCE_PREVIEW_WIDTH + x] ==
                         (uint32_t)(y % 251U + 1U) * UINT32_C(0x010101));
         }
     }
+    reset_large_bitmap(3U);
+    const uint32_t negative_height = (uint32_t)-180;
+    for (unsigned byte = 0U; byte < 4U; ++byte) expected_bytes[22U + byte] = (uint8_t)(negative_height >> (8U * byte));
+    assert(media_source_load_preview("SOURCE.BMP") == PHIPFS_STATUS_OK && copy_reads == 4U);
+    assert(!copy_source_live && live_handles == 0U && copy_position == 54U);
+    for (unsigned y = 0U; y < 180U; ++y)
+        for (unsigned x = 0U; x < 320U; ++x)
+            assert(media_source_preview_pixels[y * UI_MEDIA_SOURCE_PREVIEW_WIDTH + x] ==
+                (uint32_t)((179U - y) % 251U + 1U) * UINT32_C(0x010101));
     for (unsigned failure = 0U; failure < 8U; ++failure) {
         reset_save(SAVE_OK);
         copy_failure = failure;

@@ -233,6 +233,7 @@ static uint8_t camera_bmp_row[UI_CAMERA_CAPTURE_WIDTH * 3U];
 static uint8_t paint_bmp_row[PAINT_MAX_ROW_BYTES];
 static uint8_t paint_bmp_batch[64U * 1024U];
 static uint8_t media_export_batch[64U * 1024U];
+static uint8_t media_import_batch[64U * 1024U];
 static uint32_t camera_preview_row[UI_MAX_WIDTH];
 static uint8_t explorer_copy_buffer[64U * 1024U];
 static uint32_t settings_wallpaper_thumbnail_pixels[128U * 72U];
@@ -3234,6 +3235,9 @@ static enum phipfs_status media_source_load_preview(const char *path)
     uint32_t pixel_offset = 0U;
     uint32_t row_stride = 0U;
     bool top_down = false;
+    const bool buffered = phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA);
+    uint64_t cache_offset = 0U;
+    size_t cache_bytes = 0U;
 
     media_source_preview_loaded = false;
     // Bind geometry validation and reads to the same held inode even if the
@@ -3314,18 +3318,31 @@ static enum phipfs_status media_source_load_preview(const char *path)
         const uint64_t row_offset = (uint64_t)pixel_offset +
             (uint64_t)stored_y * row_stride;
         uint64_t position = 0U;
+        const uint8_t *row_bytes = media_source_bmp_row;
 
-        status = phipfs_seek(handle, (int64_t)row_offset, PHIPFS_SEEK_START,
-            &position);
-        if (status == PHIPFS_STATUS_OK && position != row_offset) {
-            status = PHIPFS_STATUS_RANGE;
-        }
-        if (status == PHIPFS_STATUS_OK) {
-            status = phipfs_read(handle, media_source_bmp_row, row_stride,
-                &read_bytes);
-        }
-        if (status == PHIPFS_STATUS_OK && read_bytes != row_stride) {
-            status = PHIPFS_STATUS_CORRUPT;
+        if (buffered) {
+            if (row_offset < cache_offset || row_offset - cache_offset > cache_bytes ||
+                row_stride > cache_bytes - (size_t)(row_offset - cache_offset)) {
+                // BMP rows can run backwards. Fill towards the next sampled
+                // rows, keeping each pread inside the held inode's initial EOF.
+                cache_offset = row_offset;
+                if (!top_down) {
+                    const uint64_t end = row_offset + row_stride;
+                    cache_offset = end > sizeof(media_import_batch) ? end - sizeof(media_import_batch) : 0U;
+                    if (cache_offset < pixel_offset) cache_offset = pixel_offset;
+                }
+                const size_t capacity = stat.size - cache_offset < sizeof(media_import_batch) ?
+                    (size_t)(stat.size - cache_offset) : sizeof(media_import_batch);
+                status = phipfs_pread(handle, media_import_batch, capacity, cache_offset, &cache_bytes);
+                if (status == PHIPFS_STATUS_OK && cache_bytes != capacity) status = PHIPFS_STATUS_CORRUPT;
+            }
+            if (status == PHIPFS_STATUS_OK) row_bytes = media_import_batch + (size_t)(row_offset - cache_offset);
+        } else {
+            status = phipfs_seek(handle, (int64_t)row_offset, PHIPFS_SEEK_START, &position);
+            if (status == PHIPFS_STATUS_OK && position != row_offset) status = PHIPFS_STATUS_RANGE;
+            if (status == PHIPFS_STATUS_OK)
+                status = phipfs_read(handle, media_source_bmp_row, row_stride, &read_bytes);
+            if (status == PHIPFS_STATUS_OK && read_bytes != row_stride) status = PHIPFS_STATUS_CORRUPT;
         }
         for (uint32_t x = 0U; x < media_source_preview_width &&
              status == PHIPFS_STATUS_OK; ++x) {
@@ -3334,8 +3351,8 @@ static enum phipfs_status media_source_load_preview(const char *path)
             const size_t source = (size_t)source_x * 3U;
 
             media_source_preview_pixels[(size_t)y * UI_MEDIA_SOURCE_PREVIEW_WIDTH + x] =
-                framebuffer_pack(media_source_bmp_row[source + 2U],
-                    media_source_bmp_row[source + 1U], media_source_bmp_row[source]);
+                framebuffer_pack(row_bytes[source + 2U],
+                    row_bytes[source + 1U], row_bytes[source]);
         }
     }
     if (status == PHIPFS_STATUS_OK) {
