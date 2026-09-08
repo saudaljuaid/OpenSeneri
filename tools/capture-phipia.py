@@ -751,7 +751,11 @@ def capture_phipia_session(
         pointer.click()
         pointer.move_to(198, 53)
         pointer.click()
-        wait_for_named_file(durable_data, "PHIPIA - Copy.BMP", 54 + 320 * 180 * 3, filesystem="ext4")
+        # The 172 KiB production copy commits 43 bounded 4 KiB writes under
+        # TCG. The retained 8520fa7 failure disk contains the exact complete
+        # copy, but publication finished after the generic 20-second budget.
+        wait_for_named_file(durable_data, "PHIPIA - Copy.BMP", 54 + 320 * 180 * 3,
+            timeout=90.0, filesystem="ext4")
         snapshot("phipia-files-copy", "files_copied")
     pointer.move_to(909, 16)
     pointer.click()
