@@ -23,6 +23,23 @@ static unsigned file_stat_calls;
 static unsigned publication_calls;
 static unsigned held_unlink_calls;
 static bool consume_last_vnode;
+static unsigned unmount_calls;
+
+static enum phipfs_status reentrant_unmount(enum phipfs_volume volume)
+{
+    assert(volume == PHIPFS_VOLUME_DATA && !mounts[volume].active && mounts[volume].unmounting);
+    assert(!phipfs_resources_released());
+    const unsigned before = ++unmount_calls;
+    phipfs_handle file = 99U;
+    phipfs_directory_handle directory = 99U;
+    assert(phipfs_open(volume, "new-file", PHIPFS_ACCESS_READ, &file) == PHIPFS_STATUS_NOT_MOUNTED && file == 0U);
+    assert(phipfs_directory_open(volume, ".", &directory) == PHIPFS_STATUS_NOT_MOUNTED && directory == 0U);
+    assert(phipfs_mount(volume) == PHIPFS_STATUS_BUSY);
+    assert(phipfs_unmount(volume) == PHIPFS_STATUS_BUSY && unmount_calls == before);
+    assert(phipfs_sync(volume) == PHIPFS_STATUS_NOT_MOUNTED);
+    assert(mounts[volume].references == 0U);
+    return mutation_result;
+}
 
 static enum phipfs_status partial_write(phipfs_handle handle, const uint8_t *source,
     size_t bytes, size_t *written)
@@ -586,6 +603,21 @@ int main(void)
     assert(!phipfs_resources_released());
     directories[0].backend_handle = 0U;
     assert(phipfs_resources_released());
+    backend.unmount = reentrant_unmount;
+    mounts[PHIPFS_VOLUME_DATA].backend = &backend;
+    mounts[PHIPFS_VOLUME_DATA].active = true;
+    const uint64_t unmount_generation = mounts[PHIPFS_VOLUME_DATA].generation;
+    mutation_result = PHIPFS_STATUS_IO;
+    for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+        assert(phipfs_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_IO);
+        assert(mounts[PHIPFS_VOLUME_DATA].active && !mounts[PHIPFS_VOLUME_DATA].unmounting);
+        assert(mounts[PHIPFS_VOLUME_DATA].generation == unmount_generation);
+        assert(mounts[PHIPFS_VOLUME_DATA].backend == &backend && !phipfs_resources_released());
+    }
+    mutation_result = PHIPFS_STATUS_OK;
+    assert(phipfs_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK && unmount_calls == 3U);
+    assert(phipfs_resources_released());
+    puts("VFS teardown blocks reentrant admission and retains mount generation across failed release: PASS");
     puts("VFS journal mutation retries, nested open reservations, backend errors, path bounds and vnode census: PASS");
     return 0;
 }

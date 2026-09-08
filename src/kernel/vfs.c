@@ -25,6 +25,7 @@ struct vfs_mount_state {
     size_t references;
     enum phipfs_volume volume;
     bool active;
+    bool unmounting;
 };
 
 struct vfs_vnode_state {
@@ -637,7 +638,7 @@ bool phipfs_self_test(size_t *completed_tests)
 bool phipfs_resources_released(void)
 {
     for (size_t index = 0U; index < PHIPFS_VOLUME_COUNT; ++index)
-        if (mounts[index].active || mounts[index].references != 0U) return false;
+        if (mounts[index].active || mounts[index].unmounting || mounts[index].references != 0U) return false;
     for (size_t index = 0U; index < VFS_MAX_VNODES; ++index)
         if (vnodes[index].active || vnodes[index].references != 0U || vnode_reservations[index]) return false;
     for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index)
@@ -680,6 +681,7 @@ enum phipfs_status phipfs_mount(enum phipfs_volume volume)
     if (!valid_volume(volume)) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
+    if (mounts[volume].unmounting) return PHIPFS_STATUS_BUSY;
     if (mounts[volume].active) {
         return PHIPFS_STATUS_ALREADY_MOUNTED;
     }
@@ -701,15 +703,24 @@ enum phipfs_status phipfs_unmount(enum phipfs_volume volume)
     if (!valid_volume(volume)) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
+    if (mounts[volume].unmounting) return PHIPFS_STATUS_BUSY;
     if (!mounts[volume].active) {
         return PHIPFS_STATUS_NOT_MOUNTED;
     }
     if (mounts[volume].references != 0U) {
         return PHIPFS_STATUS_BUSY;
     }
+    // Reserve teardown before invoking storage: a callback must not admit a
+    // new description that would be erased when this unmount completes.
+    // A failure republishes the same generation for retry; it is never free.
+    mounts[volume].unmounting = true;
+    mounts[volume].active = false;
     status = mounts[volume].backend->unmount(volume);
     if (status == PHIPFS_STATUS_OK) {
         zero_bytes(&mounts[volume], sizeof(mounts[volume]));
+    } else {
+        mounts[volume].active = true;
+        mounts[volume].unmounting = false;
     }
     return status;
 }

@@ -18,10 +18,10 @@ on:
                 type: boolean
                 default: false
             ext4_cut_operation:
-                description: Single power-cut diagnostic (requires ext4_boot_probe; all preserves the complete probe)
+                description: Focused VFS or power-cut diagnostic (requires ext4_boot_probe; all preserves the complete probe)
                 type: choice
                 default: all
-                options: [all, unlink, replace, truncate, grow, append, create, mkdir, rmdir, xattr, xattr-remove, link, symlink, symlink-long]
+                options: [all, vfs, unlink, replace, truncate, grow, append, create, mkdir, rmdir, xattr, xattr-remove, link, symlink, symlink-long]
 
 permissions:
     contents: read
@@ -103,7 +103,7 @@ jobs:
                       exit 1
                   fi
                   case "$PHIPIA_EXT4_CUT_OPERATION" in
-                      all|unlink|replace|truncate|grow|append|create|mkdir|rmdir|xattr|xattr-remove|link|symlink|symlink-long) ;;
+                      all|vfs|unlink|replace|truncate|grow|append|create|mkdir|rmdir|xattr|xattr-remove|link|symlink|symlink-long) ;;
                       *) echo 'Unsupported cut diagnostic.'; exit 1 ;;
                   esac
                   printf '%s\n' 'Targeted ext4 diagnostic only; all milestone gates remain required.' \
@@ -115,6 +115,8 @@ jobs:
                   build/ui-animation-clip-host-test 2>&1 | tee evidence/ext4/application-animation-host.log
                   make build/shell-ext4-host-test
                   build/shell-ext4-host-test 2>&1 | tee evidence/ext4/application-input-host.log
+                  make build/vfs-mutation-host-test
+                  build/vfs-mutation-host-test 2>&1 | tee evidence/ext4/vfs-mutation-host.log
                   if [[ '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
                       printf '%s\n' 'Application probe: full host, recovery and release suites remain required.' \
                           >evidence/ext4/APPLICATION-PROBE.txt
@@ -146,7 +148,11 @@ jobs:
                       targets+=(qemu-test-ext4-replace-powercuts qemu-test-ext4-truncate-powercuts qemu-test-ext4-grow-powercuts qemu-test-ext4-create-powercuts qemu-test-ext4-mkdir-powercuts qemu-test-ext4-rmdir-powercuts qemu-test-ext4-xattr-powercuts qemu-test-ext4-xattr-remove-powercuts qemu-test-ext4-link-powercuts qemu-test-ext4-symlink-powercuts qemu-test-ext4-symlink-long-powercuts)
                       targets+=(qemu-test-ext4-append-powercuts)
                       if [[ "$PHIPIA_EXT4_CUT_OPERATION" != 'all' ]]; then
-                          targets=("qemu-test-ext4-${PHIPIA_EXT4_CUT_OPERATION}-powercuts")
+                          if [[ "$PHIPIA_EXT4_CUT_OPERATION" == 'vfs' ]]; then
+                              targets=(qemu-test-ext4-recovery)
+                          else
+                              targets=("qemu-test-ext4-${PHIPIA_EXT4_CUT_OPERATION}-powercuts")
+                          fi
                           printf 'Single operation diagnostic: %s. Full recovery and milestone gates remain required.\n' \
                               "$PHIPIA_EXT4_CUT_OPERATION" >evidence/ext4/SINGLE-CUT-DIAGNOSTIC.txt
                       fi
