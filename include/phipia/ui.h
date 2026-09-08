@@ -376,6 +376,8 @@ enum ui_status ui_construct(bool pointer_present);
 enum ui_status ui_activate(void);
 enum ui_status ui_terminal_draw_logo(void);
 bool ui_is_active(void);
+/* Called once after boot mounts Data, after desktop construction. */
+void ui_restore_storage_settings(void);
 void ui_animation_attach(void);
 bool ui_animation_active(void);
 const struct ui_state *ui_get_state(void);

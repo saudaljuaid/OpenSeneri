@@ -46,6 +46,9 @@ static bool replace_before_cleanup;
 static uint32_t setting_values[SETTINGS_MAX_TILES][SETTINGS_MAX_ROWS];
 static bool settings_read_fails;
 static bool settings_close_fails;
+static bool data_admitted = true;
+static bool restored_show_desktop;
+static unsigned applied_settings;
 static bool copy_source_live;
 static unsigned copy_failure;
 static size_t copy_position;
@@ -60,13 +63,36 @@ static void assert_handle(phipfs_handle handle)
 bool phipfs_has_atomic_replace(enum phipfs_volume volume)
 {
     assert(volume == PHIPFS_VOLUME_DATA);
-    return true;
+    return data_admitted;
 }
+
+enum taskbar_status taskbar_set_search_mode(enum taskbar_search_mode mode)
+{ assert((uint32_t)mode == setting_values[0][1]); ++applied_settings; return TASKBAR_STATUS_OK; }
+enum taskbar_status taskbar_set_search_visible(bool visible)
+{ assert(visible == (setting_values[0][1] != 0U)); ++applied_settings; return TASKBAR_STATUS_OK; }
+enum taskbar_status taskbar_set_show_desktop_button(bool visible)
+{ restored_show_desktop = visible; ++applied_settings; return TASKBAR_STATUS_OK; }
+enum taskbar_status taskbar_set_theme(enum taskbar_theme theme)
+{ assert(theme == (setting_values[1][1] == 0U ? TASKBAR_THEME_DARK : TASKBAR_THEME_LIGHT)); ++applied_settings; return TASKBAR_STATUS_OK; }
+enum taskbar_status taskbar_set_alignment(enum taskbar_alignment alignment)
+{ assert(alignment == (setting_values[1][2] == 0U ? TASKBAR_ALIGNMENT_CENTER : TASKBAR_ALIGNMENT_LEFT)); ++applied_settings; return TASKBAR_STATUS_OK; }
+enum taskbar_status taskbar_set_transparency(bool transparent)
+{ assert(transparent == (setting_values[1][3] != 0U)); ++applied_settings; return TASKBAR_STATUS_OK; }
 
 const char *phipfs_status_string(enum phipfs_status status)
 {
     return status == PHIPFS_STATUS_OK ? "ok" : "error";
 }
+
+/* No legacy publication path may run while Data is unavailable or ext4 is admitted. */
+enum phipfs_status phipfs_create(enum phipfs_volume volume, const char *path)
+{ (void)volume; (void)path; assert(!"unexpected legacy create"); return PHIPFS_STATUS_IO; }
+enum phipfs_status phipfs_unlink(enum phipfs_volume volume, const char *path)
+{ (void)volume; (void)path; assert(!"unexpected legacy unlink"); return PHIPFS_STATUS_IO; }
+enum phipfs_status phipfs_rename(enum phipfs_volume volume, const char *source, const char *destination)
+{ (void)volume; (void)source; (void)destination; assert(!"unexpected legacy rename"); return PHIPFS_STATUS_IO; }
+enum phipfs_status phipfs_sync(enum phipfs_volume volume)
+{ (void)volume; assert(!"unexpected legacy sync"); return PHIPFS_STATUS_IO; }
 
 enum phipfs_status phipfs_stat_path(enum phipfs_volume volume, const char *path,
     struct phipfs_stat *result)
@@ -467,6 +493,31 @@ static enum phipfs_status save_app(unsigned app)
 static void settings_persistence(void)
 {
     static const uint8_t initial[16] = { 'P', 'H', 'I', 'P', 'C', 'F', 'G', 1U, 3U, 1U, 0U, 1U, 1U };
+    reset_save(SAVE_OK);
+    target_length = sizeof(initial);
+    memcpy(target_bytes, initial, sizeof(initial));
+    target_bytes[9] = 0U; /* Persisted show-desktop differs from the boot default. */
+    data_admitted = false;
+    phipia_shell_ready = true;
+    applied_settings = 0U;
+    settings_restore_damage = false;
+    phipia_seed_settings(); /* Desktop comes up before Data is mounted. */
+    assert(setting_values[0][2] == 1U);
+    ui_restore_storage_settings();
+    assert(applied_settings == 0U && !settings_restore_damage);
+    data_admitted = true;
+    ui_restore_storage_settings();
+    assert(setting_values[0][2] == 0U && !restored_show_desktop);
+    assert(persisted_settings[1] == 0U && applied_settings == 6U && settings_restore_damage);
+    assert(live_handles == 0U && writes == 0U && publications == 0U && target_bytes[9] == 0U);
+    settings_read_fails = true;
+    ui_restore_storage_settings();
+    assert(setting_values[0][2] == 1U && restored_show_desktop);
+    assert(live_handles == 0U && writes == 0U && target_bytes[9] == 0U);
+    phipia_shell_ready = false;
+    applied_settings = 0U;
+    ui_restore_storage_settings();
+    assert(applied_settings == 0U);
     const enum save_fault failures[] = { SAVE_OK, WRITE_FAIL, FIRST_SYNC_FAIL, PUBLISH_FAIL, PUBLISH_LOST, SECOND_SYNC_FAIL, CLOSE_FAIL };
     for (size_t failure = 0U; failure < sizeof(failures) / sizeof(failures[0]); ++failure) {
         reset_save(failures[failure]);

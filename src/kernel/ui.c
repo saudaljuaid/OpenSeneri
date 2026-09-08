@@ -6631,6 +6631,7 @@ static const uint8_t persisted_setting_rows[5][3] = {
     { 1U, 2U, 1U }, { 1U, 3U, 1U }
 };
 static uint8_t persisted_settings[5];
+static bool settings_restore_damage;
 
 static enum phipfs_status phipia_settings_read(uint8_t values[5])
 {
@@ -6764,6 +6765,16 @@ static void phipia_apply_settings(void)
     (void)taskbar_set_alignment(settings_row_state(1U, 2U) == 0U ?
         TASKBAR_ALIGNMENT_CENTER : TASKBAR_ALIGNMENT_LEFT);
     (void)taskbar_set_transparency(settings_row_state(1U, 3U) != 0U);
+}
+
+void ui_restore_storage_settings(void)
+{
+    // Desktop construction precedes VFS initialization in the boot ledger.
+    // Reload only after Data admission; reading never publishes defaults.
+    if (!phipia_shell_ready || !phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) return;
+    phipia_seed_settings();
+    phipia_apply_settings();
+    settings_restore_damage = true;
 }
 
 static bool phipia_refresh_taskmgr(bool force)
@@ -9764,6 +9775,10 @@ enum ui_status ui_flush(void)
 
     if (!state.active) {
         return UI_STATUS_NOT_ACTIVE;
+    }
+    if (settings_restore_damage) {
+        damage = state.layout.surface;
+        settings_restore_damage = false;
     }
     if (ui_anim_running(&panel_anim)) {
         const struct ui_rect bounds = ui_anim_bounds(&panel_anim);
