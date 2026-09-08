@@ -88,6 +88,7 @@ def run(args):
         raise RuntimeError("held-unlink trace is not a bounded contiguous boundary sequence")
     first_commit = next(int(number) for number, name in boundaries if name == "commit")
     reports = []
+    repeated_recovery = []
     for number, boundary in boundaries:
         cut = int(number)
         image = output / f"cut-{cut:02d}.raw"
@@ -100,6 +101,8 @@ def run(args):
         if status != recovery.POWER_CUT_EXIT_STATUS or transcript.count(marker) != 1 or \
                 "ST FAIL" in transcript or PASS in transcript or "Phipia PANIC" in transcript:
             raise RuntimeError(f"held-unlink boundary {cut} did not cut exactly:\n" + recovery._transcript_tail(transcript))
+        crashed = output / f"cut-{cut:02d}-crashed.raw"
+        shutil.copyfile(image, crashed)
         status, transcript = recovery._run_qemu(args.qemu, args.accel, iso, image,
             output / f"cut-{cut:02d}-reboot.log", args.timeout)
         verify_exit(status, transcript)
@@ -107,11 +110,46 @@ def run(args):
         if transcript.count(f"ST EXT4 HELD UNLINK initial {expected_state}\n") != 1:
             raise RuntimeError(f"held-unlink boundary {cut} violated durable {expected_state} namespace")
         report = inspect(image, tools, output / f"cut-{cut:02d}", expected_blocks, expected_inodes)
-        reports.append({"cut": cut, "boundary": boundary, "recovered_state": expected_state, "result": report})
+        reports.append({"cut": cut, "boundary": boundary, "recovered_state": expected_state, "result": report,
+            "crashed_sha256": hashlib.sha256(crashed.read_bytes()).hexdigest()})
+        if cut == first_commit:
+            # Use only the flushes performed during mount recovery, before the
+            # VFS test can start another operation. Cut each, then recover again.
+            mount_trace = transcript.split("ST EXT4 HELD UNLINK initial new\n", 1)[0]
+            recovery_boundaries = re.findall(r"^ST EXT4 DURABLE (\d+) ([a-z-]+)$", mount_trace, re.MULTILINE)
+            if not recovery_boundaries or recovery_boundaries[0][1] != "checkpoint":
+                raise RuntimeError("committed held unlink omitted checkpoint replay during mount")
+            for recovery_number, recovery_boundary in recovery_boundaries:
+                second_cut = int(recovery_number)
+                if not 1 <= second_cut <= 64:
+                    raise RuntimeError("held-unlink recovery trace exceeds the cut bound")
+                prefix = f"recovery-cut-{second_cut:02d}"
+                repeated_image = output / f"{prefix}.raw"
+                repeated_iso = output / f"{prefix}.iso"
+                shutil.copyfile(crashed, repeated_image)
+                recovery._build_iso(args.kernel.resolve(), repeated_iso, args.grub_mkrescue,
+                    args.grub_module_dir, second_cut)
+                second_status, second_trace = recovery._run_qemu(args.qemu, args.accel,
+                    repeated_iso, repeated_image, output / f"{prefix}.log", args.timeout)
+                second_marker = f"ST EXT4 POWER CUT {second_cut} {recovery_boundary}"
+                if second_status != recovery.POWER_CUT_EXIT_STATUS or second_trace.count(second_marker) != 1 or \
+                        "ST EXT4 HELD UNLINK initial" in second_trace or "ST FAIL" in second_trace or "Phipia PANIC" in second_trace:
+                    raise RuntimeError(f"held-unlink recovery boundary {second_cut} did not cut during mount")
+                second_crashed = output / f"{prefix}-crashed.raw"
+                shutil.copyfile(repeated_image, second_crashed)
+                final_status, final_trace = recovery._run_qemu(args.qemu, args.accel, iso,
+                    repeated_image, output / f"{prefix}-reboot.log", args.timeout)
+                verify_exit(final_status, final_trace)
+                if final_trace.count("ST EXT4 HELD UNLINK initial new\n") != 1:
+                    raise RuntimeError("repeated recovery resurrected the committed removed name")
+                result = inspect(repeated_image, tools, output / prefix, expected_blocks, expected_inodes)
+                repeated_recovery.append({"cut": second_cut, "boundary": recovery_boundary, "result": result,
+                    "crashed_sha256": hashlib.sha256(second_crashed.read_bytes()).hexdigest()})
     (output / "report.json").write_text(json.dumps({"before": before, "reports": reports,
+        "repeated_recovery": repeated_recovery,
         "kernel_sha256": hashlib.sha256(args.kernel.read_bytes()).hexdigest(),
         "fixture_sha256": hashlib.sha256(args.fixture.read_bytes()).hexdigest()}, indent=2, sort_keys=True) + "\n")
-    print(f"ordinary VFS held unlink: {len(boundaries)} power cuts, reboot, orphan reclamation, census and read-only fsck PASS")
+    print(f"ordinary VFS held unlink: {len(boundaries)} operation cuts, {len(repeated_recovery)} repeated recovery cuts, orphan reclamation, census and read-only fsck PASS")
 
 
 def main():
