@@ -171,8 +171,13 @@ over backend execution. Reentrant close/reopen cannot redirect a fallback append
 to the replacement slot. Close retires the old vnode before backend cleanup,
 while retaining a separate mount pin until cleanup returns. Host tests cover
 that reuse, invalid/empty writes, pin overflow and exact reference cleanup.
+Directory publication and retirement use that lock too. Snapshot iteration
+copies one entry and advances its cursor while locked; sixteen competing host
+readers check each entry appears exactly once. Streaming reads copy their
+backend token and pin the mount before unlocking. Reentrant directory close
+and reuse preserve generations and release all pins, including overflow errors.
 These protections do not establish complete SMP filesystem support: published
-directory state and cross-volume backend registry scans still need their
+backend handle state and cross-volume backend registry scans still need their
 own lifecycle synchronization. The admitted execution model remains one
 core, with backend operations serialized by the volume guard.
 

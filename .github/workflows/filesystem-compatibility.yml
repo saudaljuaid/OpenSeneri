@@ -127,6 +127,8 @@ jobs:
                   build/vfs-vnode-host-test 2>&1 | tee evidence/ext4/vfs-vnode-host.log
                   make build/vfs-mount-host-test
                   build/vfs-mount-host-test 2>&1 | tee evidence/ext4/vfs-mount-host.log
+                  make build/vfs-directory-host-test
+                  build/vfs-directory-host-test 2>&1 | tee evidence/ext4/vfs-directory-host.log
                   make build/keyboard-channel-host-test
                   build/keyboard-channel-host-test 2>&1 | tee evidence/ext4/application-keyboard-host.log
                   if [[ '${{ inputs.ext4_application_probe }}' == 'true' ]]; then

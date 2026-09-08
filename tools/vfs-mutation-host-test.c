@@ -344,6 +344,7 @@ static phipfs_handle callback_old;
 static phipfs_handle callback_new;
 static phipfs_handle callback_token;
 static unsigned callback_writes;
+static bool callback_directory;
 
 static enum phipfs_status callback_open(enum phipfs_volume volume, const char *path,
     enum phipfs_access access, uint8_t flags, uint16_t mode,
@@ -352,7 +353,7 @@ static enum phipfs_status callback_open(enum phipfs_volume volume, const char *p
     (void)volume; (void)path; (void)access; (void)flags; (void)mode;
     assert(cpu_interrupts_enabled());
     *handle = ++callback_token;
-    *result = (struct phipfs_stat){ .object_id = *handle };
+    *result = (struct phipfs_stat){ .object_id = *handle, .directory = callback_directory };
     return PHIPFS_STATUS_OK;
 }
 
@@ -388,11 +389,31 @@ static enum phipfs_status callback_write(phipfs_handle handle, const uint8_t *so
     return PHIPFS_STATUS_STALE_HANDLE;
 }
 
+static enum phipfs_status callback_directory_open(enum phipfs_volume volume, const char *path,
+    phipfs_handle *handle, struct phipfs_stat *stat)
+{
+    return callback_open(volume, path, PHIPFS_ACCESS_READ, 0U, 0U, handle, stat);
+}
+
+static enum phipfs_status callback_directory_read(phipfs_handle handle,
+    struct phipfs_list_entry *entry, bool *present)
+{
+    assert(handle == callback_token && cpu_interrupts_enabled() && !*present && entry->size == 0U);
+    assert(phipfs_directory_close(callback_old) == PHIPFS_STATUS_OK);
+    assert(phipfs_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_BUSY);
+    assert(phipfs_directory_open(PHIPFS_VOLUME_DATA, expected_path, &callback_new) == PHIPFS_STATUS_OK);
+    assert((callback_old & 0xffU) == (callback_new & 0xffU) && callback_old != callback_new);
+    assert(handle + 1U == callback_token);
+    return PHIPFS_STATUS_STALE_HANDLE;
+}
+
 static void callback_slot_reuse(void)
 {
     static const struct vfs_backend_ops backend = {
         .open_options = callback_open, .close = callback_close,
         .seek = callback_seek, .write = callback_write, .unmount = unexpected_unmount,
+        .stat_path = hidden_stat, .directory_open_with_stat = callback_directory_open,
+        .directory_read = callback_directory_read, .directory_close = callback_close,
         .case_sensitive = true, .validates_mutation_paths = true,
     };
     mounts[PHIPFS_VOLUME_DATA].backend = &backend;
@@ -416,6 +437,20 @@ static void callback_slot_reuse(void)
     assert(phipfs_close(callback_new) == PHIPFS_STATUS_OK);
     assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
     puts("VFS callback close/reopen preserves the original token and mount without writing the replacement: PASS");
+    callback_directory = directory_metadata = stat_succeeds = true;
+    assert(phipfs_directory_open(PHIPFS_VOLUME_DATA, expected_path, &callback_old) == PHIPFS_STATUS_OK);
+    struct phipfs_list_entry entry = { .size = 99U };
+    bool present = true;
+    mounts[PHIPFS_VOLUME_DATA].references = SIZE_MAX;
+    assert(phipfs_directory_read(callback_old, &entry, &present) == PHIPFS_STATUS_BUSY && !present && entry.size == 0U);
+    assert(phipfs_directory_close(callback_old) == PHIPFS_STATUS_BUSY);
+    mounts[PHIPFS_VOLUME_DATA].references = 1U;
+    assert(phipfs_directory_read(callback_old, &entry, &present) == PHIPFS_STATUS_STALE_HANDLE && !present);
+    assert(mounts[PHIPFS_VOLUME_DATA].references == 1U);
+    assert(phipfs_directory_read(callback_old, &entry, &present) == PHIPFS_STATUS_STALE_HANDLE && !present);
+    assert(phipfs_directory_close(callback_new) == PHIPFS_STATUS_OK);
+    assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
+    puts("VFS streaming directory callback retirement pins the mount, refuses overflow and preserves slot generations: PASS");
 }
 
 int main(void)

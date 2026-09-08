@@ -1326,51 +1326,66 @@ static enum phipfs_status vfs_directory_open_pinned(
         vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
         return PHIPFS_STATUS_NO_HANDLES;
     }
-    zero_bytes(&directories[slot], sizeof(directories[slot]));
+    bool restore_interrupts = vnode_metadata_acquire();
     directories[slot].opening = true;
     directories[slot].backend = mounts[volume].backend;
+    directories[slot].cursor = 0U;
+    directories[slot].count = 0U;
+    directories[slot].backend_handle = 0U;
+    vnode_metadata_release(restore_interrupts);
     struct phipfs_stat opened_stat;
     const struct vfs_backend_ops *backend = mounts[volume].backend;
-    directories[slot].streaming =
+    const bool streaming =
         (backend->directory_open != NULL || backend->directory_open_with_stat != NULL) &&
         mounts[volume].backend->directory_read != NULL &&
         mounts[volume].backend->directory_close != NULL;
-    if (directories[slot].streaming) {
+    phipfs_handle backend_handle = 0U;
+    size_t count = 0U;
+    if (streaming) {
         if (backend->directory_open_with_stat != NULL) {
             status = backend->directory_open_with_stat(volume, canonical,
-                &directories[slot].backend_handle, &opened_stat);
+                &backend_handle, &opened_stat);
         } else {
             status = backend->directory_open(volume, canonical,
-                &directories[slot].backend_handle);
+                &backend_handle);
         }
     } else {
         status = mounts[volume].backend->list(volume, canonical,
             directories[slot].entries, PHIPFS_MAX_LIST_ENTRIES,
-            &directories[slot].count);
+            &count);
     }
     if (status != PHIPFS_STATUS_OK) {
         vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
-        zero_bytes(&directories[slot], sizeof(directories[slot]));
+        restore_interrupts = vnode_metadata_acquire();
+        directories[slot].opening = false;
         phipia_slot_release(directory_claims, slot);
+        vnode_metadata_release(restore_interrupts);
         return status;
     }
-    if (directories[slot].streaming && backend->directory_open_with_stat != NULL) {
+    if (streaming && backend->directory_open_with_stat != NULL) {
         vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
         status = vnode_retain(volume, canonical, &opened_stat, &vnode_index);
         if (status != PHIPFS_STATUS_OK) {
-            (void)backend->directory_close(directories[slot].backend_handle);
-            zero_bytes(&directories[slot], sizeof(directories[slot]));
+            (void)backend->directory_close(backend_handle);
+            restore_interrupts = vnode_metadata_acquire();
+            directories[slot].opening = false;
             phipia_slot_release(directory_claims, slot);
+            vnode_metadata_release(restore_interrupts);
             return status;
         }
     }
+    restore_interrupts = vnode_metadata_acquire();
+    directories[slot].streaming = streaming;
+    directories[slot].backend_handle = backend_handle;
+    directories[slot].count = count;
     directories[slot].generation = next_generation(
         &next_directory_generation, UINT64_MAX >> 8U);
-    directories[slot].vnode_generation = vnode_snapshot(vnode_index).generation;
+    directories[slot].vnode_generation = vnodes[vnode_index].generation;
     directories[slot].vnode_index = (uint16_t)vnode_index;
     directories[slot].active = true;
     directories[slot].opening = false;
     *handle = encode_handle(slot, directories[slot].generation);
+    vnode_metadata_release(restore_interrupts);
     return PHIPFS_STATUS_OK;
 }
 
@@ -1388,32 +1403,42 @@ enum phipfs_status phipfs_directory_read(
     }
     zero_bytes(entry, sizeof(*entry));
     *present = false;
+    const bool restore_interrupts = vnode_metadata_acquire();
     status = directory_state(handle, &state);
     if (status != PHIPFS_STATUS_OK) {
+        vnode_metadata_release(restore_interrupts);
         return status;
     }
-    const struct vfs_vnode_state snapshot = vnode_snapshot(state->vnode_index);
-    const struct vfs_vnode_state *vnode = &snapshot;
+    const struct vfs_vnode_state *vnode = &vnodes[state->vnode_index];
     if (!vnode->active || vnode->generation != state->vnode_generation ||
-        !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
+        !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation) {
+        vnode_metadata_release(restore_interrupts);
         return PHIPFS_STATUS_STALE_HANDLE;
+    }
     if (state->streaming) {
-        return state->backend->directory_read(state->backend_handle, entry,
-            present);
+        const enum phipfs_volume volume = vnode->volume;
+        const struct vfs_backend_ops *backend = state->backend;
+        const phipfs_handle backend_handle = state->backend_handle;
+        const bool pinned = mount_retain(volume);
+        vnode_metadata_release(restore_interrupts);
+        if (!pinned) return PHIPFS_STATUS_BUSY;
+        status = backend->directory_read(backend_handle, entry, present);
+        mount_release(volume);
+        return status;
     }
-    if (state->cursor == state->count) {
-        return PHIPFS_STATUS_OK;
+    if (state->cursor > state->count || state->count > PHIPFS_MAX_LIST_ENTRIES) {
+        status = PHIPFS_STATUS_CORRUPT;
+    } else if (state->cursor < state->count) {
+        *entry = state->entries[state->cursor++];
+        *present = true;
     }
-    if (state->cursor > state->count) {
-        return PHIPFS_STATUS_CORRUPT;
-    }
-    *entry = state->entries[state->cursor++];
-    *present = true;
-    return PHIPFS_STATUS_OK;
+    vnode_metadata_release(restore_interrupts);
+    return status;
 }
 
 enum phipfs_status phipfs_directory_close(phipfs_directory_handle handle)
 {
+    const bool restore_interrupts = vnode_metadata_acquire();
     struct vfs_directory_state *state;
     const struct vfs_backend_ops *backend;
     phipfs_handle backend_handle;
@@ -1423,6 +1448,7 @@ enum phipfs_status phipfs_directory_close(phipfs_directory_handle handle)
     enum phipfs_status status = directory_state(handle, &state);
 
     if (status != PHIPFS_STATUS_OK) {
+        vnode_metadata_release(restore_interrupts);
         return status;
     }
     vnode_generation = state->vnode_generation;
@@ -1430,11 +1456,21 @@ enum phipfs_status phipfs_directory_close(phipfs_directory_handle handle)
     backend = state->backend;
     backend_handle = state->backend_handle;
     streaming = state->streaming;
+    const enum phipfs_volume volume = vnodes[vnode_index].volume;
+    const bool pin = streaming && vnodes[vnode_index].active &&
+        vnodes[vnode_index].generation == vnode_generation && mounts[volume].active &&
+        vnodes[vnode_index].mount_generation == mounts[volume].generation;
+    if (pin && !mount_retain(volume)) {
+        vnode_metadata_release(restore_interrupts);
+        return PHIPFS_STATUS_BUSY;
+    }
     state->active = false;
     state->backend_handle = 0U;
-    vnode_release(vnode_index, vnode_generation);
+    vnode_release_locked(vnode_index, vnode_generation);
     phipia_slot_release(directory_claims, (size_t)(state - directories));
+    vnode_metadata_release(restore_interrupts);
     if (streaming) status = backend->directory_close(backend_handle);
+    if (pin) mount_release(volume);
     return status;
 }
 
