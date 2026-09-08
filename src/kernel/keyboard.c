@@ -298,25 +298,32 @@ static void handle_byte(uint8_t byte)
     enqueue(&event);
 }
 
+static void keyboard_drain_output(uint8_t (*read_status)(void), uint8_t (*read_data)(void))
+{
+    /*
+     * Drain keyboard bytes only. The auxiliary channel shares port 0x60;
+     * consuming a mouse delta here would synthesize a character or modifier
+     * edge and steal the pointer packet. Its IRQ must consume that byte.
+     */
+    for (uint32_t spins = 0; spins < KEYBOARD_QUEUE_SIZE; ++spins) {
+        const uint8_t status = read_status();
+        if ((status & KEYBOARD_STATUS_OUTPUT_FULL) == 0U ||
+            (status & KEYBOARD_STATUS_AUXILIARY_DATA) != 0U) {
+            return;
+        }
+
+        handle_byte(read_data());
+    }
+}
+
+static uint8_t keyboard_data(void) { return inb(KEYBOARD_DATA_PORT); }
+
 static void keyboard_interrupt(struct interrupt_frame *frame, void *context)
 {
     (void)frame;
     (void)context;
-
     state.interrupts += 1U;
-
-    /*
-     * Drain everything the controller has, not one byte. A shared or coalesced
-     * interrupt leaves more than one waiting, and a handler that takes a single
-     * byte per interrupt falls permanently behind the person typing.
-     */
-    for (uint32_t spins = 0; spins < KEYBOARD_QUEUE_SIZE; ++spins) {
-        if ((controller_status() & KEYBOARD_STATUS_OUTPUT_FULL) == 0U) {
-            return;
-        }
-
-        handle_byte(inb(KEYBOARD_DATA_PORT));
-    }
+    keyboard_drain_output(controller_status, keyboard_data);
 }
 
 enum keyboard_status keyboard_initialize(void)

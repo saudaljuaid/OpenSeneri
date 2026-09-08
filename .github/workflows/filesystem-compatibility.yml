@@ -117,6 +117,8 @@ jobs:
                   build/shell-ext4-host-test 2>&1 | tee evidence/ext4/application-input-host.log
                   make build/vfs-mutation-host-test
                   build/vfs-mutation-host-test 2>&1 | tee evidence/ext4/vfs-mutation-host.log
+                  make build/keyboard-channel-host-test
+                  build/keyboard-channel-host-test 2>&1 | tee evidence/ext4/application-keyboard-host.log
                   if [[ '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
                       printf '%s\n' 'Application probe: full host, recovery and release suites remain required.' \
                           >evidence/ext4/APPLICATION-PROBE.txt
