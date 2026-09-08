@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Refuse a real Paint save on full ext4, reclaim space in Phip, and retry."""
+"""Refuse a Paint save on block/inode exhaustion, reclaim in Phip, and retry."""
 
 import argparse
 import hashlib
@@ -143,6 +143,12 @@ def inspect(image, output, label, before, released_blocks, original, expected=No
         raise RuntimeError("Paint retry leaked an owned scratch file")
     manifest = {"PAINT.BMP": {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()},
         "system/release": None}
+    if "inode_fill_count" in before:
+        inode_names = ext4_image._debugfs(tools, image, "ls -p /inode-full")
+        if sorted(inode_names.splitlines()) != sorted((output / "inode-namespace-before.txt").read_text().splitlines()):
+            raise RuntimeError("Paint inode exhaustion changed unrelated inode identities or names")
+        (target / "inode-namespace.txt").write_text(inode_names)
+        manifest["inode-full"] = {"entries": sorted(f"entry-{index}" for index in range(before["inode_fill_count"]))}
     report["linux_kernel_read"] = ext4_kernel_read.verify_files(image, target / "linux-kernel", manifest)
     report["image_sha256"] = ext4_kernel_read.digest(image)
     for executable, arguments, name in ((tools["e2fsck"], ["-f", "-n"], "e2fsck.txt"),
@@ -162,6 +168,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument("--ffmpeg", default="ffmpeg")
+    parser.add_argument("--inodes", action="store_true")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -180,25 +187,44 @@ def main():
         available = ext4_image.parse_superblock(image.read_bytes())["free_blocks"]
         if available <= 128:
             raise RuntimeError("Paint fixture has insufficient initial free space")
-        filler = work / "filler"
-        with filler.open("wb") as stream:
-            for _ in range(available - 80):
-                stream.write(b"Z" * 4096)
-        ext4_image._run([tools["debugfs"], "-w", "-R", f'write "{filler.as_posix()}" /system/filler', image])
+        if not args.inodes:
+            filler = work / "filler"
+            with filler.open("wb") as stream:
+                for _ in range(available - 80):
+                    stream.write(b"Z" * 4096)
+            ext4_image._run([tools["debugfs"], "-w", "-R", f'write "{filler.as_posix()}" /system/filler', image])
         release = work / "release"
         release.write_bytes(b"R" * (64 * 4096))
         ext4_image._run([tools["debugfs"], "-w", "-R", f'write "{release.as_posix()}" /system/release', image])
         released = ext4_image._parse_stat(ext4_image._debugfs(tools, image,
             "stat /system/release"), "/system/release")["block_count_512"] // 8
+        if args.inodes:
+            available_inodes = ext4_image.parse_superblock(image.read_bytes())["free_inodes"]
+            if not 2 < available_inodes < 8192:
+                raise RuntimeError("Paint inode fixture exceeds the admitted census bound")
+            empty = work / "empty"
+            empty.write_bytes(b"")
+            commands = work / "fill-inodes.commands"
+            commands.write_text("mkdir /inode-full\n" + "".join(
+                f'write "{empty.as_posix()}" /inode-full/entry-{index}\n'
+                for index in range(available_inodes - 1)))
+            result = ext4_image._run([tools["debugfs"], "-w", "-f", commands, image])
+            (output / "fixture-debugfs.txt").write_text(result.stdout)
+            (output / "inode-namespace-before.txt").write_text(ext4_image._debugfs(tools, image, "ls -p /inode-full"))
         before = ext4_image.inspect_image(image, tools=tools)
-        if not 1 <= before["free_blocks"] < 43 or released != 64:
+        if args.inodes:
+            if before["free_inodes"] != 0 or before["free_blocks"] <= 128 or released != 64:
+                raise RuntimeError("Paint fixture does not isolate inode exhaustion with sufficient free blocks")
+            before["inode_fill_count"] = available_inodes - 1
+        elif not 1 <= before["free_blocks"] < 43 or released != 64:
             raise RuntimeError("Paint fixture does not force the required low-space refusal")
         (output / "before.json").write_text(json.dumps(before, indent=2, sort_keys=True) + "\n")
         boot(args, image, output, work, 1, original, before)
         saved = inspect(image, output, "after-retry", before, released, original)
         boot(args, image, output, work, 2, original, before)
         inspect(image, output, "after-cold-boot", before, released, original, saved)
-    print("ext4 Paint ENOSPC original preservation, in-memory retry, Phip reclamation, cold boot, Linux readback and fsck: PASS")
+    exhaustion = "inode exhaustion" if args.inodes else "ENOSPC"
+    print(f"ext4 Paint {exhaustion} original preservation, in-memory retry, Phip reclamation, cold boot, Linux readback and fsck: PASS")
 
 
 if __name__ == "__main__":
