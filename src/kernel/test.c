@@ -4945,6 +4945,32 @@ static void ext4_vfs_semantics(void)
     ext4_vfs_require(phipfs_pread(appended, block, 1U, 8191U, &count), "resumed write readback");
     if (position != 8191U || count != 1U || block[0] != 'R')
         kernel_test_fail("ext4 VFS fsync lost retained write or advanced failed cursor");
+    // Exercise the admitted 64 MiB boundary without allocating the intervening
+    // hole. Both handles must see the same large EOF and failed append cursor.
+    const uint64_t maximum = PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES;
+    const uint64_t free_before_large = phipfs_drive(volume).free_bytes;
+    ext4_vfs_require(phipfs_seek(file, (int64_t)(maximum - 1U), PHIPFS_SEEK_START, &position), "large sparse seek");
+    ext4_vfs_require(phipfs_write(file, (const uint8_t *)"Q", 1U, &count), "large sparse final byte");
+    if (count != 1U) kernel_test_fail("ext4 VFS large sparse final write was short");
+    ext4_vfs_require(phipfs_fstat(appended, &metadata), "large shared EOF");
+    if (metadata.size != maximum) kernel_test_fail("ext4 VFS large sparse EOF changed");
+    ext4_vfs_require(phipfs_pread(appended, block, 4U, maximum - 4U, &count), "large sparse tail");
+    if (count != 4U || block[0] != 0U || block[1] != 0U || block[2] != 0U || block[3] != 'Q')
+        kernel_test_fail("ext4 VFS large sparse hole or tail changed");
+    ext4_vfs_require(phipfs_seek(appended, 0, PHIPFS_SEEK_CURRENT, &position), "large append cursor");
+    const uint64_t append_cursor = position;
+    const uint64_t free_at_maximum = phipfs_drive(volume).free_bytes;
+    if (phipfs_write(appended, (const uint8_t *)"too far", 7U, &count) != PHIPFS_STATUS_RANGE || count != 0U ||
+        phipfs_ftruncate(file, maximum + 1U) != PHIPFS_STATUS_RANGE)
+        kernel_test_fail("ext4 VFS admitted file limit was not enforced");
+    ext4_vfs_require(phipfs_seek(appended, 0, PHIPFS_SEEK_CURRENT, &position), "refused append cursor");
+    ext4_vfs_require(phipfs_fstat(file, &metadata), "refused growth metadata");
+    if (position != append_cursor || metadata.size != maximum || phipfs_drive(volume).free_bytes != free_at_maximum)
+        kernel_test_fail("ext4 VFS refused large growth changed cursor EOF or allocations");
+    ext4_vfs_require(phipfs_ftruncate(file, 8192U), "large sparse reclaim");
+    if (phipfs_drive(volume).free_bytes != free_before_large)
+        kernel_test_fail("ext4 VFS large sparse reclaim leaked allocations");
+    console_write("ST EXT4 VFS 64 MiB sparse EOF maximum refusal and reclaim exact\n");
     ext4_vfs_require(phipfs_chmod(volume, name, 0600U), "chmod");
     const struct phipfs_times times = { .atime_seconds = 2200000000U, .mtime_seconds = 2300000000U,
         .atime_nanos = 123U, .mtime_nanos = 456U };
