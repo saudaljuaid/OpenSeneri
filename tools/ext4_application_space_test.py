@@ -118,7 +118,10 @@ def boot(args, image, output, work, number, original, before):
                 refused = ext4_image.parse_superblock(image.read_bytes())
                 if any(refused[field] != before[field] for field in ("free_blocks", "free_inodes")):
                     raise RuntimeError("failed Paint save leaked blocks or an inode")
-                qmp.hmp("sendkey esc")
+                # Files reports in its status area; Escape would close its
+                # maximized window. Save/export errors instead open a dialog.
+                if not args.files_copy:
+                    qmp.hmp("sendkey esc")
                 pointer.settle_guest(0.4)
                 if args.notes:
                     offset = serial.stat().st_size
