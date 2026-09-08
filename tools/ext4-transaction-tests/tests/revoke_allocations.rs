@@ -252,3 +252,46 @@ fn live_plan_allocation_refusals_preserve_reservations_and_retry() {
     }
     println!("live plans: {commit_calls} commit and {checkpoint_calls} checkpoint allocation refusals in initial and retry states; reservations and exact plans preserved");
 }
+
+#[test]
+fn transaction_image_and_record_allocation_refusals_leave_no_partial_stage() {
+    let original = JournalTransaction::new(17, [0x5a; 16], 100_000).unwrap();
+    for metadata in [false, true] {
+        let stage = |transaction: &mut JournalTransaction| {
+            if metadata { transaction.stage_metadata(100, &[0x33; JOURNAL_BLOCK_BYTES]) }
+            else { transaction.stage_ordered_data(100, &[0x33; JOURNAL_BLOCK_BYTES]) }
+        };
+        let mut expected = original.clone();
+        let (_, calls) = measured(|| stage(&mut expected).unwrap());
+        assert_eq!(calls, 2, "block image and stage vector");
+        for ordinal in 1..=calls {
+            let mut candidate = original.clone();
+            FAIL_AT.with(|at| at.set(ordinal));
+            let (result, _) = measured(|| stage(&mut candidate));
+            FAIL_AT.with(|at| at.set(0));
+            assert!(result.is_err());
+            assert_eq!(LIVE_DELTA.with(Cell::get), 0, "staging refusal leaked image or vector");
+            assert_eq!(candidate, original);
+            stage(&mut candidate).unwrap();
+            assert_eq!(candidate, expected);
+        }
+    }
+    let mut transaction = original;
+    transaction.stage_ordered_data(100, &[0x33; JOURNAL_BLOCK_BYTES]).unwrap();
+    transaction.stage_metadata(200, &[0x44; JOURNAL_BLOCK_BYTES]).unwrap();
+    transaction.stage_revocation(300).unwrap();
+    let original = transaction.clone();
+    let slots = [1000, 1001, 1002, 1003];
+    let (plan, calls) = measured(|| transaction.commit_plan(&slots).unwrap());
+    assert_eq!(calls, 7, "operation vector, ordered/home images and four journal records");
+    for ordinal in 1..=calls {
+        FAIL_AT.with(|at| at.set(ordinal));
+        let (result, _) = measured(|| transaction.commit_plan(&slots));
+        FAIL_AT.with(|at| at.set(0));
+        assert!(result.is_err(), "record allocation {ordinal} must refuse before execution");
+        assert_eq!(LIVE_DELTA.with(Cell::get), 0, "initial plan refusal leaked buffers");
+        assert_eq!(transaction, original);
+        assert_eq!(transaction.commit_plan(&slots).unwrap(), plan);
+    }
+    println!("transaction staging: two allocation refusals for each image class; all {calls} initial-plan refusals release buffers and preserve exact retry");
+}

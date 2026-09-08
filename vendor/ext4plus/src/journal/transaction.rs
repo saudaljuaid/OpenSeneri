@@ -1084,7 +1084,7 @@ fn validate_physical_journal_blocks(
 impl Error for JournalTransactionError {}
 
 /// A bounded, single-descriptor JBD2 transaction.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JournalTransaction {
     sequence: u32,
     uuid: Uuid,
@@ -1231,13 +1231,11 @@ impl JournalTransaction {
         }
         let image = JournalBlockImage {
             block_index,
-            bytes: Vec::from(bytes),
+            bytes: try_copy_bytes(bytes)?,
         };
-        if metadata {
-            self.metadata.push(image);
-        } else {
-            self.ordered_data.push(image);
-        }
+        let images = if metadata { &mut self.metadata } else { &mut self.ordered_data };
+        images.try_reserve(1).map_err(|_| JournalTransactionError::TooManyBlocks)?;
+        images.push(image);
         Ok(())
     }
 
@@ -1282,25 +1280,22 @@ impl JournalTransaction {
                     + 7,
             )
             .map_err(|_| JournalTransactionError::TooManyBlocks)?;
-        operations.extend(
-            self.ordered_data
-                .iter()
-                .cloned()
-                .map(JournalCommitOperation::WriteOrderedData),
-        );
+        for image in &self.ordered_data {
+            operations.push(JournalCommitOperation::WriteOrderedData(image.try_clone()?));
+        }
         if !self.ordered_data.is_empty() {
             operations.push(JournalCommitOperation::Flush(JournalFlush::OrderedData));
         }
         operations.push(JournalCommitOperation::WriteJournal {
             journal_block: journal_blocks[0],
             kind: JournalRecordKind::Descriptor,
-            bytes: self.descriptor_block(),
+            bytes: self.descriptor_block()?,
         });
         for (index, image) in self.metadata.iter().enumerate() {
             operations.push(JournalCommitOperation::WriteJournal {
                 journal_block: journal_blocks[index + 1],
                 kind: JournalRecordKind::Metadata,
-                bytes: image.bytes.clone(),
+                bytes: try_copy_bytes(&image.bytes)?,
             });
         }
         let mut commit_slot = self.metadata.len() + 1;
@@ -1308,7 +1303,7 @@ impl JournalTransaction {
             operations.push(JournalCommitOperation::WriteJournal {
                 journal_block: journal_blocks[commit_slot],
                 kind: JournalRecordKind::Revocation,
-                bytes: self.revocation_block(revoked),
+                bytes: self.revocation_block(revoked)?,
             });
             commit_slot += 1;
         }
@@ -1316,25 +1311,22 @@ impl JournalTransaction {
         operations.push(JournalCommitOperation::WriteJournal {
             journal_block: journal_blocks[commit_slot],
             kind: JournalRecordKind::Commit,
-            bytes: self.commit_block(),
+            bytes: self.commit_block()?,
         });
         operations.push(JournalCommitOperation::Flush(JournalFlush::Commit));
-        operations.extend(
-            self.metadata
-                .iter()
-                .cloned()
-                .map(JournalCommitOperation::WriteHomeMetadata),
-        );
+        for image in &self.metadata {
+            operations.push(JournalCommitOperation::WriteHomeMetadata(image.try_clone()?));
+        }
         operations.push(JournalCommitOperation::Flush(JournalFlush::Checkpoint));
         Ok(operations)
     }
 
-    fn descriptor_block(&self) -> Vec<u8> {
+    fn descriptor_block(&self) -> Result<Vec<u8>, JournalTransactionError> {
         const UUID_OMITTED: u32 = 0x2;
         const LAST_TAG: u32 = 0x8;
         const TAG_BYTES: usize = 16;
 
-        let mut block = vec![0; JOURNAL_BLOCK_BYTES];
+        let mut block = try_zeroed_journal_block()?;
         write_u32be(&mut block, 0, JournalBlockHeader::MAGIC);
         write_u32be(&mut block, 4, JournalBlockType::DESCRIPTOR.0);
         write_u32be(&mut block, 8, self.sequence);
@@ -1370,13 +1362,13 @@ impl JournalTransaction {
         checksum.update(&block[..checksum_offset]);
         checksum.update_u32_be(0);
         write_u32be(&mut block, checksum_offset, checksum.finalize());
-        block
+        Ok(block)
     }
 
-    fn commit_block(&self) -> Vec<u8> {
+    fn commit_block(&self) -> Result<Vec<u8>, JournalTransactionError> {
         const CHECKSUM_OFFSET: usize = 16;
 
-        let mut block = vec![0; JOURNAL_BLOCK_BYTES];
+        let mut block = try_zeroed_journal_block()?;
         write_u32be(&mut block, 0, JournalBlockHeader::MAGIC);
         write_u32be(&mut block, 4, JournalBlockType::COMMIT.0);
         write_u32be(&mut block, 8, self.sequence);
@@ -1386,14 +1378,14 @@ impl JournalTransaction {
         checksum.update_u32_be(0);
         checksum.update(&block[CHECKSUM_OFFSET + 4..]);
         write_u32be(&mut block, CHECKSUM_OFFSET, checksum.finalize());
-        block
+        Ok(block)
     }
 
-    fn revocation_block(&self, revoked_blocks: &[u64]) -> Vec<u8> {
+    fn revocation_block(&self, revoked_blocks: &[u64]) -> Result<Vec<u8>, JournalTransactionError> {
         const TABLE_BYTES_OFFSET: usize = JournalBlockHeader::SIZE;
         const TABLE_OFFSET: usize = TABLE_BYTES_OFFSET + 4;
 
-        let mut block = vec![0; JOURNAL_BLOCK_BYTES];
+        let mut block = try_zeroed_journal_block()?;
         write_u32be(&mut block, 0, JournalBlockHeader::MAGIC);
         write_u32be(&mut block, 4, JournalBlockType::REVOCATION.0);
         write_u32be(&mut block, 8, self.sequence);
@@ -1414,7 +1406,7 @@ impl JournalTransaction {
         checksum.update(&block[..checksum_offset]);
         checksum.update_u32_be(0);
         write_u32be(&mut block, checksum_offset, checksum.finalize());
-        block
+        Ok(block)
     }
 }
 
@@ -2538,6 +2530,13 @@ fn try_copy_bytes(source: &[u8]) -> Result<Vec<u8>, JournalTransactionError> {
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(source.len()).map_err(|_| JournalTransactionError::TooManyBlocks)?;
     bytes.extend_from_slice(source);
+    Ok(bytes)
+}
+
+fn try_zeroed_journal_block() -> Result<Vec<u8>, JournalTransactionError> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(JOURNAL_BLOCK_BYTES).map_err(|_| JournalTransactionError::TooManyBlocks)?;
+    bytes.resize(JOURNAL_BLOCK_BYTES, 0);
     Ok(bytes)
 }
 
