@@ -2615,6 +2615,16 @@ static enum phipfs_status note_restore_original(
     return status;
 }
 
+static void data_publication_discard(struct data_publication *save)
+{
+    // Drain any ambiguous write/publication before starting a different
+    // transaction. The held inode, checked under the coordinator lease,
+    // authorizes removal; a replacement name or completed publication does not.
+    if (phipfs_fsync(save->handle) != PHIPFS_STATUS_OK) return;
+    (void)phipfs_unlink_held_file(save->handle, save->temporary);
+    (void)phipfs_fsync(save->handle);
+}
+
 static enum phipfs_status data_publication_begin(struct data_publication *save,
     const char *destination, const char *scratch_template)
 {
@@ -2642,6 +2652,7 @@ static enum phipfs_status data_publication_begin(struct data_publication *save,
     if (status != PHIPFS_STATUS_OK) return status;
     status = phipfs_fstat(save->handle, &owned);
     if (status != PHIPFS_STATUS_OK) {
+        data_publication_discard(save);
         (void)phipfs_close(save->handle);
         save->handle = 0U;
         return status;
@@ -2671,8 +2682,9 @@ static enum phipfs_status data_publication_finish(struct data_publication *save,
                 target_status : PHIPFS_STATUS_STALE_HANDLE;
         }
     }
-    // On failure leave the scratch name for recovery/repair. It may be
-    // incomplete or have been replaced; deleting it by name would be unsafe.
+    // Cleanup is best effort: persistent storage failure leaves the exact plan
+    // mount-owned for sync/recovery. Preserve the original save error.
+    if (status != PHIPFS_STATUS_OK) data_publication_discard(save);
     const enum phipfs_status closed = phipfs_close(save->handle);
     save->handle = 0U;
     return status == PHIPFS_STATUS_OK ? closed : status;
