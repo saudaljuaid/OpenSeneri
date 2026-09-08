@@ -5305,6 +5305,9 @@ static _Noreturn void ext4_vfs_replace_powercut(void)
     kernel_test_pass();
 }
 
+static bool ext4_vfs_storage_probe_control(enum phipfs_volume volume,
+    const char *path, uint32_t *ordinal);
+
 static _Noreturn void ext4_vfs_rename_powercut(bool cross_directory)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5313,6 +5316,8 @@ static _Noreturn void ext4_vfs_rename_powercut(bool cross_directory)
     const char *collision = cross_directory ? "data/user/rename-destination/occupied" : "data/user/rename-existing";
     struct phipfs_stat original, destination, occupied, after, parent;
     phipfs_handle file, reader;
+    uint32_t failure_ordinal = 0U;
+    const bool storage_probe = ext4_vfs_storage_probe_control(volume, "data/user/RENFAIL.BIN", &failure_ordinal);
     const enum phipfs_status initial = phipfs_lstat_path(volume, source, &original);
     const enum phipfs_status destination_status = phipfs_lstat_path(volume, target, &destination);
     const bool old = initial == PHIPFS_STATUS_OK && destination_status == PHIPFS_STATUS_NOT_FOUND;
@@ -5332,7 +5337,33 @@ static _Noreturn void ext4_vfs_rename_powercut(bool cross_directory)
         console_write("ST EXT4 RENAME initial old\n");
         if (phipfs_rename(volume, source, collision) != PHIPFS_STATUS_EXISTS)
             kernel_test_fail("ext4 rename cut failed no-replace refusal");
-        ext4_vfs_require(phipfs_rename(volume, source, target), "rename cut publication");
+        if (storage_probe && !ext4_backend_test_fail_storage_once(failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
+            kernel_test_fail("ext4 could not arm rename storage refusal");
+        enum phipfs_status status = phipfs_rename(volume, source, target);
+        if (storage_probe) {
+            uint32_t attempts;
+            enum phipia_ext4_test_storage_kind kind;
+            if (!ext4_backend_test_finish_storage_probe(&attempts, &kind) || attempts == 0U)
+                kernel_test_fail("ext4 rename storage probe was not exercised");
+            if (failure_ordinal == 0U) {
+                if (status != PHIPFS_STATUS_OK || kind != PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
+                    kernel_test_fail("ext4 rename storage baseline failed");
+                console_write("ST EXT4 RENAME storage attempts ");
+                console_write_u64(attempts);
+                console_putc('\n');
+            } else {
+                if (status != PHIPFS_STATUS_IO || attempts != failure_ordinal ||
+                    kind >= PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
+                    kernel_test_fail("ext4 rename storage refusal was not exact");
+                console_write("ST EXT4 RENAME storage refused ");
+                console_write_u64(attempts);
+                console_write(kind == PHIPIA_EXT4_TEST_STORAGE_WRITE ? " write\n" : " flush\n");
+                // Retry through normal path resolution while the coordinator
+                // may hide a retained transaction from unrelated lookups.
+                status = phipfs_rename(volume, source, target);
+            }
+        }
+        ext4_vfs_require(status, "rename cut identical publication retry");
     } else console_write("ST EXT4 RENAME initial new\n");
     if (phipfs_lstat_path(volume, source, &after) != PHIPFS_STATUS_NOT_FOUND)
         kernel_test_fail("ext4 rename cut retained old source name");
@@ -5490,8 +5521,6 @@ static _Noreturn void ext4_vfs_create_powercut(void)
     kernel_test_pass();
 }
 
-static bool ext4_vfs_storage_probe_control(enum phipfs_volume volume,
-    const char *path, uint32_t *ordinal);
 static void ext4_vfs_storage_probe_truncate(phipfs_handle file, uint64_t size,
     bool probe, uint32_t ordinal, const char *label);
 

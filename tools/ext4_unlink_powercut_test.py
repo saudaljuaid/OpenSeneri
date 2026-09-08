@@ -203,8 +203,9 @@ def run(args):
     appending = args.operation == "append"
     overwriting = args.operation == "overwrite"
     control_name = {"append": "APPFAIL.BIN", "overwrite": "OVERFAIL.BIN",
-        "truncate": "TRUNCFAIL.BIN", "grow": "GROWFAIL.BIN"}.get(args.operation)
-    storage_marker = f"ST EXT4 {args.operation.upper()} storage"
+        "truncate": "TRUNCFAIL.BIN", "grow": "GROWFAIL.BIN",
+        "rename": "RENFAIL.BIN", "rename-cross": "RENFAIL.BIN"}.get(args.operation)
+    storage_marker = f"ST EXT4 {'RENAME' if renaming else args.operation.upper()} storage"
     metadata_change = args.operation in ("chmod", "times")
     creating = args.operation in ("create", "mkdir")
     directory = args.operation == "mkdir"
@@ -419,14 +420,14 @@ def run(args):
                 raise RuntimeError("VFS mutation did not exercise the exact storage refusal and identical retry")
             kinds.add(refused[0][1])
             after_retry = inspect(image, tools, output / f"refusal-{ordinal:03d}", expected_blocks,
-                expected_inodes, replacement_inode, args.operation, expected_parent_links)
+                expected_inodes, replacement_inode, args.operation, expected_parent_links, expected_collision_inode)
             status, reboot = recovery._run_qemu(args.qemu, args.accel, iso, image,
                 output / f"refusal-{ordinal:03d}-reboot.log", args.timeout)
             verify_exit(status, reboot, pass_marker)
             if reboot.count(f"{state_marker} new\n") != 1 or f"{storage_marker} refused" in reboot:
                 raise RuntimeError("storage refusal retry did not survive cold reboot")
             after_reboot = inspect(image, tools, output / f"refusal-{ordinal:03d}-reboot", expected_blocks,
-                expected_inodes, replacement_inode, args.operation, expected_parent_links)
+                expected_inodes, replacement_inode, args.operation, expected_parent_links, expected_collision_inode)
             reports.append({"ordinal": ordinal, "kind": refused[0][1], "after_retry": after_retry,
                 "after_reboot": after_reboot, "prepared": prepared})
         if kinds != {"write", "flush"}:
@@ -529,8 +530,8 @@ def main():
     parser.add_argument("--timeout", type=int, default=90)
     parser.add_argument("--storage-failures", action="store_true")
     args = parser.parse_args()
-    if args.storage_failures and args.operation not in ("overwrite", "append", "truncate", "grow"):
-        parser.error("--storage-failures requires --operation overwrite, append, truncate or grow")
+    if args.storage_failures and args.operation not in ("overwrite", "append", "truncate", "grow", "rename", "rename-cross"):
+        parser.error("--storage-failures requires --operation overwrite, append, truncate, grow, rename or rename-cross")
     run(args)
 
 
