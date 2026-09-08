@@ -28,6 +28,8 @@ jobs:
         timeout-minutes: 360
         env:
             PHIPIA_EXT4_KERNEL_INTEROP: "1"
+            # Exact Ubuntu package used by the successful 8520fa7 evidence.
+            PHIPIA_E2FSPROGS_VERSION: "1.47.0-2.4~exp1ubuntu4.1"
         steps:
             - name: Check out source
               uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -38,7 +40,7 @@ jobs:
                   sudo sed -i '\|azure.archive.ubuntu.com|d' /etc/apt/apt-mirrors.txt
                   sudo apt-get update
                   sudo apt-get install --yes --no-install-recommends \
-                      binutils bzip2 clang e2fsprogs ffmpeg file gcc grub-common \
+                      binutils bzip2 clang "e2fsprogs=$PHIPIA_E2FSPROGS_VERSION" ffmpeg file gcc grub-common \
                       grub-pc-bin lld make \
                       mtools qemu-system-x86 xorriso
             - name: Install the Rust bare-metal target
@@ -46,7 +48,15 @@ jobs:
             - name: Record the emulated surface
               shell: bash
               run: |
-                  mkdir -p evidence/filesystem
+                  mkdir -p evidence/filesystem evidence/ext4
+                  test "$(dpkg-query -W -f='${Version}' e2fsprogs)" = "$PHIPIA_E2FSPROGS_VERSION"
+                  dpkg-query -s e2fsprogs >evidence/ext4/e2fsprogs-package.txt
+                  for tool in mke2fs e2fsck debugfs dumpe2fs; do
+                      executable="$(command -v "$tool")"
+                      sha256sum "$executable"
+                      "$executable" -V 2>&1
+                      ldd "$executable"
+                  done >evidence/ext4/e2fsprogs-binaries.txt
                   qemu-system-x86_64 -version \
                       | tee evidence/filesystem/qemu-version.txt
                   qemu-system-x86_64 -device nvme,help \
