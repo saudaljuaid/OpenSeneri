@@ -5280,6 +5280,7 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
     if (!power_cut && !transaction_already_visible) ext4_vfs_semantics();
     if (phipfs_unmount(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
         phipfs_drive(PHIPFS_VOLUME_SYSTEM).mounted ||
+        !phipfs_resources_released() || !ext4_backend_resources_released() ||
         !nvme_filesystem_session_resources_released() ||
         heap_verify() != HEAP_STATUS_OK) {
         kernel_test_fail("ext4 recovered mount did not release cleanly");
@@ -5302,6 +5303,7 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         appended != transaction_byte || phipfs_close(handle) != PHIPFS_STATUS_OK ||
         phipfs_unmount(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
         phipfs_drive(PHIPFS_VOLUME_SYSTEM).mounted ||
+        !phipfs_resources_released() || !ext4_backend_resources_released() ||
         !nvme_filesystem_session_resources_released() ||
         heap_verify() != HEAP_STATUS_OK ||
         paging_verify() != PAGING_STATUS_OK) {

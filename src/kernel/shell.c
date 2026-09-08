@@ -9,6 +9,7 @@
 #include <phipia/cpu.h>
 #include <phipia/framebuffer.h>
 #include <phipia/fat32_fs.h>
+#include <phipia/ext4_fs.h>
 #include <phipia/heap.h>
 #include <phipia/keyboard.h>
 #include <phipia/linux_userland.h>
@@ -901,12 +902,13 @@ static void command_reboot(void)
         return;
     }
     if (ext4_data) {
-        if (!nvme_filesystem_session_resources_released() ||
+        if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+            !nvme_filesystem_session_resources_released() ||
             heap_verify() != HEAP_STATUS_OK || paging_verify() != PAGING_STATUS_OK) {
             console_write("reboot: ext4 release census failed\n");
             return;
         }
-        console_write("Phipia: reboot ext4 mounts closed NVMe released heap paging valid\n");
+        console_write("Phipia: reboot VFS ext4 handles mounts reservations snapshots zero NVMe released heap paging valid\n");
     }
     console_write("restarting after clean synchronization\n");
     cpu_interrupt_disable();

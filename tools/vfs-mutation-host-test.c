@@ -498,6 +498,19 @@ int main(void)
         vnode_release(occupied[index], vnodes[occupied[index]].generation);
     assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
     nested_open_reservations();
+    assert(!phipfs_resources_released());
+    mounts[PHIPFS_VOLUME_DATA].active = false;
+    assert(phipfs_resources_released());
+    vnode_reservations[0] = true;
+    assert(!phipfs_resources_released());
+    vnode_reservations[0] = false;
+    open_files[0].opening = true;
+    assert(!phipfs_resources_released());
+    open_files[0].opening = false;
+    directories[0].backend_handle = 1U;
+    assert(!phipfs_resources_released());
+    directories[0].backend_handle = 0U;
+    assert(phipfs_resources_released());
     puts("VFS journal mutation retries, nested open reservations, backend errors, path bounds and vnode census: PASS");
     return 0;
 }

@@ -123,6 +123,8 @@ int32_t phipia_ext4_block_flush(uintptr_t context, uint32_t boundary);
 uint64_t phipia_ext4_current_time(uintptr_t context);
 
 void ext4_backend_initialize(void);
+/* Quiescent backend census; NVMe's allocation census is checked separately. */
+bool ext4_backend_resources_released(void);
 enum phipfs_status ext4_backend_mount(enum phipfs_volume volume);
 enum phipfs_status ext4_backend_last_mount_status(enum phipfs_volume volume);
 bool ext4_backend_mount_diagnostic(enum phipfs_volume volume,

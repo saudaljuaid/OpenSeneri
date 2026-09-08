@@ -849,6 +849,7 @@ static bool volume_has_open_handles(enum phipfs_volume volume)
 
 void ext4_backend_initialize(void)
 {
+    zero_bytes(ext4_handle_reservations, sizeof(ext4_handle_reservations));
     zero_bytes(ext4_mounts, sizeof(ext4_mounts));
     zero_bytes(ext4_handles, sizeof(ext4_handles));
     ext4_test_durable_boundary = 0U;
@@ -980,6 +981,22 @@ enum phipfs_status ext4_backend_last_mount_status(enum phipfs_volume volume)
 {
     return valid_volume(volume) ? ext4_last_mount_status[volume] :
         PHIPFS_STATUS_INVALID_ARGUMENT;
+}
+
+bool ext4_backend_resources_released(void)
+{
+    for (size_t index = 0U; index < PHIPFS_VOLUME_COUNT; ++index) {
+        const struct ext4_mount_state *mount = &ext4_mounts[index];
+        if (mount->active || mount->mounting || mount->detaching || mount->operation_active ||
+            mount->close_failed || mount->orphan_cleanup_pending || mount->rust_mount != 0U ||
+            mount->session.active) return false;
+    }
+    for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
+        const struct ext4_handle_state *handle = &ext4_handles[index];
+        if (handle->active || handle->closing || handle->directory_snapshot != 0U ||
+            ext4_handle_reservations[index]) return false;
+    }
+    return true;
 }
 
 bool ext4_backend_mount_diagnostic(enum phipfs_volume volume,

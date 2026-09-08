@@ -24,7 +24,7 @@ SPEC = importlib.util.spec_from_file_location("phipia_capture", Path(__file__).w
 capture = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(capture)
 REBOOT = b"restarting after clean synchronization"
-CENSUS = b"Phipia: reboot ext4 mounts closed NVMe released heap paging valid"
+CENSUS = b"Phipia: reboot VFS ext4 handles mounts reservations snapshots zero NVMe released heap paging valid"
 EXPECTED = {
     "PHIPIA.BMP": 54 + 320 * 180 * 3,
     "PHIPIA - Copy.BMP": 54 + 320 * 180 * 3,

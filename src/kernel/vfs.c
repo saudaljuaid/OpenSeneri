@@ -622,10 +622,24 @@ bool phipfs_self_test(size_t *completed_tests)
     return fat32_backend_self_test(completed_tests);
 }
 
+bool phipfs_resources_released(void)
+{
+    for (size_t index = 0U; index < PHIPFS_VOLUME_COUNT; ++index)
+        if (mounts[index].active || mounts[index].references != 0U) return false;
+    for (size_t index = 0U; index < VFS_MAX_VNODES; ++index)
+        if (vnodes[index].active || vnodes[index].references != 0U || vnode_reservations[index]) return false;
+    for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index)
+        if (open_files[index].active || open_files[index].opening || open_files[index].backend_handle != 0U) return false;
+    for (size_t index = 0U; index < VFS_MAX_DIRECTORY_ITERATORS; ++index)
+        if (directories[index].active || directories[index].opening || directories[index].backend_handle != 0U) return false;
+    return true;
+}
+
 void phipfs_initialize(void)
 {
     zero_bytes(mounts, sizeof(mounts));
     zero_bytes(vnodes, sizeof(vnodes));
+    zero_bytes(vnode_reservations, sizeof(vnode_reservations));
     zero_bytes(open_files, sizeof(open_files));
     zero_bytes(directories, sizeof(directories));
     for (size_t index = 0U; index < VFS_VNODE_BUCKETS; ++index) {

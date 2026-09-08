@@ -970,6 +970,20 @@ int main(void)
     close_reports_failure = false;
     assert(ext4_backend_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK);
     assert(opens == closes && !ext4_mounts[PHIPFS_VOLUME_DATA].session.active);
+    assert(ext4_backend_resources_released());
+    ext4_handle_reservations[0] = true;
+    assert(!ext4_backend_resources_released());
+    ext4_handle_reservations[0] = false;
+    ext4_handles[0].directory_snapshot = 1U;
+    assert(!ext4_backend_resources_released());
+    ext4_handles[0].directory_snapshot = 0U;
+    ext4_mounts[0].rust_mount = 1U;
+    assert(!ext4_backend_resources_released());
+    ext4_mounts[0].rust_mount = 0U;
+    ext4_mounts[0].close_failed = true;
+    assert(!ext4_backend_resources_released());
+    ext4_mounts[0].close_failed = false;
+    assert(ext4_backend_resources_released());
     puts("ext4 VFS append, truncate retries, shared sizes, rename guards, errors and leases: PASS");
     return 0;
 }

@@ -121,6 +121,8 @@ struct phipfs_drive_info {
 
 bool phipfs_self_test(size_t *completed_tests);
 void phipfs_initialize(void);
+/* Quiescent VFS census after all mounts have been cleanly released. */
+bool phipfs_resources_released(void);
 enum phipfs_status phipfs_mount(enum phipfs_volume volume);
 enum phipfs_status phipfs_unmount(enum phipfs_volume volume);
 enum phipfs_status phipfs_sync(enum phipfs_volume volume);
