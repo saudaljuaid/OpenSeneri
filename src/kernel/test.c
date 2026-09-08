@@ -5251,6 +5251,50 @@ static void ext4_vfs_cut_contents(phipfs_handle file, uint64_t size, uint8_t val
     }
 }
 
+static _Noreturn void ext4_vfs_journal_wrap(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/wrap-target";
+    struct phipfs_stat original, after;
+    phipfs_handle reader;
+    uint64_t position;
+    ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &reader), "wrap held reader");
+    ext4_vfs_require(phipfs_fstat(reader, &original), "wrap original identity");
+    if (original.directory || original.size != 1700U || original.links != 1U ||
+        (original.mode != 0100644U && original.mode != 0100600U))
+        kernel_test_fail("ext4 wrap fixture identity changed");
+    const uint64_t free_bytes = phipfs_drive(volume).free_bytes;
+    ext4_vfs_require(phipfs_seek(reader, 123, PHIPFS_SEEK_START, &position), "wrap reader cursor");
+    if (original.mode == 0100644U) {
+        for (unsigned index = 0U; index < 512U; ++index) {
+            const uint16_t mode = index % 2U == 0U ? 0640U : 0644U;
+            ext4_vfs_require(phipfs_chmod(volume, name, mode), "wrap metadata transaction");
+            ext4_vfs_require(phipfs_fstat(reader, &after), "wrap held metadata reload");
+            if (after.object_id != original.object_id || after.size != original.size ||
+                after.links != 1U || after.mode != (uint32_t)(0100000U | mode))
+                kernel_test_fail("ext4 wrap lost a held inode metadata update");
+        }
+        ext4_vfs_require(phipfs_chmod(volume, name, 0600U), "wrap completion mode");
+        console_write("ST EXT4 WRAP transactions 513\n");
+    } else console_write("ST EXT4 WRAP cold boot retained\n");
+    ext4_vfs_require(phipfs_fstat(reader, &after), "wrap final held metadata");
+    ext4_vfs_require(phipfs_seek(reader, 0, PHIPFS_SEEK_CURRENT, &position), "wrap retained cursor");
+    if (after.mode != 0100600U || after.object_id != original.object_id ||
+        phipfs_drive(volume).free_bytes != free_bytes || position != 123U)
+        kernel_test_fail("ext4 wrap changed allocation identity or cursor");
+    ext4_vfs_cut_contents(reader, 1700U, 't');
+    ext4_vfs_require(phipfs_fsync(reader), "wrap held sync");
+    ext4_vfs_require(phipfs_close(reader), "wrap reader close");
+    ext4_vfs_require(phipfs_sync(volume), "wrap filesystem sync");
+    ext4_vfs_require(phipfs_unmount(volume), "wrap clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 wrap resource census failed");
+    console_write("ST EXT4 VFS journal wrap held metadata contents cursor allocation census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_replace_powercut(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -6235,6 +6279,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
     if (drive.free_bytes == 0U || drive.free_bytes >= drive.total_bytes) {
         kernel_test_fail("ext4 allocator capacity was not exported");
     }
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/WRAP.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_journal_wrap();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTUNLINK.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_held_unlink_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTREPLACE.TST", &stat) == PHIPFS_STATUS_OK)

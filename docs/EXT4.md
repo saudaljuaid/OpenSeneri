@@ -331,6 +331,15 @@ allocation checks, resource census, clean unmount, Linux readback and read-only
 fsck. These tests do not model torn sectors inside one device command or loss
 of an emulated volatile write cache; they do not establish all Stage 5 gates.
 
+`qemu-test-ext4-journal-wrap` issues 513 mode changes through ordinary VFS
+calls while retaining a reader. Its host inspector maps every journal logical
+block with debugfs and verifies that the recorded physical writes consume and
+reuse all 1,023 data slots in order. The final sequence must advance by exactly
+513, with unchanged inode/block accounting and contents. A second cold boot
+must retain the final mode without writing another journal record. Both boots
+require Linux readback, clean read-only fsck and the guest resource census.
+This is wrap during normal operation, not a crash-at-wrap guarantee.
+
 The caller must supply a distinct physical journal block for the descriptor,
 each metadata image, and the commit. The resulting operation list has one legal
 order:
