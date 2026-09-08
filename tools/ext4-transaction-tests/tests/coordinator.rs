@@ -804,6 +804,11 @@ fn held_file_unlink_binds_identity_retries_and_recovers_without_leaking_allocati
         device.events.clear();
         device.bytes.clone()
     });
+    // Use the same fresh-mount journal cursor for the reference and every
+    // failure case. The setup mount has already advanced through create/write;
+    // its clean in-memory cursor need not equal a newly loaded clean journal's.
+    drop(mounted);
+    let mut mounted = mount_bytes(initial.clone());
     assert_eq!(ext4::unlink_held_file(&mut mounted, name, owned.inode, &[]), Err(Status::Stale));
     assert_eq!(ext4::unlink_held_file(&mut mounted, name, 2, &[2]), Err(Status::Stale));
     DEVICE.with_borrow(|device| assert!(device.events.is_empty()));
@@ -834,7 +839,13 @@ fn held_file_unlink_binds_identity_retries_and_recovers_without_leaking_allocati
             DEVICE.with_borrow_mut(|device| { device.events.clear(); device.fail_event = None; });
             ext4::unlink_held_file(&mut mounted, name, owned.inode, &[owned.inode]).unwrap();
             let start = if failed_at < 2 { 0 } else if failed_at >= expected.len() - 2 { expected.len() - 2 } else { 2 };
-            DEVICE.with_borrow(|device| assert_eq!(device.events, expected[start..]));
+            DEVICE.with_borrow(|device| {
+                let reference = &expected[start..];
+                assert_eq!(device.events.len(), reference.len(), "retry {accept}/{failed_at} event count");
+                for (event, (actual, wanted)) in device.events.iter().zip(reference).enumerate() {
+                    assert!(actual == wanted, "retry {accept}/{failed_at}: event {event} differs byte-for-byte");
+                }
+            });
             ext4::sync(&mut mounted).unwrap();
             assert_eq!(ext4::free_bytes(&mounted).unwrap(), free);
             drop(mounted);
