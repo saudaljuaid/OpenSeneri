@@ -413,6 +413,9 @@ def run(args):
                     wrapped_slots[0] != 1021 or len(wrapped_slots) <= 3 or wrapped_slots != [
                         1 + (1020 + index) % 1023 for index in range(len(wrapped_slots))]:
                 raise RuntimeError("rename did not cross the verified physical journal end after its VFS preparation")
+            if re.search(r"^ST EXT4 (?:STORAGE|DURABLE) ",
+                    transcript.split("ST EXT4 RENAME WRAP prepared 340\n", 1)[0], re.MULTILINE):
+                raise RuntimeError("wrapped rename baseline included commands from uncut preparation")
         reports, repeated_recovery = [], []
 
         def inspect_recovered(image, prefix):

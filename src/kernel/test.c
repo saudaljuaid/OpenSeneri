@@ -5379,13 +5379,15 @@ static _Noreturn void ext4_vfs_rename_powercut(bool cross_directory, bool wrappe
     ext4_vfs_require(phipfs_open(volume, collision, PHIPFS_ACCESS_READ, &reader), "rename cut held collision");
     if (old) {
         console_write("ST EXT4 RENAME initial old\n");
+        // Even a refused mutation may durably mark a clean filesystem dirty.
+        // Keep that no-replace probe in the uncut preparation window too.
+        if (wrapped && !ext4_backend_test_pause_storage_trace(true))
+            kernel_test_fail("ext4 wrapped rename requires device-command tracing");
         if (phipfs_rename(volume, source, collision) != PHIPFS_STATUS_EXISTS)
             kernel_test_fail("ext4 rename cut failed no-replace refusal");
         if (wrapped) {
             // The tested three-record chmod transactions advance the live
             // ring to slot 1021. Only the following rename/recovery is cut.
-            if (!ext4_backend_test_pause_storage_trace(true))
-                kernel_test_fail("ext4 wrapped rename requires device-command tracing");
             for (unsigned index = 0U; index < 340U; ++index)
                 ext4_vfs_require(phipfs_chmod(volume, source, index % 2U == 0U ? 0640U : 0644U),
                     "wrapped rename journal preparation");
