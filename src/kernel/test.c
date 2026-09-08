@@ -5173,6 +5173,15 @@ static void ext4_vfs_semantics(void)
     ext4_vfs_require(phipfs_close(replaced), "replacement final close");
     if (phipfs_fstat(file, &metadata) != PHIPFS_STATUS_STALE_HANDLE)
         kernel_test_fail("ext4 VFS closed source still usable");
+    count = 99U;
+    if (phipfs_read(file, block, sizeof(block), &count) != PHIPFS_STATUS_STALE_HANDLE || count != 0U)
+        kernel_test_fail("ext4 VFS stale read retained a byte count");
+    count = 99U;
+    if (phipfs_pread(file, block, sizeof(block), 1U, &count) != PHIPFS_STATUS_STALE_HANDLE || count != 0U)
+        kernel_test_fail("ext4 VFS stale pread retained a byte count");
+    count = 99U;
+    if (phipfs_write(file, block, sizeof(block), &count) != PHIPFS_STATUS_STALE_HANDLE || count != 0U)
+        kernel_test_fail("ext4 VFS stale write retained a byte count");
     ext4_vfs_require(phipfs_unlink(volume, symbolic), "dangling symlink cleanup");
     ext4_vfs_require(phipfs_rmdir(volume, directory), "directory cleanup");
     ext4_vfs_require(phipfs_sync(volume), "final sync");

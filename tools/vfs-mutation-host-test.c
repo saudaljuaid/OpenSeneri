@@ -24,6 +24,26 @@ static unsigned publication_calls;
 static unsigned held_unlink_calls;
 static bool consume_last_vnode;
 
+static enum phipfs_status partial_write(phipfs_handle handle, const uint8_t *source,
+    size_t bytes, size_t *written)
+{
+    assert(handle == 77U && source != NULL && bytes == 4U && *written == 0U);
+    *written = 2U; /* A committed prefix must remain visible on a later failure. */
+    return PHIPFS_STATUS_IO;
+}
+
+static void stale_io_counts(phipfs_handle handle)
+{
+    uint8_t bytes[4] = { 1U, 2U, 3U, 4U };
+    size_t count = 99U;
+    assert(phipfs_read(handle, bytes, sizeof(bytes), &count) == PHIPFS_STATUS_STALE_HANDLE && count == 0U);
+    count = 99U;
+    assert(phipfs_pread(handle, bytes, sizeof(bytes), 1U, &count) == PHIPFS_STATUS_STALE_HANDLE && count == 0U);
+    count = 99U;
+    assert(phipfs_write(handle, bytes, sizeof(bytes), &count) == PHIPFS_STATUS_STALE_HANDLE && count == 0U);
+    assert(bytes[0] == 1U && bytes[1] == 2U && bytes[2] == 3U && bytes[3] == 4U);
+}
+
 static enum phipfs_status read_attribute(enum phipfs_volume volume, const char *path,
     const char *name, uint8_t *output, size_t capacity, size_t *length)
 {
@@ -477,7 +497,14 @@ int main(void)
     assert(phipfs_publish_file(opened, expected_path, "other/target") == PHIPFS_STATUS_STALE_HANDLE);
     assert(publication_calls == 2U);
     --mounts[PHIPFS_VOLUME_DATA].generation;
+    backend.write = partial_write;
+    size_t partial_bytes = 99U;
+    assert(phipfs_write(opened, (const uint8_t *)"four", 4U, &partial_bytes) == PHIPFS_STATUS_IO);
+    assert(partial_bytes == 2U);
     assert(phipfs_close(opened) == PHIPFS_STATUS_OK);
+    stale_io_counts(opened);
+    stale_io_counts(0U);
+    stale_io_counts(UINT64_MAX);
     assert(phipfs_fsync(opened) == PHIPFS_STATUS_STALE_HANDLE && file_sync_calls == 2U);
     assert(phipfs_fstat(opened, &metadata) == PHIPFS_STATUS_STALE_HANDLE && file_stat_calls == 1U);
     assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);

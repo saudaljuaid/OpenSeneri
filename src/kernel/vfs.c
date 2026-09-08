@@ -957,6 +957,7 @@ enum phipfs_status phipfs_read(
     size_t *read_bytes
 )
 {
+    if (read_bytes != NULL) *read_bytes = 0U;
     struct vfs_open_file_state *state;
     enum phipfs_status status = open_file_state(handle, &state);
 
@@ -972,6 +973,7 @@ enum phipfs_status phipfs_pread(
     size_t *read_bytes
 )
 {
+    if (read_bytes != NULL) *read_bytes = 0U;
     struct vfs_open_file_state *state;
     enum phipfs_status status = open_file_state(handle, &state);
 
@@ -987,6 +989,7 @@ enum phipfs_status phipfs_write(
     size_t *written_bytes
 )
 {
+    if (written_bytes != NULL) *written_bytes = 0U;
     struct vfs_open_file_state *state;
     enum phipfs_status status = open_file_state(handle, &state);
 
