@@ -35,7 +35,12 @@ def mounted_read(root, expected):
                 result[name] = None
                 continue
             raise RuntimeError(f"Linux retained removed name: {name!r}")
-        target = root.joinpath(*relative.parts).resolve(strict=True)
+        literal = root.joinpath(*relative.parts)
+        if "symlink" in wanted:
+            parent = literal.parent.resolve(strict=True)
+            if not parent.is_relative_to(root) or not literal.is_symlink() or os.readlink(literal) != wanted["symlink"]:
+                raise RuntimeError(f"Linux symlink target differs or escaped mount: {name!r}")
+        target = literal.resolve(strict=True)
         if "entries" in wanted:
             if not target.is_relative_to(root) or not target.is_dir():
                 raise RuntimeError(f"kernel directory escaped mount or changed type: {name!r}")
@@ -50,6 +55,8 @@ def mounted_read(root, expected):
         if size != wanted["bytes"]:
             raise RuntimeError(f"Linux file length differs for {name}: {size} != {wanted['bytes']}")
         actual = {"bytes": size, "sha256": digest(target)}
+        if "symlink" in wanted:
+            actual["symlink"] = os.readlink(literal)
         if "xattrs" in wanted:
             actual["xattrs"] = {}
             for attribute, value in wanted["xattrs"].items():

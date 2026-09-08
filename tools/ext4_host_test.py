@@ -301,6 +301,24 @@ class E2fsprogsIntegrationTests(unittest.TestCase):
 
 
 class KernelReadTests(unittest.TestCase):
+    def test_symlink_manifest_checks_literal_target_and_followed_contents(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            file = root / "alias"
+            file.write_bytes(b"linked bytes")
+            expected = {file.name: {"bytes": 12, "sha256": kernel_read.digest(file), "symlink": "source"}}
+            # Keep these verifier controls portable without Windows symlink privileges.
+            # The QEMU fixture supplies actual inline/external symlinks on Linux.
+            with mock.patch.object(Path, "is_symlink", return_value=True), \
+                    mock.patch.object(kernel_read.os, "readlink", return_value="source"):
+                self.assertEqual(kernel_read.mounted_read(root, expected), expected)
+            with mock.patch.object(Path, "is_symlink", return_value=True), \
+                    mock.patch.object(kernel_read.os, "readlink", return_value="other"):
+                with self.assertRaises(RuntimeError):
+                    kernel_read.mounted_read(root, expected)
+            with self.assertRaises(RuntimeError):
+                kernel_read.mounted_read(root, expected)
+
     def test_kernel_xattrs_require_exact_value_and_presence(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

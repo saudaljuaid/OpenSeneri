@@ -19,6 +19,7 @@ import ext4_powercut_test as recovery
 
 
 PASS = "ST EXT4 VFS held-unlink old-or-new cleanup census exact"
+LONG_SYMLINK_TARGET = "link-source-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz"
 
 
 def verify_exit(status, transcript, pass_marker=PASS):
@@ -40,12 +41,27 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
     removed = "owned-cut" if replacement_inode is None else "replace-source"
     if operation == "rmdir":
         removed = "removed-directory"
-    if operation not in ("truncate", "grow", "xattr", "xattr-remove", "create", "mkdir", "link") and f"/{removed}/" in namespace:
+    if operation not in ("truncate", "grow", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") and f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
     (output / "namespace.txt").write_text(namespace)
-    expected_files = {} if operation in ("truncate", "grow", "xattr", "xattr-remove", "create", "mkdir", "link") else {f"data/user/{removed}": None}
-    if replacement_inode is not None:
+    expected_files = {} if operation in ("truncate", "grow", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") else {f"data/user/{removed}": None}
+    if operation in ("symlink", "symlink-long"):
+        target_name = LONG_SYMLINK_TARGET if operation == "symlink-long" else "link-source"
+        literal = ext4_image._debugfs(tools, image, "stat /data/user/symbolic-alias")
+        symbolic = ext4_image._parse_stat(literal, "/data/user/symbolic-alias")
+        original = ext4_image._parse_stat(ext4_image._debugfs(tools, image,
+            f"stat /data/user/{target_name}"), f"/data/user/{target_name}")
+        if not re.search(r"Type:\s+symlink\b", literal) or symbolic["inode"] != replacement_inode or \
+                symbolic["size"] != len(target_name) or symbolic["links"] != 1 or \
+                symbolic["block_count_512"] != (8 if operation == "symlink-long" else 0):
+            raise RuntimeError("symlink inode type target length or allocation changed")
+        if original["inode"] == symbolic["inode"] or original["links"] != 1 or original["size"] != 4500 or original["block_count_512"] != 16:
+            raise RuntimeError("symlink changed its source inode accounting")
+        expected_content = {"bytes": 4500, "sha256": hashlib.sha256(b"s" * 4500).hexdigest()}
+        expected_files[f"data/user/{target_name}"] = expected_content
+        expected_files["data/user/symbolic-alias"] = {**expected_content, "symlink": target_name}
+    elif replacement_inode is not None:
         target_name = "truncate-target" if operation in ("truncate", "grow") else "replace-target"
         target_size = 1700 if operation == "truncate" else 4500
         if operation == "grow":
@@ -130,6 +146,9 @@ def run(args):
     attributing = args.operation in ("xattr", "xattr-remove")
     removing_attribute = args.operation == "xattr-remove"
     linking = args.operation == "link"
+    symlinking = args.operation in ("symlink", "symlink-long")
+    external_symlink = args.operation == "symlink-long"
+    symlink_target = LONG_SYMLINK_TARGET if external_symlink else "link-source"
     pass_marker = PASS if not replacement else "ST EXT4 VFS held-replace old-or-new cleanup census exact"
     state_marker = "ST EXT4 HELD REPLACE initial" if replacement else "ST EXT4 HELD UNLINK initial"
     if truncating:
@@ -154,6 +173,9 @@ def run(args):
     if linking:
         pass_marker = "ST EXT4 VFS hard link shared inode contents accounting census exact"
         state_marker = "ST EXT4 LINK initial"
+    if symlinking:
+        pass_marker = "ST EXT4 VFS symlink target followed inode allocation census exact"
+        state_marker = "ST EXT4 SYMLINK initial"
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     tools = ext4_image.require_tools()
@@ -188,6 +210,9 @@ def run(args):
         if linking:
             source.write_bytes(b"s" * 4500)
             files = [(source, "link-source"), (empty, "CUTLINK.TST")]
+        if symlinking:
+            source.write_bytes(b"s" * 4500)
+            files = [(source, symlink_target), (empty, "CUTSYMLONG.TST" if external_symlink else "CUTSYM.TST")]
         for file, name in files:
             ext4_image._run([tools["debugfs"], "-w", "-R",
                 f'write "{file.as_posix()}" /data/user/{name}', initial])
@@ -208,6 +233,8 @@ def run(args):
         removed = "attribute-target"
     if linking:
         removed = "link-source"
+    if symlinking:
+        removed = symlink_target
     target = None if creating else ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
         f"stat /data/user/{removed}"), f"/data/user/{removed}")
     reclaimed = 0 if growing else (1 if replacement or truncating else 2)
@@ -221,6 +248,8 @@ def run(args):
             reclaimed, initial_blocks = 1, 2
     if linking:
         reclaimed = 0
+    if symlinking:
+        reclaimed = -1 if external_symlink else 0
     if not creating and (target["size"] != initial_size or target["block_count_512"] != initial_blocks * 8):
         raise RuntimeError("held-unlink input has unexpected allocation geometry")
     replacement_inode = target["inode"] if truncating or attributing or linking else None
@@ -233,6 +262,8 @@ def run(args):
     expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating or attributing or linking else 1)
     if creating:
         expected_blocks, expected_inodes = before["free_blocks"] - (1 if directory else 0), before["free_inodes"] - 1
+    if symlinking:
+        expected_inodes = before["free_inodes"] - 1
     iso = output / "verify.iso"
     recovery._build_iso(args.kernel.resolve(), iso, args.grub_mkrescue, args.grub_module_dir, None)
     baseline = output / "complete.raw"
@@ -240,8 +271,8 @@ def run(args):
     status, transcript = recovery._run_qemu(args.qemu, args.accel, iso, baseline,
         output / "complete.log", args.timeout)
     verify_exit(status, transcript, pass_marker)
-    if creating:
-        name = "created-directory" if directory else "created-target"
+    if creating or symlinking:
+        name = "symbolic-alias" if symlinking else ("created-directory" if directory else "created-target")
         created = ext4_image._parse_stat(ext4_image._debugfs(tools, baseline,
             f"stat /data/user/{name}"), f"/data/user/{name}")
         replacement_inode = created["inode"]
@@ -317,7 +348,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "create", "mkdir", "rmdir", "xattr", "xattr-remove", "link"), default="unlink")
+    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "create", "mkdir", "rmdir", "xattr", "xattr-remove", "link", "symlink", "symlink-long"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

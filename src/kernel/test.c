@@ -5537,6 +5537,64 @@ static _Noreturn void ext4_vfs_link_powercut(void)
     kernel_test_pass();
 }
 
+static _Noreturn void ext4_vfs_symlink_powercut(bool external)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *target = external ?
+        "link-source-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz" : "link-source";
+    char source[128] = "data/user/";
+    const char *alias = "data/user/symbolic-alias";
+    size_t length = 0U;
+    while (target[length] != '\0') { source[10U + length] = target[length]; ++length; }
+    source[10U + length] = '\0';
+    struct phipfs_stat original, symbolic, followed;
+    phipfs_handle file, second;
+    uint8_t bytes[128];
+    size_t count;
+    ext4_vfs_require(phipfs_open(volume, source, PHIPFS_ACCESS_READ, &file), "symlink cut held source");
+    ext4_vfs_require(phipfs_fstat(file, &original), "symlink cut source inode");
+    const uint64_t free_bytes = phipfs_drive(volume).free_bytes;
+    const enum phipfs_status initial = phipfs_lstat_path(volume, alias, &symbolic);
+    if (initial == PHIPFS_STATUS_NOT_FOUND) {
+        console_write("ST EXT4 SYMLINK initial old\n");
+        ext4_vfs_require(phipfs_symlink(volume, alias, target), "symlink cut publication");
+        if (phipfs_drive(volume).free_bytes != free_bytes - (external ? 4096U : 0U))
+            kernel_test_fail("ext4 symlink cut allocation changed");
+    } else if (initial == PHIPFS_STATUS_OK) console_write("ST EXT4 SYMLINK initial new\n");
+    else kernel_test_fail("ext4 symlink cut state is neither absent nor committed");
+    ext4_vfs_require(phipfs_lstat_path(volume, alias, &symbolic), "symlink cut literal inode");
+    if ((symbolic.mode & 0170000U) != 0120000U || symbolic.object_id == original.object_id ||
+        symbolic.size != length || symbolic.links != 1U || original.links != 1U || original.size != 4500U)
+        kernel_test_fail("ext4 symlink cut literal inode accounting changed");
+    ext4_vfs_require(phipfs_readlink(volume, alias, bytes, sizeof(bytes), &count), "symlink cut readlink");
+    if (count != length) kernel_test_fail("ext4 symlink cut target length changed");
+    for (size_t index = 0U; index < length; ++index)
+        if (bytes[index] != (uint8_t)target[index]) kernel_test_fail("ext4 symlink cut target bytes changed");
+    bytes[3] = 0xa5U;
+    ext4_vfs_require(phipfs_readlink(volume, alias, bytes, 3U, &count), "symlink cut short readlink");
+    if (count != 3U || bytes[0] != 'l' || bytes[1] != 'i' || bytes[2] != 'n' || bytes[3] != 0xa5U)
+        kernel_test_fail("ext4 symlink cut short readlink changed bounds");
+    if (phipfs_symlink(volume, alias, "wrong-target") != PHIPFS_STATUS_EXISTS)
+        kernel_test_fail("ext4 symlink cut duplicate name was not refused");
+    ext4_vfs_require(phipfs_open(volume, alias, PHIPFS_ACCESS_READ, &second), "symlink cut followed reader");
+    ext4_vfs_require(phipfs_fstat(second, &followed), "symlink cut followed inode");
+    if (followed.object_id != original.object_id || followed.links != 1U || followed.mode != original.mode)
+        kernel_test_fail("ext4 symlink cut followed another inode");
+    ext4_vfs_cut_contents(file, 4500U, 's');
+    ext4_vfs_cut_contents(second, 4500U, 's');
+    ext4_vfs_require(phipfs_fsync(second), "symlink cut fsync");
+    ext4_vfs_require(phipfs_close(second), "symlink cut followed close");
+    ext4_vfs_require(phipfs_close(file), "symlink cut source close");
+    ext4_vfs_require(phipfs_sync(volume), "symlink cut final sync");
+    ext4_vfs_require(phipfs_unmount(volume), "symlink cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 symlink cut resource census failed");
+    console_write("ST EXT4 VFS symlink target followed inode allocation census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_xattr_powercut(bool removing)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5802,6 +5860,10 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         ext4_vfs_xattr_powercut(false);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTLINK.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_link_powercut();
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTSYM.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_symlink_powercut(false);
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTSYMLONG.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_symlink_powercut(true);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTXREM.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_xattr_powercut(true);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTCREATE.TST", &stat) == PHIPFS_STATUS_OK)
