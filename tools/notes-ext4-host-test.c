@@ -44,6 +44,11 @@ static bool replace_before_cleanup;
 static uint32_t setting_values[SETTINGS_MAX_TILES][SETTINGS_MAX_ROWS];
 static bool settings_read_fails;
 static bool settings_close_fails;
+static bool copy_source_live;
+static unsigned copy_failure;
+static size_t copy_position;
+static unsigned copy_reads;
+static unsigned copy_stats;
 
 static void assert_handle(phipfs_handle handle)
 {
@@ -110,6 +115,15 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
 
 enum phipfs_status phipfs_fstat(phipfs_handle handle, struct phipfs_stat *result)
 {
+    if (handle == 89U) {
+        assert(copy_source_live);
+        if (copy_failure == 2U) return PHIPFS_STATUS_IO;
+        memset(result, 0, sizeof(*result));
+        result->object_id = 99U;
+        result->size = expected_length;
+        if (++copy_stats > 1U && copy_failure == 5U) ++result->size;
+        return PHIPFS_STATUS_OK;
+    }
     assert_handle(handle);
     if (fault == STAT_FAIL) return PHIPFS_STATUS_IO;
     memset(result, 0, sizeof(*result));
@@ -193,6 +207,11 @@ enum phipfs_status phipfs_publish_file(phipfs_handle handle, const char *source,
 
 enum phipfs_status phipfs_close(phipfs_handle handle)
 {
+    if (handle == 89U) {
+        assert(copy_source_live);
+        copy_source_live = false;
+        return copy_failure == 6U ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK;
+    }
     if (handle == 88U) {
         assert(live_handles == 1U);
         live_handles = 0U;
@@ -207,6 +226,13 @@ enum phipfs_status phipfs_close(phipfs_handle handle)
 enum phipfs_status phipfs_open(enum phipfs_volume volume, const char *path,
     enum phipfs_access access, phipfs_handle *handle)
 {
+    if (strcmp(path, "SOURCE.BIN") == 0) {
+        assert(volume == PHIPFS_VOLUME_DATA && access == PHIPFS_ACCESS_READ && !copy_source_live);
+        if (copy_failure == 1U) return PHIPFS_STATUS_IO;
+        copy_source_live = true;
+        *handle = 89U;
+        return PHIPFS_STATUS_OK;
+    }
     assert(volume == PHIPFS_VOLUME_DATA && strcmp(path, "SETTINGS.PHI") == 0 && access == PHIPFS_ACCESS_READ);
     assert(live_handles == 0U);
     if (target_inode == 0U) return PHIPFS_STATUS_NOT_FOUND;
@@ -217,6 +243,18 @@ enum phipfs_status phipfs_open(enum phipfs_volume volume, const char *path,
 
 enum phipfs_status phipfs_read(phipfs_handle handle, uint8_t *bytes, size_t capacity, size_t *count)
 {
+    if (handle == 89U) {
+        assert(copy_source_live && capacity <= expected_length - copy_position);
+        *count = 0U;
+        if (++copy_reads == 2U) {
+            if (copy_failure == 3U) return PHIPFS_STATUS_IO;
+            if (copy_failure == 4U) return PHIPFS_STATUS_OK;
+        }
+        memcpy(bytes, expected_bytes + copy_position, capacity);
+        copy_position += capacity;
+        *count = capacity;
+        return PHIPFS_STATUS_OK;
+    }
     assert(handle == 88U && live_handles == 1U);
     if (settings_read_fails) return PHIPFS_STATUS_IO;
     *count = target_length < capacity ? target_length : capacity;
@@ -263,6 +301,9 @@ static void reset_save(enum save_fault next_fault)
     cleanup_sync_fails = cleanup_unlink_fails = cleanup_lost = pending_cleanup = false;
     replace_before_cleanup = false;
     settings_read_fails = settings_close_fails = false;
+    assert(!copy_source_live);
+    copy_failure = copy_reads = copy_stats = 0U;
+    copy_position = 0U;
     note_dirty = true;
     note_savable = true;
 }
@@ -406,6 +447,25 @@ static void settings_persistence(void)
 
 int main(void)
 {
+    for (unsigned failure = 0U; failure < 8U; ++failure) {
+        reset_save(SAVE_OK);
+        copy_failure = failure;
+        expected_destination = "COPY.BIN";
+        expected_scratch = "CPTMP0.TMP";
+        expected_length = failure == 7U ? 0U : sizeof(expected_bytes) - 3U;
+        for (size_t index = 0U; index < expected_length; ++index) expected_bytes[index] = (uint8_t)(index * 17U);
+        const enum phipfs_status status = explorer_copy_file("SOURCE.BIN", expected_destination);
+        const bool succeeds = failure == 0U || failure == 7U;
+        if ((status == PHIPFS_STATUS_OK) != succeeds)
+            fprintf(stderr, "copy case %u status %u reads %u stats %u writes %u publications %u\n",
+                failure, (unsigned)status, copy_reads, copy_stats, writes, publications);
+        assert((status == PHIPFS_STATUS_OK) == succeeds);
+        assert(!copy_source_live && live_handles == 0U && scratch_inode == 0U);
+        if (succeeds) {
+            assert(publications == 1U && target_length == expected_length && copy_reads == (failure == 7U ? 0U : 2U));
+            assert(memcmp(target_bytes, expected_bytes, expected_length) == 0);
+        } else assert(publications == 0U && target_length == 3U && memcmp(target_bytes, "old", 3U) == 0);
+    }
     reset_save(SAVE_OK);
     occupied_names = 2U; /* Existing files and dangling symlinks both refuse O_EXCL. */
     assert(note_save() == PHIPFS_STATUS_OK && opens == 3U);

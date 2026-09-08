@@ -2212,26 +2212,30 @@ static enum phipfs_status explorer_copy_file(const char *source,
         struct data_publication save = { 0 };
         phipfs_handle input = 0U;
         uint64_t copied = 0U;
-        enum phipfs_status ext4_status = phipfs_stat_path(
-            PHIPFS_VOLUME_DATA, source, &source_stat);
+        enum phipfs_status ext4_status = phipfs_open(PHIPFS_VOLUME_DATA, source,
+            PHIPFS_ACCESS_READ, &input);
+
+        if (ext4_status == PHIPFS_STATUS_OK)
+            ext4_status = phipfs_fstat(input, &source_stat);
 
         if (ext4_status == PHIPFS_STATUS_OK && source_stat.directory) {
             ext4_status = PHIPFS_STATUS_IS_DIRECTORY;
         }
         if (ext4_status == PHIPFS_STATUS_OK) {
             ext4_status = data_publication_begin(&save, destination,
-                "CPYTMP0.TMP");
+                "CPTMP0.TMP");
         }
-        if (ext4_status == PHIPFS_STATUS_OK) {
-            ext4_status = phipfs_open(PHIPFS_VOLUME_DATA, source,
-                PHIPFS_ACCESS_READ, &input);
-        }
-        while (ext4_status == PHIPFS_STATUS_OK) {
+        // Bound the copy by the held inode's initial EOF. A growing source
+        // cannot keep this UI operation alive indefinitely; size changes are
+        // refused before publication. This is not a concurrent data snapshot.
+        while (ext4_status == PHIPFS_STATUS_OK && copied < source_stat.size) {
             size_t read_bytes = 0U;
             size_t written_bytes = 0U;
+            const size_t capacity = source_stat.size - copied < sizeof(explorer_copy_buffer) ?
+                (size_t)(source_stat.size - copied) : sizeof(explorer_copy_buffer);
 
             ext4_status = phipfs_read(input, explorer_copy_buffer,
-                sizeof(explorer_copy_buffer), &read_bytes);
+                capacity, &read_bytes);
             if (ext4_status != PHIPFS_STATUS_OK || read_bytes == 0U) break;
             if (copied > UINT64_MAX - read_bytes) {
                 ext4_status = PHIPFS_STATUS_RANGE;
@@ -2243,6 +2247,13 @@ static enum phipfs_status explorer_copy_file(const char *source,
                 ext4_status = PHIPFS_STATUS_WRITEBACK;
             }
             if (ext4_status == PHIPFS_STATUS_OK) copied += read_bytes;
+        }
+        if (ext4_status == PHIPFS_STATUS_OK) {
+            struct phipfs_stat after;
+            ext4_status = phipfs_fstat(input, &after);
+            if (ext4_status == PHIPFS_STATUS_OK &&
+                (after.object_id != source_stat.object_id || after.size != source_stat.size))
+                ext4_status = PHIPFS_STATUS_WRITEBACK;
         }
         if (input != 0U) {
             const enum phipfs_status close_status = phipfs_close(input);
