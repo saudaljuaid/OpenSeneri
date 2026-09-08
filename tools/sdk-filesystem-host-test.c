@@ -26,6 +26,7 @@ static long sync_result;
 static unsigned file_sync_calls;
 static unsigned file_stat_calls;
 static long metadata_result;
+static unsigned publication_calls;
 
 long phipia_syscall1(uint64_t number, uint64_t address)
 {
@@ -63,6 +64,22 @@ long phipia_syscall1(uint64_t number, uint64_t address)
 
 long phipia_syscall2(uint64_t number, uint64_t address, uint64_t value)
 {
+    if (number == PHIPIA_SYS_FILE_PUBLISH || number == PHIPIA_SYS_FILE_UNLINK) {
+        ++publication_calls;
+        if (address != 42U) invalid_request = 1;
+        const struct phipia_path *source;
+        if (number == PHIPIA_SYS_FILE_PUBLISH) {
+            const struct phipia_rename_request *request = (const struct phipia_rename_request *)(uintptr_t)value;
+            if (request->size != sizeof(*request) || request->version != PHIPIA_ABI_VERSION ||
+                request->flags != 0U || request->reserved != 0U ||
+                request->destination.volume != PHIPIA_VOLUME_DATA || request->destination.reserved != 0U ||
+                request->destination.length != 5U || memcmp((const void *)(uintptr_t)request->destination.address, "saved", 5U) != 0) invalid_request = 1;
+            source = &request->source;
+        } else source = (const struct phipia_path *)(uintptr_t)value;
+        if (source->volume != PHIPIA_VOLUME_DATA || source->reserved != 0U || source->length != 6U ||
+            memcmp((const void *)(uintptr_t)source->address, "nested", 6U) != 0) invalid_request = 1;
+        return syscall_result;
+    }
     if (number == PHIPIA_SYS_FILE_METADATA) {
         if (address != 42U) invalid_request = 1;
         ++file_stat_calls;
@@ -219,5 +236,15 @@ int main(void)
         memcmp(&before_failed_stat, &metadata, sizeof(metadata)) != 0) return 44;
     if (close(descriptor) != 0 || fstat(descriptor, &metadata) != -1 || errno != EBADF) return 45;
     if (file_stat_calls != 2U || open_calls != 51U || close_calls != 44U || invalid_request) return 46;
+    const long publication_results[] = {0, -PHIPIA_EIO, -PHIPIA_EACCES, -PHIPIA_EBADF, -PHIPIA_ENOSPC};
+    for (unsigned index = 0; index < sizeof(publication_results) / sizeof(publication_results[0]); ++index) {
+        syscall_result = publication_results[index];
+        if (phipia_file_publish(42U, PHIPIA_VOLUME_DATA, "nested", "saved") != syscall_result ||
+            phipia_file_unlink(42U, PHIPIA_VOLUME_DATA, "nested") != syscall_result) return 47;
+    }
+    if (phipia_file_publish(42U, PHIPIA_VOLUME_DATA, NULL, "saved") != -PHIPIA_EFAULT ||
+        phipia_file_publish(42U, PHIPIA_VOLUME_DATA, "nested", NULL) != -PHIPIA_EFAULT ||
+        phipia_file_unlink(42U, PHIPIA_VOLUME_DATA, NULL) != -PHIPIA_EFAULT) return 48;
+    if (publication_calls != 10U || invalid_request || close_calls != 44U) return 49;
     return 0;
 }

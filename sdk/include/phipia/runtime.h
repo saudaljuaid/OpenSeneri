@@ -70,6 +70,12 @@ long phipia_path_chmod(uint16_t volume, const char *path, uint16_t mode);
 long phipia_file_truncate(phipia_handle_t handle, uint64_t size);
 long phipia_file_sync(phipia_handle_t handle);
 long phipia_file_metadata(phipia_handle_t handle, struct phipia_path_metadata *result);
+/* Data-only inode-bound publication/cleanup; unsupported backends refuse.
+ * Synchronize the temporary file before publication. Errors can require sync
+ * and exact retry; neither call closes the supplied handle. */
+long phipia_file_publish(phipia_handle_t handle, uint16_t volume,
+    const char *source, const char *destination);
+long phipia_file_unlink(phipia_handle_t handle, uint16_t volume, const char *path);
 long phipia_path_set_times(uint16_t volume, const char *path, const struct phipia_file_times *times);
 long phipia_path_set_xattr(uint16_t volume, const char *path, const char *name,
     const void *value, size_t length);

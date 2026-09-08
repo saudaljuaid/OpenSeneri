@@ -315,6 +315,24 @@ long phipia_file_metadata(phipia_handle_t handle, struct phipia_path_metadata *r
     return phipia_syscall2(PHIPIA_SYS_FILE_METADATA, handle, (uint64_t)(uintptr_t)result);
 }
 
+long phipia_file_publish(phipia_handle_t handle, uint16_t volume,
+    const char *source, const char *destination)
+{
+    if (source == NULL || destination == NULL) return -PHIPIA_EFAULT;
+    const struct phipia_rename_request request = {
+        sizeof(request), PHIPIA_ABI_VERSION, make_path(volume, source),
+        make_path(volume, destination), 0U, 0U
+    };
+    return phipia_syscall2(PHIPIA_SYS_FILE_PUBLISH, handle, (uint64_t)(uintptr_t)&request);
+}
+
+long phipia_file_unlink(phipia_handle_t handle, uint16_t volume, const char *path)
+{
+    if (path == NULL) return -PHIPIA_EFAULT;
+    const struct phipia_path request = make_path(volume, path);
+    return phipia_syscall2(PHIPIA_SYS_FILE_UNLINK, handle, (uint64_t)(uintptr_t)&request);
+}
+
 long phipia_path_chmod(uint16_t volume, const char *path, uint16_t mode)
 {
     return single_path(PHIPIA_SYS_PATH_CHMOD, volume, path, mode);

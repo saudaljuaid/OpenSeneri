@@ -3915,6 +3915,42 @@ static int64_t syscall_rename(
     return filesystem_error(status);
 }
 
+static int64_t syscall_file_publication(struct native_process *process,
+    phipia_handle_t handle, uint64_t request_address, bool unlink)
+{
+    struct phipia_path source_request;
+    struct phipia_rename_request request;
+    char source[PHIPFS_MAX_PATH];
+    char destination[PHIPFS_MAX_PATH];
+    enum phipfs_volume source_volume;
+    enum phipfs_volume destination_volume;
+    struct native_resource *resource;
+    if (unlink) {
+        if (!copy_from_user(process, &source_request, request_address, sizeof(source_request))) return -PHIPIA_EFAULT;
+    } else {
+        if (!copy_from_user(process, &request, request_address, sizeof(request))) return -PHIPIA_EFAULT;
+        if (request.size != sizeof(request) || request.version != PHIPIA_ABI_VERSION ||
+            request.flags != 0U || request.reserved != 0U) return -PHIPIA_EINVAL;
+        source_request = request.source;
+        if (!path_from_user(process, &request.destination, destination, &destination_volume)) return -PHIPIA_EINVAL;
+        if (destination_volume != PHIPFS_VOLUME_DATA) return -PHIPIA_EACCES;
+    }
+    if (!path_from_user(process, &source_request, source, &source_volume)) return -PHIPIA_EINVAL;
+    if (source_volume != PHIPFS_VOLUME_DATA ||
+        (process->manifest.capabilities & PHIPIA_CAP_DATA_WRITE) == 0U) return -PHIPIA_EACCES;
+    const enum native_handle_status handle_status = native_handle_resolve(
+        &process->handles, handle, PHIPIA_HANDLE_FILE, &resource);
+    if (handle_status != NATIVE_HANDLE_OK) return handle_error(handle_status);
+    // Copy the checked VFS generation before enabling interrupts. The backend
+    // checks write access and the source name's inode under the same lease.
+    const phipfs_handle file = (phipfs_handle)resource->words[0];
+    cpu_interrupt_enable();
+    const enum phipfs_status status = unlink ? phipfs_unlink_held_file(file, source) :
+        phipfs_publish_file(file, source, destination);
+    cpu_interrupt_disable();
+    return filesystem_error(status);
+}
+
 static int64_t syscall_volume_sync(
     struct native_process *process,
     uint64_t volume_number
@@ -6024,6 +6060,10 @@ static int64_t dispatch_syscall(
         return syscall_file_sync(process, frame->rdi);
     case PHIPIA_SYS_FILE_METADATA:
         return syscall_file_metadata(process, frame->rdi, frame->rsi);
+    case PHIPIA_SYS_FILE_PUBLISH:
+        return syscall_file_publication(process, frame->rdi, frame->rsi, false);
+    case PHIPIA_SYS_FILE_UNLINK:
+        return syscall_file_publication(process, frame->rdi, frame->rsi, true);
     case PHIPIA_SYS_PATH_SET_TIMES:
         return syscall_set_times(process, frame->rdi);
     case PHIPIA_SYS_PATH_XATTR:

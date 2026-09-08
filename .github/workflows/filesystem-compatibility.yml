@@ -118,6 +118,8 @@ jobs:
                   make build/vfs-mutation-host-test
                   build/vfs-mutation-host-test 2>&1 | tee evidence/ext4/vfs-mutation-host.log
                   make build/ext4-vfs-host-test build/ext4-handle-claims-host-test
+                  make build/sdk-filesystem-host-test
+                  build/sdk-filesystem-host-test 2>&1 | tee evidence/ext4/sdk-filesystem-host.log
                   build/ext4-vfs-host-test 2>&1 | tee evidence/ext4/ext4-vfs-host.log
                   build/ext4-handle-claims-host-test 2>&1 | tee evidence/ext4/ext4-handle-claims-host.log
                   make build/vfs-file-claims-host-test build/vfs-directory-claims-host-test
