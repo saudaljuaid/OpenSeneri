@@ -494,9 +494,11 @@ static enum phipfs_status begin_operation(struct ext4_mount_state *mount, bool w
     return PHIPFS_STATUS_OK;
 }
 
-static enum phipfs_status end_operation(
+static enum phipfs_status end_operation_with_read_cursor(
     struct ext4_mount_state *mount,
-    struct phipia_ext4_mount_diagnostic *diagnostic
+    struct phipia_ext4_mount_diagnostic *diagnostic,
+    struct ext4_handle_state *read_handle,
+    uint64_t read_offset
 )
 {
     enum nvme_status status;
@@ -529,9 +531,20 @@ static enum phipfs_status end_operation(
     }
     zero_bytes(&mount->session, sizeof(mount->session));
     mount->close_failed = false;
+    // A failed read must not advance its cursor. Publish only after storage
+    // teardown succeeds, still under the lease and before deferred closes can
+    // retire/reuse this descriptor. A reentrant close has already hidden it.
+    if (read_handle != NULL && read_handle->active && !read_handle->closing)
+        read_handle->offset = read_offset;
     ++mount->completion_count;
     release_operation(mount);
     return PHIPFS_STATUS_OK;
+}
+
+static enum phipfs_status end_operation(struct ext4_mount_state *mount,
+    struct phipia_ext4_mount_diagnostic *diagnostic)
+{
+    return end_operation_with_read_cursor(mount, diagnostic, NULL, 0U);
 }
 
 /* Rust may access storage only through the lease installed by begin_operation(). */
@@ -1381,12 +1394,14 @@ static enum phipfs_status read_handle(phipfs_handle handle,
     if (status == PHIPFS_STATUS_OK) {
         if (*read_bytes > capacity || *read_bytes > UINT64_MAX - offset) {
             status = PHIPFS_STATUS_CORRUPT;
-        } else if (advance) {
-            state->offset = offset + *read_bytes;
         }
     }
-    close_status = end_operation(mount, NULL);
-    return status != PHIPFS_STATUS_OK ? status : close_status;
+    close_status = end_operation_with_read_cursor(mount, NULL,
+        status == PHIPFS_STATUS_OK && advance ? state : NULL,
+        status == PHIPFS_STATUS_OK ? offset + *read_bytes : 0U);
+    if (status == PHIPFS_STATUS_OK) status = close_status;
+    if (status != PHIPFS_STATUS_OK) *read_bytes = 0U;
+    return status;
 }
 
 enum phipfs_status ext4_backend_pread(phipfs_handle handle,

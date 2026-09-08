@@ -929,6 +929,24 @@ int main(void)
     assert(live_mounts == 1U && !ext4_mounts[PHIPFS_VOLUME_DATA].detaching);
     assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);
     assert(ext4_backend_close(first) == PHIPFS_STATUS_OK);
+    for (unsigned positioned = 0U; positioned < 2U; ++positioned) {
+        assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);
+        assert(ext4_backend_seek(first, 3, PHIPFS_SEEK_START, &position) == PHIPFS_STATUS_OK);
+        close_reports_failure = true;
+        size_t count = 99U;
+        uint8_t byte = 0xa5U;
+        assert((positioned != 0U ? ext4_backend_pread(first, &byte, 1U, 7U, &count) :
+            ext4_backend_read(first, &byte, 1U, &count)) == PHIPFS_STATUS_IO);
+        assert(count == 0U);
+        assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->offset == 3U);
+        assert(ext4_mounts[PHIPFS_VOLUME_DATA].close_failed && ext4_mounts[PHIPFS_VOLUME_DATA].session.active);
+        close_reports_failure = false;
+        assert(ext4_backend_fsync(first) == PHIPFS_STATUS_OK);
+        assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->offset == 3U);
+        assert(ext4_backend_read(first, &byte, 1U, &count) == PHIPFS_STATUS_OK);
+        assert(count == 1U && byte == 0x55U && state->offset == 4U);
+        assert(ext4_backend_close(first) == PHIPFS_STATUS_OK && opens == closes);
+    }
     for (unsigned directory = 0U; directory < 2U; ++directory) {
         expect_registered_before_close = true;
         close_reports_failure = true;
