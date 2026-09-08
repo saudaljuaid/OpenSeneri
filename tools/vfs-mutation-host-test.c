@@ -5,6 +5,15 @@
 #include <string.h>
 #include "../src/kernel/vfs.c"
 
+static bool host_interrupts_enabled = true;
+bool cpu_interrupts_enabled(void) { return host_interrupts_enabled; }
+void cpu_interrupt_disable(void) { host_interrupts_enabled = false; }
+void cpu_interrupt_enable(void)
+{
+    assert(!__atomic_load_n(&vnode_metadata_owned, __ATOMIC_RELAXED));
+    host_interrupts_enabled = true;
+}
+
 static unsigned int calls;
 static unsigned int stats;
 static enum phipfs_status mutation_result = PHIPFS_STATUS_IO;

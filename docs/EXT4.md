@@ -150,11 +150,20 @@ its session until cleanup succeeds. File cursor changes and shared EOF updates
 occur under the operation guard. Close makes a handle stale immediately and
 defers backing-state/snapshot destruction when an active operation still uses
 it. Snapshot reads and seek also reserve this guard without opening storage
-unless SEEK_END needs a checked inode refresh. Reentrant-callback tests passed
-locally before the final guard-release adjustment; Windows Application Control
-blocked that rebuilt binary. Final Linux verification is pending at `d2affe4`.
-This lock
-order applies to the current single-core execution model.
+unless SEEK_END needs a checked inode refresh. Production backend host tests
+exercise these reentrant close and deferred-release paths.
+
+VFS file/directory slots and ext4 handle slots retain atomic ownership claims
+from reservation through retirement. VFS vnode hash buckets, references,
+reservations and metadata snapshots use a short lock with local interrupts
+disabled. It covers bounded memory operations only and is released before any
+backend or storage call; the caller's interrupt state is restored. Mount
+reference increments refuse overflow. Host contention tests cover shared inode
+deduplication, coherent snapshots, reservation and final reclamation.
+These protections do not establish complete SMP filesystem support: concurrent
+mount transitions, path admission and published handle-state access still need
+their own lifecycle synchronization. The admitted execution model remains one
+core, with backend operations serialized by the volume guard.
 
 ## Read-write admission
 

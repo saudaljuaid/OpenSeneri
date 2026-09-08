@@ -1271,7 +1271,7 @@ $(BUILD_DIR)/vfs-file-claims-host-test $(BUILD_DIR)/vfs-directory-claims-host-te
 
 $(BUILD_DIR)/ext4-vfs-host-test $(BUILD_DIR)/ext4-handle-claims-host-test \
 		$(BUILD_DIR)/vfs-mutation-host-test $(BUILD_DIR)/ext4-nvme-close-host-test \
-		$(BUILD_DIR)/ext4-msix-close-host-test: include/phipia/slot_claim.h
+		$(BUILD_DIR)/ext4-msix-close-host-test: include/phipia/slot_claim.h include/phipia/cpu.h
 
 $(BUILD_DIR)/vfs-mutation-host-test: tools/vfs-mutation-host-test.c \
 		src/kernel/vfs.c include/phipia/vfs_backend.h include/phipia/fat32_fs.h
@@ -1279,6 +1279,15 @@ $(BUILD_DIR)/vfs-mutation-host-test: tools/vfs-mutation-host-test.c \
 	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections \
 		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion -Iinclude \
 		tools/vfs-mutation-host-test.c -Wl,--gc-sections -o $@
+
+$(BUILD_DIR)/vfs-vnode-host-test: tools/vfs-vnode-host-test.c src/kernel/vfs.c \
+		include/phipia/vfs_backend.h include/phipia/fat32_fs.h include/phipia/slot_claim.h include/phipia/cpu.h
+	mkdir -p $(dir $@)
+	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections \
+		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion -Iinclude \
+		tools/vfs-vnode-host-test.c $(HOST_THREAD_FLAGS) -Wl,--gc-sections -o $@
+
+ext4-tests: $(BUILD_DIR)/vfs-vnode-host-test
 
 $(BUILD_DIR)/ext4-nvme-close-host-test: tools/ext4-nvme-close-host-test.c \
 		src/kernel/nvme.c include/phipia/nvme.h include/phipia/dma.h
@@ -1321,6 +1330,7 @@ $(BUILD_DIR)/keyboard-channel-host-test: tools/keyboard-channel-host-test.c src/
 		tools/keyboard-channel-host-test.c -Wl,--gc-sections -o $@
 
 ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesystem-host-test $(BUILD_DIR)/ext4-vfs-host-test $(BUILD_DIR)/ext4-handle-claims-host-test $(BUILD_DIR)/vfs-file-claims-host-test $(BUILD_DIR)/vfs-directory-claims-host-test $(BUILD_DIR)/vfs-mutation-host-test $(BUILD_DIR)/ext4-nvme-close-host-test $(BUILD_DIR)/ext4-msix-close-host-test $(BUILD_DIR)/notes-ext4-host-test $(BUILD_DIR)/shell-ext4-host-test $(BUILD_DIR)/ui-animation-clip-host-test $(BUILD_DIR)/keyboard-channel-host-test
+	$(BUILD_DIR)/vfs-vnode-host-test
 	$(BUILD_DIR)/vfs-file-claims-host-test
 	$(BUILD_DIR)/vfs-directory-claims-host-test
 	$(BUILD_DIR)/ext4-handle-claims-host-test

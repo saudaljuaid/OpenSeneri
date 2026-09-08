@@ -13,6 +13,7 @@
 #include <phipia/ext4_fs.h>
 #include <phipia/vfs_backend.h>
 #include <phipia/slot_claim.h>
+#include <phipia/cpu.h>
 
 #define VFS_MAX_VNODES 128U
 #define VFS_VNODE_BUCKETS 64U
@@ -73,6 +74,7 @@ static struct vfs_open_file_state open_files[VFS_MAX_OPEN_FILES];
 static bool open_file_claims[VFS_MAX_OPEN_FILES];
 static struct vfs_directory_state directories[VFS_MAX_DIRECTORY_ITERATORS];
 static bool directory_claims[VFS_MAX_DIRECTORY_ITERATORS];
+static bool vnode_metadata_owned;
 static uint16_t vnode_buckets[VFS_VNODE_BUCKETS];
 static uint64_t next_mount_generation = UINT64_C(1);
 static uint64_t next_vnode_generation = UINT64_C(1);
@@ -339,6 +341,82 @@ static size_t vnode_bucket(enum phipfs_volume volume, const char *path,
     return (size_t)(hash & (VFS_VNODE_BUCKETS - 1U));
 }
 
+/* Only bounded in-memory vnode operations run under this lock. Disable local
+ * interrupts before acquisition so reentry cannot wait for its own CPU. */
+static bool vnode_metadata_acquire(void)
+{
+    const bool restore_interrupts = cpu_interrupts_enabled();
+    cpu_interrupt_disable();
+    while (__atomic_test_and_set(&vnode_metadata_owned, __ATOMIC_ACQUIRE))
+        __asm__ volatile("pause" ::: "memory");
+    return restore_interrupts;
+}
+
+static void vnode_metadata_release(bool restore_interrupts)
+{
+    __atomic_clear(&vnode_metadata_owned, __ATOMIC_RELEASE);
+    if (restore_interrupts) cpu_interrupt_enable();
+}
+
+static bool mount_retain(enum phipfs_volume volume)
+{
+    size_t references = __atomic_load_n(&mounts[volume].references, __ATOMIC_RELAXED);
+    while (references != SIZE_MAX) {
+        if (__atomic_compare_exchange_n(&mounts[volume].references, &references, references + 1U,
+                false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return true;
+    }
+    return false;
+}
+
+static void mount_release(enum phipfs_volume volume)
+{
+    size_t references = __atomic_load_n(&mounts[volume].references, __ATOMIC_RELAXED);
+    while (references != 0U && !__atomic_compare_exchange_n(&mounts[volume].references, &references,
+            references - 1U, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) { }
+}
+
+static struct vfs_vnode_state vnode_snapshot(size_t index)
+{
+    struct vfs_vnode_state snapshot = {0};
+    const bool restore_interrupts = vnode_metadata_acquire();
+    if (index < VFS_MAX_VNODES) snapshot = vnodes[index];
+    vnode_metadata_release(restore_interrupts);
+    return snapshot;
+}
+
+static size_t vnode_reserve(void)
+{
+    const bool restore_interrupts = vnode_metadata_acquire();
+    size_t reserved = VFS_MAX_VNODES;
+    for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) {
+        if (!vnodes[index].active && !vnode_reservations[index]) {
+            vnode_reservations[index] = true;
+            reserved = index;
+            break;
+        }
+    }
+    vnode_metadata_release(restore_interrupts);
+    return reserved;
+}
+
+static void vnode_unreserve(size_t index)
+{
+    if (index >= VFS_MAX_VNODES) return;
+    const bool restore_interrupts = vnode_metadata_acquire();
+    vnode_reservations[index] = false;
+    vnode_metadata_release(restore_interrupts);
+}
+
+static bool vnode_resources_released(void)
+{
+    const bool restore_interrupts = vnode_metadata_acquire();
+    bool released = true;
+    for (size_t index = 0U; index < VFS_MAX_VNODES; ++index)
+        if (vnodes[index].active || vnodes[index].references != 0U || vnode_reservations[index]) released = false;
+    vnode_metadata_release(restore_interrupts);
+    return released;
+}
+
 static void vnode_remove_from_bucket(size_t vnode_index)
 {
     struct vfs_vnode_state *vnode = &vnodes[vnode_index];
@@ -356,7 +434,7 @@ static void vnode_remove_from_bucket(size_t vnode_index)
     }
 }
 
-static enum phipfs_status vnode_retain_reserved(
+static enum phipfs_status vnode_retain_reserved_locked(
     enum phipfs_volume volume,
     const char *canonical,
     const struct phipfs_stat *stat,
@@ -399,7 +477,7 @@ static enum phipfs_status vnode_retain_reserved(
             break;
         }
     }
-    if (free_index == VFS_MAX_VNODES || mounts[volume].references == SIZE_MAX) {
+    if (free_index == VFS_MAX_VNODES || !mount_retain(volume)) {
         return PHIPFS_STATUS_NO_HANDLES;
     }
     zero_bytes(&vnodes[free_index], sizeof(vnodes[free_index]));
@@ -414,9 +492,17 @@ static enum phipfs_status vnode_retain_reserved(
         text_length(canonical) + 1U);
     vnodes[free_index].active = true;
     vnode_buckets[bucket] = (uint16_t)free_index;
-    ++mounts[volume].references;
     *vnode_index = free_index;
     return PHIPFS_STATUS_OK;
+}
+
+static enum phipfs_status vnode_retain_reserved(enum phipfs_volume volume,
+    const char *canonical, const struct phipfs_stat *stat, size_t *vnode_index, size_t reserved)
+{
+    const bool restore_interrupts = vnode_metadata_acquire();
+    const enum phipfs_status status = vnode_retain_reserved_locked(volume, canonical, stat, vnode_index, reserved);
+    vnode_metadata_release(restore_interrupts);
+    return status;
 }
 
 static enum phipfs_status vnode_retain(enum phipfs_volume volume,
@@ -425,7 +511,7 @@ static enum phipfs_status vnode_retain(enum phipfs_volume volume,
     return vnode_retain_reserved(volume, canonical, stat, vnode_index, VFS_MAX_VNODES);
 }
 
-static void vnode_release(size_t vnode_index, uint64_t generation)
+static void vnode_release_locked(size_t vnode_index, uint64_t generation)
 {
     struct vfs_vnode_state *vnode;
 
@@ -442,11 +528,15 @@ static void vnode_release(size_t vnode_index, uint64_t generation)
         return;
     }
     vnode_remove_from_bucket(vnode_index);
-    if (valid_volume(vnode->volume) &&
-        mounts[vnode->volume].references != 0U) {
-        --mounts[vnode->volume].references;
-    }
+    if (valid_volume(vnode->volume)) mount_release(vnode->volume);
     zero_bytes(vnode, sizeof(*vnode));
+}
+
+static void vnode_release(size_t vnode_index, uint64_t generation)
+{
+    const bool restore_interrupts = vnode_metadata_acquire();
+    vnode_release_locked(vnode_index, generation);
+    vnode_metadata_release(restore_interrupts);
 }
 
 static enum phipfs_status resolve_path(
@@ -544,10 +634,10 @@ static enum phipfs_status resolve_parent(
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
-    if (!vnodes[vnode_index].stat.directory) {
+    if (!vnode_snapshot(vnode_index).stat.directory) {
         status = PHIPFS_STATUS_NOT_DIRECTORY;
     }
-    vnode_release(vnode_index, vnodes[vnode_index].generation);
+    vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
     return status;
 }
 
@@ -604,7 +694,8 @@ static enum phipfs_status checked_open_file_state(phipfs_handle handle,
 {
     const enum phipfs_status status = open_file_state(handle, state);
     if (status != PHIPFS_STATUS_OK) return status;
-    const struct vfs_vnode_state *vnode = &vnodes[(*state)->vnode_index];
+    const struct vfs_vnode_state snapshot = vnode_snapshot((*state)->vnode_index);
+    const struct vfs_vnode_state *vnode = &snapshot;
     if (!vnode->active || vnode->generation != (*state)->vnode_generation ||
         !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
         return PHIPFS_STATUS_STALE_HANDLE;
@@ -641,9 +732,9 @@ bool phipfs_self_test(size_t *completed_tests)
 bool phipfs_resources_released(void)
 {
     for (size_t index = 0U; index < PHIPFS_VOLUME_COUNT; ++index)
-        if (mounts[index].active || mounts[index].mounting || mounts[index].unmounting || mounts[index].references != 0U) return false;
-    for (size_t index = 0U; index < VFS_MAX_VNODES; ++index)
-        if (vnodes[index].active || vnodes[index].references != 0U || vnode_reservations[index]) return false;
+        if (mounts[index].active || mounts[index].mounting || mounts[index].unmounting ||
+            __atomic_load_n(&mounts[index].references, __ATOMIC_ACQUIRE) != 0U) return false;
+    if (!vnode_resources_released()) return false;
     for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index)
         if (open_files[index].active || open_files[index].opening || open_files[index].backend_handle != 0U ||
             __atomic_load_n(&open_file_claims[index], __ATOMIC_ACQUIRE)) return false;
@@ -716,7 +807,7 @@ enum phipfs_status phipfs_unmount(enum phipfs_volume volume)
     if (!mounts[volume].active) {
         return PHIPFS_STATUS_NOT_MOUNTED;
     }
-    if (mounts[volume].references != 0U) {
+    if (__atomic_load_n(&mounts[volume].references, __ATOMIC_ACQUIRE) != 0U) {
         return PHIPFS_STATUS_BUSY;
     }
     // Reserve teardown before invoking storage: a callback must not admit a
@@ -810,17 +901,15 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     // until the resulting vnode takes over its reference. No usable handle is
     // published while the backend operation is incomplete.
     open_files[slot].opening = true;
-    ++mounts[volume].references;
+    if (!mount_retain(volume)) {
+        open_files[slot].opening = false;
+        phipia_slot_release(open_file_claims, slot);
+        return PHIPFS_STATUS_BUSY;
+    }
     if (backend->open_options != NULL && flags != 0U) {
         // Destructive prepared opens need storage for their resulting inode
         // before the backend can commit. Other callbacks must not consume it.
-        for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) {
-            if (!vnodes[index].active && !vnode_reservations[index]) {
-                vnode_reservations[index] = true;
-                reserved_vnode = index;
-                break;
-            }
-        }
+        reserved_vnode = vnode_reserve();
         if (reserved_vnode == VFS_MAX_VNODES) {
             status = PHIPFS_STATUS_NO_HANDLES;
             goto failed;
@@ -837,7 +926,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
         }
         status = resolve_path(volume, path, canonical, &vnode_index);
         if (status != PHIPFS_STATUS_OK) goto failed;
-        if (vnodes[vnode_index].stat.directory) {
+        if (vnode_snapshot(vnode_index).stat.directory) {
             status = PHIPFS_STATUS_IS_DIRECTORY;
             goto failed;
         }
@@ -857,7 +946,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     if (backend->open_options != NULL || backend->open_with_stat != NULL) {
         /* A rename/unlink/recreate may occur between resolve_path and open.
          * Bind the VFS description to the inode actually held by the backend. */
-        if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnodes[vnode_index].generation);
+        if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
         vnode_index = VFS_NO_INDEX;
         status = vnode_retain_reserved(volume, canonical, &opened_stat, &vnode_index, reserved_vnode);
         if (status != PHIPFS_STATUS_OK) {
@@ -869,12 +958,12 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     open_files[slot].generation = next_generation(
         &next_open_generation, UINT64_MAX >> 8U);
     open_files[slot].backend = mounts[volume].backend;
-    open_files[slot].vnode_generation = vnodes[vnode_index].generation;
+    open_files[slot].vnode_generation = vnode_snapshot(vnode_index).generation;
     open_files[slot].backend_handle = backend_handle;
     open_files[slot].vnode_index = (uint16_t)vnode_index;
     open_files[slot].active = true;
-    if (reserved_vnode != VFS_MAX_VNODES) vnode_reservations[reserved_vnode] = false;
-    --mounts[volume].references;
+    vnode_unreserve(reserved_vnode);
+    mount_release(volume);
     *handle = encode_handle(slot, open_files[slot].generation);
     if (backend->open_options == NULL && (flags & PHIPFS_OPEN_TRUNCATE) != 0U) {
         status = phipfs_ftruncate(*handle, 0U);
@@ -886,10 +975,10 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     }
     return PHIPFS_STATUS_OK;
 failed:
-    if (reserved_vnode != VFS_MAX_VNODES) vnode_reservations[reserved_vnode] = false;
-    if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnodes[vnode_index].generation);
+    vnode_unreserve(reserved_vnode);
+    if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
     open_files[slot].opening = false;
-    --mounts[volume].references;
+    mount_release(volume);
     phipia_slot_release(open_file_claims, slot);
     return status;
 }
@@ -926,7 +1015,8 @@ enum phipfs_status phipfs_fstat(phipfs_handle handle, struct phipfs_stat *stat)
     zero_bytes(stat, sizeof(*stat));
     const enum phipfs_status status = open_file_state(handle, &state);
     if (status != PHIPFS_STATUS_OK) return status;
-    const struct vfs_vnode_state *vnode = &vnodes[state->vnode_index];
+    const struct vfs_vnode_state snapshot = vnode_snapshot(state->vnode_index);
+    const struct vfs_vnode_state *vnode = &snapshot;
     if (!vnode->active || vnode->generation != state->vnode_generation ||
         !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
         return PHIPFS_STATUS_STALE_HANDLE;
@@ -941,7 +1031,8 @@ enum phipfs_status phipfs_publish_file(phipfs_handle handle, const char *source,
     char to[PHIPFS_MAX_PATH];
     enum phipfs_status status = open_file_state(handle, &state);
     if (status != PHIPFS_STATUS_OK) return status;
-    const struct vfs_vnode_state *vnode = &vnodes[state->vnode_index];
+    const struct vfs_vnode_state snapshot = vnode_snapshot(state->vnode_index);
+    const struct vfs_vnode_state *vnode = &snapshot;
     if (!vnode->active || vnode->generation != state->vnode_generation ||
         !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
         return PHIPFS_STATUS_STALE_HANDLE;
@@ -957,7 +1048,8 @@ enum phipfs_status phipfs_unlink_held_file(phipfs_handle handle, const char *pat
     char canonical[PHIPFS_MAX_PATH];
     enum phipfs_status status = open_file_state(handle, &state);
     if (status != PHIPFS_STATUS_OK) return status;
-    const struct vfs_vnode_state *vnode = &vnodes[state->vnode_index];
+    const struct vfs_vnode_state snapshot = vnode_snapshot(state->vnode_index);
+    const struct vfs_vnode_state *vnode = &snapshot;
     if (!vnode->active || vnode->generation != state->vnode_generation ||
         !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
         return PHIPFS_STATUS_STALE_HANDLE;
@@ -971,7 +1063,8 @@ enum phipfs_status phipfs_fsync(phipfs_handle handle)
     struct vfs_open_file_state *state;
     enum phipfs_status status = open_file_state(handle, &state);
     if (status != PHIPFS_STATUS_OK) return status;
-    const struct vfs_vnode_state *vnode = &vnodes[state->vnode_index];
+    const struct vfs_vnode_state snapshot = vnode_snapshot(state->vnode_index);
+    const struct vfs_vnode_state *vnode = &snapshot;
     if (!vnode->active || vnode->generation != state->vnode_generation ||
         !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
         return PHIPFS_STATUS_STALE_HANDLE;
@@ -1079,8 +1172,8 @@ enum phipfs_status phipfs_stat_path(
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
-    *stat = vnodes[vnode_index].stat;
-    vnode_release(vnode_index, vnodes[vnode_index].generation);
+    *stat = vnode_snapshot(vnode_index).stat;
+    vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
     return PHIPFS_STATUS_OK;
 }
 
@@ -1114,13 +1207,13 @@ enum phipfs_status phipfs_list(
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
-    if (!vnodes[vnode_index].stat.directory) {
-        vnode_release(vnode_index, vnodes[vnode_index].generation);
+    if (!vnode_snapshot(vnode_index).stat.directory) {
+        vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
         return PHIPFS_STATUS_NOT_DIRECTORY;
     }
     status = mounts[volume].backend->list(volume, canonical, entries, capacity,
         entry_count);
-    vnode_release(vnode_index, vnodes[vnode_index].generation);
+    vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
     return status;
 }
 
@@ -1143,13 +1236,13 @@ enum phipfs_status phipfs_directory_open(
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
-    if (!vnodes[vnode_index].stat.directory) {
-        vnode_release(vnode_index, vnodes[vnode_index].generation);
+    if (!vnode_snapshot(vnode_index).stat.directory) {
+        vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
         return PHIPFS_STATUS_NOT_DIRECTORY;
     }
     slot = phipia_slot_claim(directory_claims, VFS_MAX_DIRECTORY_ITERATORS);
     if (slot == VFS_MAX_DIRECTORY_ITERATORS) {
-        vnode_release(vnode_index, vnodes[vnode_index].generation);
+        vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
         return PHIPFS_STATUS_NO_HANDLES;
     }
     zero_bytes(&directories[slot], sizeof(directories[slot]));
@@ -1175,13 +1268,13 @@ enum phipfs_status phipfs_directory_open(
             &directories[slot].count);
     }
     if (status != PHIPFS_STATUS_OK) {
-        vnode_release(vnode_index, vnodes[vnode_index].generation);
+        vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
         zero_bytes(&directories[slot], sizeof(directories[slot]));
         phipia_slot_release(directory_claims, slot);
         return status;
     }
     if (directories[slot].streaming && backend->directory_open_with_stat != NULL) {
-        vnode_release(vnode_index, vnodes[vnode_index].generation);
+        vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
         status = vnode_retain(volume, canonical, &opened_stat, &vnode_index);
         if (status != PHIPFS_STATUS_OK) {
             (void)backend->directory_close(directories[slot].backend_handle);
@@ -1192,7 +1285,7 @@ enum phipfs_status phipfs_directory_open(
     }
     directories[slot].generation = next_generation(
         &next_directory_generation, UINT64_MAX >> 8U);
-    directories[slot].vnode_generation = vnodes[vnode_index].generation;
+    directories[slot].vnode_generation = vnode_snapshot(vnode_index).generation;
     directories[slot].vnode_index = (uint16_t)vnode_index;
     directories[slot].active = true;
     directories[slot].opening = false;
@@ -1218,7 +1311,8 @@ enum phipfs_status phipfs_directory_read(
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
-    const struct vfs_vnode_state *vnode = &vnodes[state->vnode_index];
+    const struct vfs_vnode_state snapshot = vnode_snapshot(state->vnode_index);
+    const struct vfs_vnode_state *vnode = &snapshot;
     if (!vnode->active || vnode->generation != state->vnode_generation ||
         !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
         return PHIPFS_STATUS_STALE_HANDLE;
@@ -1287,7 +1381,8 @@ enum phipfs_status phipfs_ftruncate(phipfs_handle handle, uint64_t size)
     enum phipfs_status status = checked_open_file_state(handle, &state);
     if (status != PHIPFS_STATUS_OK) return status;
     if (state->backend->ftruncate != NULL) return state->backend->ftruncate(state->backend_handle, size);
-    struct vfs_vnode_state *vnode = &vnodes[state->vnode_index];
+    const struct vfs_vnode_state snapshot = vnode_snapshot(state->vnode_index);
+    const struct vfs_vnode_state *vnode = &snapshot;
     return state->backend->truncate(vnode->volume, vnode->path, size);
 }
 
@@ -1311,10 +1406,10 @@ enum phipfs_status phipfs_truncate(
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
-    if (vnodes[vnode_index].stat.directory) {
+    if (vnode_snapshot(vnode_index).stat.directory) {
         status = PHIPFS_STATUS_IS_DIRECTORY;
     }
-    vnode_release(vnode_index, vnodes[vnode_index].generation);
+    vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
     return status == PHIPFS_STATUS_OK ?
         mounts[volume].backend->truncate(volume, canonical, size) : status;
 }
@@ -1414,12 +1509,12 @@ enum phipfs_status phipfs_rmdir(enum phipfs_volume volume, const char *path)
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
-    if (!vnodes[vnode_index].stat.directory) {
+    if (!vnode_snapshot(vnode_index).stat.directory) {
         status = PHIPFS_STATUS_NOT_DIRECTORY;
-    } else if (vnodes[vnode_index].references != 1U) {
+    } else if (vnode_snapshot(vnode_index).references != 1U) {
         status = PHIPFS_STATUS_BUSY;
     }
-    vnode_release(vnode_index, vnodes[vnode_index].generation);
+    vnode_release(vnode_index, vnode_snapshot(vnode_index).generation);
     return status == PHIPFS_STATUS_OK ?
         mounts[volume].backend->rmdir(volume, canonical) : status;
 }
