@@ -5491,6 +5491,52 @@ static _Noreturn void ext4_vfs_truncate_powercut(bool growing)
     kernel_test_pass();
 }
 
+static _Noreturn void ext4_vfs_link_powercut(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *source = "data/user/link-source", *alias = "data/user/link-alias";
+    struct phipfs_stat original, linked, held;
+    phipfs_handle file, second;
+    ext4_vfs_require(phipfs_open(volume, source, PHIPFS_ACCESS_READ, &file), "link cut held source");
+    ext4_vfs_require(phipfs_fstat(file, &original), "link cut source identity");
+    const uint64_t free_bytes = phipfs_drive(volume).free_bytes;
+    const enum phipfs_status initial = phipfs_lstat_path(volume, alias, &linked);
+    if (initial == PHIPFS_STATUS_NOT_FOUND && original.links == 1U) {
+        console_write("ST EXT4 LINK initial old\n");
+        ext4_vfs_require(phipfs_link(volume, source, alias), "link cut publication");
+    } else if (initial == PHIPFS_STATUS_OK && original.links == 2U && linked.links == 2U &&
+            linked.object_id == original.object_id) {
+        console_write("ST EXT4 LINK initial new\n");
+    } else kernel_test_fail("ext4 link cut observed partial namespace or link accounting");
+    if (original.directory || original.size != 4500U ||
+        phipfs_drive(volume).free_bytes != free_bytes)
+        kernel_test_fail("ext4 link cut changed source contents or allocation");
+    if (phipfs_link(volume, source, alias) != PHIPFS_STATUS_EXISTS)
+        kernel_test_fail("ext4 link cut duplicate name was not refused");
+    ext4_vfs_require(phipfs_open(volume, alias, PHIPFS_ACCESS_READ, &second), "link cut alias reader");
+    ext4_vfs_require(phipfs_fstat(second, &linked), "link cut alias identity");
+    ext4_vfs_require(phipfs_fstat(file, &held), "link cut shared link count");
+    if (linked.object_id != original.object_id || held.object_id != original.object_id ||
+        linked.links != 2U || held.links != 2U || linked.mode != original.mode || held.mode != original.mode)
+        kernel_test_fail("ext4 link cut changed inode identity or shared metadata");
+    ext4_vfs_cut_contents(file, 4500U, 's');
+    ext4_vfs_cut_contents(second, 4500U, 's');
+    ext4_vfs_require(phipfs_fsync(file), "link cut fsync");
+    ext4_vfs_require(phipfs_close(second), "link cut alias close");
+    ext4_vfs_require(phipfs_close(file), "link cut source close");
+    if (phipfs_fstat(file, &held) != PHIPFS_STATUS_STALE_HANDLE ||
+        phipfs_fstat(second, &held) != PHIPFS_STATUS_STALE_HANDLE)
+        kernel_test_fail("ext4 link cut leaked closed handles");
+    ext4_vfs_require(phipfs_sync(volume), "link cut final sync");
+    ext4_vfs_require(phipfs_unmount(volume), "link cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 link cut resource census failed");
+    console_write("ST EXT4 VFS hard link shared inode contents accounting census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_xattr_powercut(bool removing)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5754,6 +5800,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         ext4_vfs_rmdir_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTXATTR.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_xattr_powercut(false);
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTLINK.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_link_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTXREM.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_xattr_powercut(true);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTCREATE.TST", &stat) == PHIPFS_STATUS_OK)
