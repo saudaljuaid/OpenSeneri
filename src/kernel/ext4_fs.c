@@ -56,6 +56,7 @@ struct ext4_handle_state {
 
 static struct ext4_mount_state ext4_mounts[PHIPFS_VOLUME_COUNT];
 static struct ext4_handle_state ext4_handles[EXT4_MAX_HANDLES];
+static bool ext4_handle_reservations[EXT4_MAX_HANDLES];
 static enum phipfs_status ext4_last_mount_status[PHIPFS_VOLUME_COUNT];
 static struct phipia_ext4_mount_diagnostic
     ext4_mount_diagnostics[PHIPFS_VOLUME_COUNT];
@@ -763,25 +764,22 @@ static enum phipfs_status leased_handle_state(phipfs_handle handle,
     return status;
 }
 
-static enum phipfs_status allocate_handle(enum phipfs_volume volume,
+static size_t reserve_handle_slot(void)
+{
+    for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
+        if (!ext4_handles[index].active && !ext4_handle_reservations[index]) {
+            ext4_handle_reservations[index] = true;
+            return index;
+        }
+    }
+    return EXT4_MAX_HANDLES;
+}
+
+static void initialize_reserved_handle(size_t slot, enum phipfs_volume volume,
     const char *path, uint64_t inode, uint64_t size,
     enum phipfs_access access, bool directory, uintptr_t snapshot, phipfs_handle *handle)
 {
     const size_t length = path_length(path);
-    size_t slot = EXT4_MAX_HANDLES;
-
-    if (handle == NULL || length == 0U || length >= PHIPFS_MAX_PATH) {
-        return PHIPFS_STATUS_INVALID_ARGUMENT;
-    }
-    for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
-        if (!ext4_handles[index].active) {
-            slot = index;
-            break;
-        }
-    }
-    if (slot == EXT4_MAX_HANDLES) {
-        return PHIPFS_STATUS_NO_HANDLES;
-    }
     zero_bytes(&ext4_handles[slot], sizeof(ext4_handles[slot]));
     ext4_handles[slot].generation = generation(&next_handle_generation);
     ext4_handles[slot].mount_generation = ext4_mounts[volume].generation;
@@ -794,6 +792,19 @@ static enum phipfs_status allocate_handle(enum phipfs_volume volume,
     copy_bytes(ext4_handles[slot].path, path, length + 1U);
     ext4_handles[slot].active = true;
     *handle = ext4_handles[slot].generation << 8U | (uint64_t)(slot + 1U);
+    ext4_handle_reservations[slot] = false;
+}
+
+static enum phipfs_status allocate_handle(enum phipfs_volume volume,
+    const char *path, uint64_t inode, uint64_t size,
+    enum phipfs_access access, bool directory, uintptr_t snapshot, phipfs_handle *handle)
+{
+    const size_t length = path_length(path);
+    if (handle == NULL || length == 0U || length >= PHIPFS_MAX_PATH)
+        return PHIPFS_STATUS_INVALID_ARGUMENT;
+    const size_t slot = reserve_handle_slot();
+    if (slot == EXT4_MAX_HANDLES) return PHIPFS_STATUS_NO_HANDLES;
+    initialize_reserved_handle(slot, volume, path, inode, size, access, directory, snapshot, handle);
     return PHIPFS_STATUS_OK;
 }
 
@@ -1256,11 +1267,10 @@ enum phipfs_status ext4_backend_open_options(enum phipfs_volume volume, const ch
     struct ext4_mount_state *mount = &ext4_mounts[volume];
     status = begin_operation(mount, flags != 0U);
     if (status != PHIPFS_STATUS_OK) return status;
-    // Refuse known handle exhaustion before create/truncate can change disk.
-    bool available = false;
-    for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index)
-        if (!ext4_handles[index].active) { available = true; break; }
-    status = available ? map_status(phipia_ext4_prepare_open(mount->rust_mount,
+    // Reserve the shared registry slot before mutation. The volume lease does
+    // not exclude another mount's callbacks from allocating backend handles.
+    const size_t slot = reserve_handle_slot();
+    status = slot != EXT4_MAX_HANDLES ? map_status(phipia_ext4_prepare_open(mount->rust_mount,
         (const uint8_t *)path, length, (uint8_t)access, flags, mode, &metadata)) : PHIPFS_STATUS_NO_HANDLES;
     if (status == PHIPFS_STATUS_OK && metadata.file_type == PHIPIA_EXT4_FILE_DIRECTORY) {
         status = PHIPFS_STATUS_IS_DIRECTORY;
@@ -1269,9 +1279,10 @@ enum phipfs_status ext4_backend_open_options(enum phipfs_volume volume, const ch
     // unlink/final-close guards cannot miss a successfully opening handle.
     if (status == PHIPFS_STATUS_OK) {
         if ((flags & PHIPFS_OPEN_TRUNCATE) != 0U) update_open_sizes(volume, metadata.inode, metadata.size);
-        status = allocate_handle(volume, path, metadata.inode, metadata.size,
+        initialize_reserved_handle(slot, volume, path, metadata.inode, metadata.size,
             access, false, 0U, &opened);
     }
+    if (slot != EXT4_MAX_HANDLES) ext4_handle_reservations[slot] = false;
     const enum phipfs_status close_status = end_operation(mount, NULL);
     if (status == PHIPFS_STATUS_OK) status = close_status;
     if (status != PHIPFS_STATUS_OK && opened != 0U) {

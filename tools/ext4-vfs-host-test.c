@@ -41,6 +41,7 @@ static bool lstat_symbolic;
 static uint8_t prepared_flags;
 static uint16_t prepared_mode;
 static unsigned prepared_opens;
+static bool steal_last_handle;
 static unsigned unmount_refusals;
 static unsigned live_mounts = 1U;
 static uint32_t logical_block_bytes = 4096U;
@@ -324,6 +325,13 @@ int32_t phipia_ext4_prepare_open(uintptr_t mounted, const uint8_t *path, size_t 
     prepared_flags = flags;
     prepared_mode = mode;
     ++prepared_opens;
+    if (steal_last_handle) {
+        phipfs_handle nested = 0U;
+        // A different mount's callback shares this backend registry. It must
+        // not consume the slot promised to an in-flight create/truncate.
+        assert(allocate_handle(PHIPFS_VOLUME_SYSTEM, "nested", 99U, 0U,
+            PHIPFS_ACCESS_READ, false, 0U, &nested) == PHIPFS_STATUS_NO_HANDLES);
+    }
     if (flags != 0U && permanent_status != PHIPIA_EXT4_STATUS_OK) return permanent_status;
     if ((flags & PHIPFS_OPEN_TRUNCATE) != 0U) disk_size = 0U;
     return phipia_ext4_stat(mounted, path, length, metadata);
@@ -721,6 +729,27 @@ int main(void)
     assert(live_snapshots == 0U && freed_snapshots == 1U);
     assert(ext4_backend_directory_close(first) == PHIPFS_STATUS_STALE_HANDLE);
     phipfs_handle held[EXT4_MAX_HANDLES];
+    file_type = PHIPIA_EXT4_FILE_REGULAR;
+    for (size_t index = 0U; index + 1U < EXT4_MAX_HANDLES; ++index) {
+        assert(allocate_handle(PHIPFS_VOLUME_DATA, "file", 42U, 0U,
+            PHIPFS_ACCESS_READ, false, 0U, &held[index]) == PHIPFS_STATUS_OK);
+    }
+    steal_last_handle = true;
+    for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+        struct phipfs_stat opened_stat;
+        permanent_status = attempt == 0U ? PHIPIA_EXT4_STATUS_IO : PHIPIA_EXT4_STATUS_OK;
+        assert(ext4_backend_open_options(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ_WRITE,
+            PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE, 0644U, &first, &opened_stat) ==
+            (attempt == 0U ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK));
+        if (attempt == 0U) assert(first == 0U);
+        else assert(ext4_backend_close(first) == PHIPFS_STATUS_OK);
+    }
+    steal_last_handle = false;
+    for (size_t index = 0U; index + 1U < EXT4_MAX_HANDLES; ++index)
+        assert(ext4_backend_close(held[index]) == PHIPFS_STATUS_OK);
+    file_type = PHIPIA_EXT4_FILE_DIRECTORY;
+    for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index)
+        assert(!ext4_handle_reservations[index]);
     for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
         assert(allocate_handle(PHIPFS_VOLUME_DATA, "file", 42U, 0U,
             PHIPFS_ACCESS_READ, false, 0U, &held[index]) == PHIPFS_STATUS_OK);
