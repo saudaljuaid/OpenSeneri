@@ -35,6 +35,14 @@ def mounted_read(root, expected):
                 continue
             raise RuntimeError(f"Linux retained removed name: {name!r}")
         target = root.joinpath(*relative.parts).resolve(strict=True)
+        if "entries" in wanted:
+            if not target.is_relative_to(root) or not target.is_dir():
+                raise RuntimeError(f"kernel directory escaped mount or changed type: {name!r}")
+            actual = {"entries": sorted(child.name for child in target.iterdir())}
+            if actual != wanted:
+                raise RuntimeError(f"Linux directory entries differ for {name}: {actual!r} != {wanted!r}")
+            result[name] = actual
+            continue
         if not target.is_relative_to(root) or not target.is_file():
             raise RuntimeError(f"kernel read escaped mount or is not a regular file: {name!r}")
         size = target.stat().st_size
@@ -110,8 +118,9 @@ def main():
     else:
         prefix = b"Phipia deterministic ext4 fixture\n"
         content = prefix + bytes(4096 - len(prefix)) + b"X"
-        report = verify_files(args.image, args.output, {"system/README.TXT": {
-            "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}})
+        report = verify_files(args.image, args.output, {
+            "system/README.TXT": {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()},
+            "indexed": {"entries": [f"entry-{index:04d}-phipia-fixture" for index in range(256)]}})
         print(json.dumps(report, sort_keys=True))
 
 
