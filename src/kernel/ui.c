@@ -6535,6 +6535,53 @@ static bool taskbar_hit_test(struct ui_point point)
             rect_contains_point(taskbar_flyout_bounds(), point));
 }
 
+static const uint8_t persisted_setting_rows[5][3] = {
+    { 0U, 1U, 3U }, { 0U, 2U, 1U }, { 1U, 1U, 1U },
+    { 1U, 2U, 1U }, { 1U, 3U, 1U }
+};
+static uint8_t persisted_settings[5];
+
+static enum phipfs_status phipia_settings_read(uint8_t values[5])
+{
+    uint8_t record[17];
+    static const uint8_t magic[8] = { 'P', 'H', 'I', 'P', 'C', 'F', 'G', 1U };
+    phipfs_handle handle = 0U;
+    size_t count = 0U;
+    enum phipfs_status status = phipfs_open(PHIPFS_VOLUME_DATA, "SETTINGS.PHI", PHIPFS_ACCESS_READ, &handle);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = phipfs_read(handle, record, sizeof(record), &count);
+    const enum phipfs_status closed = phipfs_close(handle);
+    if (status != PHIPFS_STATUS_OK) return status;
+    if (closed != PHIPFS_STATUS_OK) return closed;
+    if (count != 16U) return PHIPFS_STATUS_CORRUPT;
+    for (size_t index = 0U; index < sizeof(magic); ++index)
+        if (record[index] != magic[index]) return PHIPFS_STATUS_CORRUPT;
+    for (size_t index = 0U; index < 5U; ++index)
+        if (record[8U + index] > persisted_setting_rows[index][2]) return PHIPFS_STATUS_CORRUPT;
+    if (record[13] != 0U || record[14] != 0U || record[15] != 0U) return PHIPFS_STATUS_CORRUPT;
+    // Validate the whole record before changing any setting.
+    for (size_t index = 0U; index < 5U; ++index) values[index] = record[8U + index];
+    return PHIPFS_STATUS_OK;
+}
+
+static enum phipfs_status phipia_settings_save(void)
+{
+    uint8_t record[16] = { 'P', 'H', 'I', 'P', 'C', 'F', 'G', 1U };
+    bool changed = false;
+    for (size_t index = 0U; index < 5U; ++index) {
+        const uint32_t value = settings_row_state(persisted_setting_rows[index][0], persisted_setting_rows[index][1]);
+        if (value > persisted_setting_rows[index][2]) return PHIPFS_STATUS_INVALID_ARGUMENT;
+        record[8U + index] = (uint8_t)value;
+        if (record[8U + index] != persisted_settings[index]) changed = true;
+    }
+    if (!changed) return PHIPFS_STATUS_OK;
+    const enum phipfs_status status = data_publish_buffer("SETTINGS.PHI", "STTMP0.PHI", record, sizeof(record));
+    if (status == PHIPFS_STATUS_OK) {
+        for (size_t index = 0U; index < 5U; ++index) persisted_settings[index] = record[8U + index];
+    }
+    return status;
+}
+
 static void phipia_seed_settings(void)
 {
     static const struct settings_tile tiles[] = {
@@ -6594,10 +6641,20 @@ static void phipia_seed_settings(void)
         { about_rows, sizeof(about_rows) / sizeof(about_rows[0]) }
     };
 
+    uint8_t saved[5];
+    const bool loaded = phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA) &&
+        phipia_settings_read(saved) == PHIPFS_STATUS_OK;
     for (size_t page = 0U; page < sizeof(tiles) / sizeof(tiles[0]); ++page) {
         (void)settings_set_tile(page, &tiles[page]);
         for (size_t row = 0U; row < pages[page].count; ++row) {
-            (void)settings_set_row(page, row, &pages[page].rows[row]);
+            struct settings_row value = pages[page].rows[row];
+            for (size_t index = 0U; index < 5U; ++index) {
+                if (persisted_setting_rows[index][0] == page && persisted_setting_rows[index][1] == row) {
+                    if (loaded) value.state = saved[index];
+                    persisted_settings[index] = (uint8_t)value.state;
+                }
+            }
+            (void)settings_set_row(page, row, &value);
         }
     }
 }
@@ -9293,6 +9350,13 @@ static enum ui_status apply_event(
                 size_t row;
 
                 phipia_apply_settings();
+                if (phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA)) {
+                    const enum phipfs_status saved = phipia_settings_save();
+                    if (saved != PHIPFS_STATUS_OK) {
+                        set_app_status("save settings failed", saved);
+                        console_serial_write("Phipia: settings remain changed in memory; persistence failed\n");
+                    }
+                }
                 *damage = rect_union(*damage, taskbar_bounds());
                 if (settings_take_action(&page, &row)) {
                     if (page == 3U && row == 1U) {

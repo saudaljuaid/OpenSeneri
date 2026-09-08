@@ -41,6 +41,9 @@ static bool cleanup_unlink_fails;
 static bool cleanup_lost;
 static bool pending_cleanup;
 static bool replace_before_cleanup;
+static uint32_t setting_values[SETTINGS_MAX_TILES][SETTINGS_MAX_ROWS];
+static bool settings_read_fails;
+static bool settings_close_fails;
 
 static void assert_handle(phipfs_handle handle)
 {
@@ -190,10 +193,48 @@ enum phipfs_status phipfs_publish_file(phipfs_handle handle, const char *source,
 
 enum phipfs_status phipfs_close(phipfs_handle handle)
 {
+    if (handle == 88U) {
+        assert(live_handles == 1U);
+        live_handles = 0U;
+        return settings_close_fails ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK;
+    }
     assert_handle(handle);
     ++closes;
     live_handles = 0U;
     return fault == CLOSE_FAIL ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_open(enum phipfs_volume volume, const char *path,
+    enum phipfs_access access, phipfs_handle *handle)
+{
+    assert(volume == PHIPFS_VOLUME_DATA && strcmp(path, "SETTINGS.PHI") == 0 && access == PHIPFS_ACCESS_READ);
+    assert(live_handles == 0U);
+    if (target_inode == 0U) return PHIPFS_STATUS_NOT_FOUND;
+    *handle = 88U;
+    live_handles = 1U;
+    return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_read(phipfs_handle handle, uint8_t *bytes, size_t capacity, size_t *count)
+{
+    assert(handle == 88U && live_handles == 1U);
+    if (settings_read_fails) return PHIPFS_STATUS_IO;
+    *count = target_length < capacity ? target_length : capacity;
+    memcpy(bytes, target_bytes, *count);
+    return PHIPFS_STATUS_OK;
+}
+
+uint32_t settings_row_state(size_t page, size_t row) { return setting_values[page][row]; }
+enum settings_status settings_set_tile(size_t page, const struct settings_tile *tile)
+{
+    assert(page < SETTINGS_MAX_TILES && tile != NULL);
+    return SETTINGS_STATUS_OK;
+}
+enum settings_status settings_set_row(size_t page, size_t row, const struct settings_row *value)
+{
+    assert(page < SETTINGS_MAX_TILES && row < SETTINGS_MAX_ROWS && value != NULL);
+    setting_values[page][row] = value->state;
+    return SETTINGS_STATUS_OK;
 }
 
 static void reset_save(enum save_fault next_fault)
@@ -221,6 +262,7 @@ static void reset_save(enum save_fault next_fault)
     cleanup_calls = 0U;
     cleanup_sync_fails = cleanup_unlink_fails = cleanup_lost = pending_cleanup = false;
     replace_before_cleanup = false;
+    settings_read_fails = settings_close_fails = false;
     note_dirty = true;
     note_savable = true;
 }
@@ -299,6 +341,67 @@ static void reset_app(unsigned app, enum save_fault next_fault)
 static enum phipfs_status save_app(unsigned app)
 {
     return app == 0U ? media_source_save() : app == 1U ? media_editor_save_timeline() : paint_save();
+}
+
+static void settings_persistence(void)
+{
+    static const uint8_t initial[16] = { 'P', 'H', 'I', 'P', 'C', 'F', 'G', 1U, 3U, 1U, 0U, 1U, 1U };
+    const enum save_fault failures[] = { SAVE_OK, WRITE_FAIL, FIRST_SYNC_FAIL, PUBLISH_FAIL, PUBLISH_LOST, SECOND_SYNC_FAIL, CLOSE_FAIL };
+    for (size_t failure = 0U; failure < sizeof(failures) / sizeof(failures[0]); ++failure) {
+        reset_save(failures[failure]);
+        target_length = sizeof(initial);
+        memcpy(target_bytes, initial, sizeof(initial));
+        phipia_seed_settings();
+        assert(live_handles == 0U && opens == 0U && writes == 0U);
+        assert(setting_values[0][1] == 3U && setting_values[1][1] == 0U);
+        expected_destination = "SETTINGS.PHI";
+        expected_scratch = "STTMP0.PHI";
+        expected_length = sizeof(initial);
+        memcpy(expected_bytes, initial, sizeof(initial));
+        expected_bytes[8] = 1U;
+        expected_bytes[10] = 1U;
+        setting_values[0][1] = 1U;
+        setting_values[1][1] = 1U;
+        const bool success = fault == SAVE_OK || fault == PUBLISH_LOST;
+        assert((phipia_settings_save() == PHIPFS_STATUS_OK) == success);
+        assert(live_handles == 0U);
+        assert(persisted_settings[0] == (success ? 1U : 3U));
+        if (success) {
+            const unsigned before = opens;
+            assert(phipia_settings_save() == PHIPFS_STATUS_OK && opens == before);
+            assert(target_length == sizeof(initial) && memcmp(target_bytes, expected_bytes, sizeof(initial)) == 0);
+            memset(setting_values, 0, sizeof(setting_values));
+            phipia_seed_settings(); /* Simulated UI reinitialization uses only disk state. */
+            assert(setting_values[0][1] == 1U && setting_values[1][1] == 1U);
+        }
+    }
+    for (unsigned corruption = 0U; corruption < 6U; ++corruption) {
+        reset_save(SAVE_OK);
+        target_length = sizeof(initial);
+        memcpy(target_bytes, initial, sizeof(initial));
+        if (corruption == 0U) target_length = 15U;
+        if (corruption == 1U) target_length = 17U;
+        if (corruption == 2U) target_bytes[7] = 2U;
+        if (corruption == 3U) target_bytes[8] = 4U;
+        if (corruption == 4U) target_bytes[12] = 2U;
+        if (corruption == 5U) target_bytes[15] = 1U;
+        uint8_t decoded[5] = { 9U, 9U, 9U, 9U, 9U };
+        assert(phipia_settings_read(decoded) == PHIPFS_STATUS_CORRUPT);
+        for (size_t index = 0U; index < sizeof(decoded); ++index) assert(decoded[index] == 9U);
+        assert(live_handles == 0U && writes == 0U);
+    }
+    for (unsigned failure = 0U; failure < 3U; ++failure) {
+        reset_save(SAVE_OK);
+        target_length = sizeof(initial);
+        memcpy(target_bytes, initial, sizeof(initial));
+        settings_read_fails = failure == 0U;
+        settings_close_fails = failure == 1U;
+        if (failure == 2U) target_inode = 0U;
+        uint8_t decoded[5] = { 9U, 9U, 9U, 9U, 9U };
+        assert(phipia_settings_read(decoded) == (failure == 2U ? PHIPFS_STATUS_NOT_FOUND : PHIPFS_STATUS_IO));
+        for (size_t index = 0U; index < sizeof(decoded); ++index) assert(decoded[index] == 9U);
+        assert(live_handles == 0U && writes == 0U);
+    }
 }
 
 int main(void)
@@ -393,6 +496,7 @@ int main(void)
         assert(note_save() == PHIPFS_STATUS_IO && note_dirty && live_handles == 0U);
         assert(opens == 1U && scratch_inode == 0U && target_inode == 10U && target_length == 3U);
     }
-    puts("Notes, Paint, Media ext4 save: ownership, complete publication, failure handling PASS");
+    settings_persistence();
+    puts("Notes, Paint, Media, Settings ext4 save: ownership, complete publication, failure handling PASS");
     return 0;
 }
