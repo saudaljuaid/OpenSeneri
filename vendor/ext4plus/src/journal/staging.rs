@@ -17,7 +17,7 @@ use crate::error::BoxedError;
 use crate::sync::RwLock;
 use crate::{Ext4Read, Ext4Write};
 use alloc::boxed::Box;
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::error::Error;
@@ -101,7 +101,9 @@ impl From<JournalTransactionError> for JournalMutationPlanError {
 struct JournalMutationState {
     sealed: bool,
     blocks: BTreeMap<u64, Vec<u8>>,
-    revoked_blocks: BTreeSet<u64>,
+    // Sorted unique blocks in one allocation. A tree node per few revokes
+    // exhausts the kernel's allocation records well before the byte budget.
+    revoked_blocks: Vec<u64>,
 }
 
 /// A bounded overlay that never writes through to its backing reader.
@@ -148,7 +150,7 @@ impl JournalMutationStage {
             state: RwLock::new(JournalMutationState {
                 sealed: false,
                 blocks: BTreeMap::new(),
-                revoked_blocks: BTreeSet::new(),
+                revoked_blocks: Vec::new(),
             }),
         })
     }
@@ -346,7 +348,7 @@ impl Ext4Write for JournalMutationStage {
             return Err(Box::new(JournalMutationStageError::Sealed));
         }
         let additions = (start_block..end)
-            .filter(|block| !state.revoked_blocks.contains(block))
+            .filter(|block| state.revoked_blocks.binary_search(block).is_err())
             .count();
         if state
             .revoked_blocks
@@ -356,10 +358,16 @@ impl Ext4Write for JournalMutationStage {
         {
             return Err(Box::new(JournalMutationStageError::TooManyRevocations));
         }
+        state.revoked_blocks.try_reserve_exact(additions)
+            .map_err(|_| Box::new(JournalMutationStageError::TooManyRevocations) as BoxedError)?;
+        let previous_count = state.revoked_blocks.len();
         for block in start_block..end {
             state.blocks.remove(&block);
-            state.revoked_blocks.insert(block);
+            if state.revoked_blocks[..previous_count].binary_search(&block).is_err() {
+                state.revoked_blocks.push(block);
+            }
         }
+        state.revoked_blocks.sort_unstable();
         Ok(())
     }
 }

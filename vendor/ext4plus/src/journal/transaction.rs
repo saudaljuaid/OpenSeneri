@@ -32,7 +32,7 @@ use crate::iters::file_blocks::FileBlocks;
 use crate::superblock::Superblock;
 use crate::util::{read_u32be, read_u32le, write_u32le};
 use crate::uuid::Uuid;
-use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::error::Error;
@@ -1091,6 +1091,7 @@ impl JournalTransaction {
         if self.revoked_blocks.contains(&block_index) {
             return Err(JournalTransactionError::DuplicateBlock);
         }
+        self.revoked_blocks.try_reserve(1).map_err(|_| JournalTransactionError::TooManyBlocks)?;
         self.revoked_blocks.push(block_index);
         Ok(())
     }
@@ -1102,11 +1103,20 @@ impl JournalTransaction {
         if blocks.len() > JOURNAL_TRANSACTION_MAX_REVOKED_BLOCKS - self.revoked_blocks.len() {
             return Err(JournalTransactionError::TooManyBlocks);
         }
-        let mut seen: BTreeSet<u64> = self.revoked_blocks.iter().copied().collect();
-        for block in blocks {
-            if *block > self.maximum_block { return Err(JournalTransactionError::BlockOutOfRange); }
-            if !seen.insert(*block) { return Err(JournalTransactionError::DuplicateBlock); }
+        if blocks.iter().any(|block| *block > self.maximum_block) {
+            return Err(JournalTransactionError::BlockOutOfRange);
         }
+        let mut seen = Vec::new();
+        seen.try_reserve_exact(self.revoked_blocks.len() + blocks.len())
+            .map_err(|_| JournalTransactionError::TooManyBlocks)?;
+        seen.extend_from_slice(&self.revoked_blocks);
+        seen.extend_from_slice(blocks);
+        seen.sort_unstable();
+        if seen.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(JournalTransactionError::DuplicateBlock);
+        }
+        self.revoked_blocks.try_reserve_exact(blocks.len())
+            .map_err(|_| JournalTransactionError::TooManyBlocks)?;
         self.revoked_blocks.extend_from_slice(blocks);
         Ok(())
     }
@@ -2455,13 +2465,12 @@ pub fn replay_committed_transaction(
             return Err(JournalTransactionError::TooManyBlocks);
         }
     }
-    let mut revoked_set = BTreeSet::new();
-    for revoked in &revoked_blocks {
-        if *revoked > maximum_block || !revoked_set.insert(*revoked) {
-            return Err(JournalTransactionError::CorruptRevocation);
-        }
+    revoked_blocks.sort_unstable();
+    if revoked_blocks.last().is_some_and(|block| *block > maximum_block) ||
+        revoked_blocks.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(JournalTransactionError::CorruptRevocation);
     }
-    replay.retain(|image| !revoked_set.contains(&image.block_index));
+    replay.retain(|image| revoked_blocks.binary_search(&image.block_index).is_err());
 
     let commit = journal_blocks[journal_blocks.len() - 1];
     let commit_header =
