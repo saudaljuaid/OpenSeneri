@@ -14,6 +14,7 @@ enum save_fault {
 static enum save_fault fault;
 static unsigned occupied_names;
 static unsigned opens;
+static unsigned open_attempt_base;
 static unsigned writes;
 static unsigned syncs;
 static unsigned publications;
@@ -137,13 +138,15 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     assert(flags == (PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE));
     assert(mode == expected_mode && live_handles == 0U);
     ++opens;
+    const unsigned attempt = opens - open_attempt_base;
+    assert(attempt >= 1U && attempt <= 9U);
     char expected[PHIPFS_MAX_PATH + 1U];
     strcpy(expected, expected_scratch);
     char *digit = strchr(expected, '0');
     assert(digit != NULL);
-    *digit = (char)('0' + opens);
+    *digit = (char)('0' + attempt);
     assert(strcmp(path, expected) == 0);
-    if (opens <= occupied_names) return PHIPFS_STATUS_EXISTS;
+    if (attempt <= occupied_names) return PHIPFS_STATUS_EXISTS;
     assert(scratch_inode == 0U); /* Successful cleanup makes the same name reusable. */
     strcpy(scratch_name, path);
     if (fault == CREATE_FAIL) return PHIPFS_STATUS_IO;
@@ -346,6 +349,7 @@ static void reset_save(enum save_fault next_fault)
     assert(live_handles == 0U);
     fault = next_fault;
     occupied_names = opens = writes = syncs = publications = closes = 0U;
+    open_attempt_base = 0U;
     target_inode = 10U;
     target_length = 3U;
     scratch_inode = 0U;
@@ -519,7 +523,11 @@ static void storage_errors_keep_application_open(void)
         assert(target_length == 3U && memcmp(target_bytes, "old", 3U) == 0);
         assert(strcmp(note_buffer, "complete new note\n") == 0);
         fault = SAVE_OK;
+        // Each new save starts its scratch search at slot one; retain the
+        // lifetime call count while checking the new attempt independently.
+        open_attempt_base = opens;
         assert(application_storage_action(APPLICATION_NOTES_SAVE, &note_damage) == UI_STATUS_OK);
+        assert(opens == open_attempt_base + 1U);
         assert(!note_dirty && storage_error_dialogs == 1U && live_handles == 0U && scratch_inode == 0U);
         assert(target_length == expected_length && memcmp(target_bytes, expected_bytes, expected_length) == 0);
     }
