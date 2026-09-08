@@ -23,6 +23,7 @@ import zlib
 from pathlib import Path
 
 import fat32_image
+import ext4_image
 
 
 PROOF_LINE = b"Phipia: Boot Ledger installed proof passed"
@@ -180,7 +181,10 @@ def wait_serial_after(path, offset, marker, timeout=5.0):
     )
 
 
-def storage_arguments(system, data):
+def storage_arguments(system, data, data_filesystem="fat32"):
+    if data_filesystem not in ("fat32", "ext4"):
+        raise ValueError("unsupported capture data filesystem")
+    sector_bytes = 4096 if data_filesystem == "ext4" else 512
     return [
         "-blockdev",
         f"driver=file,filename={system.resolve()},node-name=system-file,read-only=on,auto-read-only=off",
@@ -193,7 +197,7 @@ def storage_arguments(system, data):
         "-blockdev",
         "driver=raw,file=data-file,node-name=data-raw,read-only=off",
         "-device",
-        "nvme,serial=phipia-data-fat32,drive=data-raw,logical_block_size=512,physical_block_size=512,max_ioqpairs=1,msix_qsize=1",
+        f"nvme,serial=phipia-data-{data_filesystem},drive=data-raw,logical_block_size={sector_bytes},physical_block_size={sector_bytes},max_ioqpairs=1,msix_qsize=1",
     ]
 
 
@@ -211,7 +215,7 @@ def capture_png(qmp, work, output, name):
     ppm.unlink()
 
 
-def wait_for_named_file(data_image, name, expected_size, timeout=20.0):
+def wait_for_named_file(data_image, name, expected_size, timeout=20.0, filesystem="fat32"):
     deadline = time.monotonic() + timeout
     last_error = f"{name} was not visible"
 
@@ -220,6 +224,17 @@ def wait_for_named_file(data_image, name, expected_size, timeout=20.0):
     time.sleep(8.0)
     while time.monotonic() < deadline:
         try:
+            if filesystem == "ext4":
+                # This readiness read follows the application's fsync receipt;
+                # final admission/fsck happens only after guest clean unmount.
+                tools = ext4_image.require_tools()
+                path = "/" + name
+                metadata = ext4_image._parse_stat(ext4_image._debugfs(tools, data_image, f"stat {path}"), path)
+                if metadata["size"] == expected_size:
+                    return
+                last_error = f"{name} had {metadata['size']} bytes, expected {expected_size}"
+                time.sleep(0.25)
+                continue
             report = fat32_image.inspect_image(data_image.read_bytes())
             files = {
                 str(record["path"]): record
@@ -235,15 +250,15 @@ def wait_for_named_file(data_image, name, expected_size, timeout=20.0):
                 if exported is not None
                 else f"{name} was absent"
             )
-        except (OSError, fat32_image.Fat32Error) as error:
+        except (OSError, fat32_image.Fat32Error, ext4_image.Ext4ImageError) as error:
             last_error = str(error)
         time.sleep(5.0)
     raise RuntimeError(f"guest file did not synchronize: {last_error}")
 
 
-def wait_for_export(data_image, timeout=20.0):
+def wait_for_export(data_image, timeout=20.0, filesystem="fat32"):
     wait_for_named_file(
-        data_image, "EXPORT.BMP", 54 + 320 * 180 * 3, timeout,
+        data_image, "EXPORT.BMP", 54 + 320 * 180 * 3, timeout, filesystem,
     )
 
 
@@ -805,7 +820,8 @@ def capture_phipia_session(
     pointer.move_to(947, 714)
     pointer.click()
     save_paint()
-    wait_for_named_file(durable_data, "PAINT.BMP", 54 + 320 * 180 * 3)
+    wait_for_named_file(durable_data, "PAINT.BMP", 54 + 320 * 180 * 3,
+                        filesystem=getattr(args, "data_filesystem", "fat32"))
     pointer.settle_guest(0.45)
     snapshot("phipia-paint-working", "paint_drawn")
     pointer.move_to(1001, 16)
@@ -842,7 +858,7 @@ def capture_phipia_session(
     pointer.settle_guest(0.45)
     snapshot("phipia-media-editor", "media_editor_saved")
     qmp.hmp("sendkey ctrl-e")
-    wait_for_export(durable_data)
+    wait_for_export(durable_data, filesystem=getattr(args, "data_filesystem", "fat32"))
     pointer.settle_guest(0.35)
     snapshot("phipia-media-editor-exported", "media_editor_exported")
     pointer.move_to(1001, 16)

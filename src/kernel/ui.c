@@ -6644,6 +6644,7 @@ static void phipia_seed_settings(void)
     uint8_t saved[5];
     const bool loaded = phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA) &&
         phipia_settings_read(saved) == PHIPFS_STATUS_OK;
+    if (loaded) console_serial_write("Phipia: settings restored from ext4 Data\n");
     for (size_t page = 0U; page < sizeof(tiles) / sizeof(tiles[0]); ++page) {
         (void)settings_set_tile(page, &tiles[page]);
         for (size_t row = 0U; row < pages[page].count; ++row) {

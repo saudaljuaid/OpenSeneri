@@ -16,6 +16,8 @@
 #include <phipia/memory.h>
 #include <phipia/native_process.h>
 #include <phipia/network.h>
+#include <phipia/nvme.h>
+#include <phipia/paging.h>
 #include <phipia/pci.h>
 #include <phipia/screen.h>
 #include <phipia/shell.h>
@@ -692,6 +694,7 @@ static void command_write_line(const char *arguments, bool append)
     size_t written = 0U;
     phipfs_handle handle;
     bool opened = false;
+    const bool inode_truncate = phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA);
     enum phipfs_status status;
 
     if (!first_argument(arguments, argument_path, &text) ||
@@ -707,12 +710,17 @@ static void command_write_line(const char *arguments, bool append)
     if (status == PHIPFS_STATUS_NOT_FOUND) {
         status = phipfs_create(PHIPFS_VOLUME_DATA, path);
     }
+    // The compatibility FAT32 backend deliberately refuses path truncation
+    // while a handle is open. ext4 truncates the held inode under its lease.
+    if (status == PHIPFS_STATUS_OK && !append && !inode_truncate) {
+        status = phipfs_truncate(PHIPFS_VOLUME_DATA, path, 0U);
+    }
     if (status == PHIPFS_STATUS_OK) {
         status = phipfs_open(PHIPFS_VOLUME_DATA, path,
             PHIPFS_ACCESS_WRITE, &handle);
         opened = status == PHIPFS_STATUS_OK;
     }
-    if (status == PHIPFS_STATUS_OK && !append) {
+    if (status == PHIPFS_STATUS_OK && !append && inode_truncate) {
         status = phipfs_ftruncate(handle, 0U);
     }
     if (status == PHIPFS_STATUS_OK && append) {
@@ -879,6 +887,7 @@ static void command_sync(void)
 
 static void command_reboot(void)
 {
+    const bool ext4_data = phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA);
     enum phipfs_status status = phipfs_unmount(PHIPFS_VOLUME_DATA);
 
     if (status != PHIPFS_STATUS_OK && status != PHIPFS_STATUS_NOT_MOUNTED) {
@@ -890,6 +899,14 @@ static void command_reboot(void)
         filesystem_error("reboot", status);
         (void)phipfs_mount(PHIPFS_VOLUME_DATA);
         return;
+    }
+    if (ext4_data) {
+        if (!nvme_filesystem_session_resources_released() ||
+            heap_verify() != HEAP_STATUS_OK || paging_verify() != PAGING_STATUS_OK) {
+            console_write("reboot: ext4 release census failed\n");
+            return;
+        }
+        console_write("Phipia: reboot ext4 mounts closed NVMe released heap paging valid\n");
     }
     console_write("restarting after clean synchronization\n");
     cpu_interrupt_disable();

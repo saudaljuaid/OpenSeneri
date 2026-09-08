@@ -1273,13 +1273,21 @@ $(BUILD_DIR)/notes-ext4-host-test: tools/notes-ext4-host-test.c src/kernel/ui.c 
 		-Wall -Wextra -Werror -Wpedantic -Wshadow -Iinclude \
 		tools/notes-ext4-host-test.c -Wl,--gc-sections -o $@
 
-ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesystem-host-test $(BUILD_DIR)/ext4-vfs-host-test $(BUILD_DIR)/vfs-mutation-host-test $(BUILD_DIR)/ext4-nvme-close-host-test $(BUILD_DIR)/ext4-msix-close-host-test $(BUILD_DIR)/notes-ext4-host-test
+$(BUILD_DIR)/shell-ext4-host-test: tools/shell-ext4-host-test.c src/kernel/shell.c \
+		include/phipia/fat32_fs.h
+	mkdir -p $(dir $@)
+	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections \
+		-Wall -Wextra -Werror -Wpedantic -Wshadow -Iinclude \
+		tools/shell-ext4-host-test.c -Wl,--gc-sections -o $@
+
+ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesystem-host-test $(BUILD_DIR)/ext4-vfs-host-test $(BUILD_DIR)/vfs-mutation-host-test $(BUILD_DIR)/ext4-nvme-close-host-test $(BUILD_DIR)/ext4-msix-close-host-test $(BUILD_DIR)/notes-ext4-host-test $(BUILD_DIR)/shell-ext4-host-test
 	$(BUILD_DIR)/sdk-filesystem-host-test
 	$(BUILD_DIR)/ext4-vfs-host-test
 	$(BUILD_DIR)/vfs-mutation-host-test
 	$(BUILD_DIR)/ext4-nvme-close-host-test
 	$(BUILD_DIR)/ext4-msix-close-host-test
 	$(BUILD_DIR)/notes-ext4-host-test
+	$(BUILD_DIR)/shell-ext4-host-test
 	PHIPIA_EXT4_RUST_FIXTURE='$(CURDIR)/$(BUILD_DIR)/ext4-rust-fixture.img' \
 		$(PYTHON) -u tools/ext4_host_test.py
 	if test -f '$(BUILD_DIR)/ext4-rust-fixture.img'; then \
@@ -2285,6 +2293,12 @@ capture-phipia: iso $(FAT32_SYSTEM_IMAGE) $(FAT32_DATA_IMAGE)
 		$(MULTITASK_IMAGE)
 	cp $(PHIPIA_CAPTURE_DIR)/phipia-ui-redesign-25s.mp4 \
 		$(PHIPIA_VIDEO)
+
+.PHONY: qemu-test-ext4-applications
+qemu-test-ext4-applications: iso $(FAT32_SYSTEM_IMAGE)
+	$(PYTHON) tools/ext4_application_test.py --iso $(ISO) \
+		--system $(FAT32_SYSTEM_IMAGE) --ffmpeg $(FFMPEG) \
+		--output $(TEST_BUILD_DIR)/ext4-applications/$(shell git rev-parse --short HEAD)
 
 capture-networking: iso $(FAT32_SYSTEM_IMAGE) $(FAT32_DATA_IMAGE)
 	rm -rf $(NETWORK_CAPTURE_DIR)
