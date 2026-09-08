@@ -138,6 +138,7 @@ jobs:
                   make build/keyboard-channel-host-test
                   build/keyboard-channel-host-test 2>&1 | tee evidence/ext4/application-keyboard-host.log
                   make package-upload-tests 2>&1 | tee evidence/ext4/package-upload-host.log
+                  make package-service-tests 2>&1 | tee evidence/ext4/package-service-host.log
                   if [[ '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
                       printf '%s\n' 'Application probe: full host, recovery and release suites remain required.' \
                           >evidence/ext4/APPLICATION-PROBE.txt

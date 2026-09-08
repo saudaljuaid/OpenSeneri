@@ -53,6 +53,10 @@ static uint64_t next_object_id;
 static bool fail_next_sync;
 static uint32_t fail_sync_ordinal;
 static uint32_t sync_attempts;
+static void (*drive_observer)(void);
+static bool drive_unavailable;
+static bool claim_probe_failed;
+static unsigned claim_probe_calls;
 
 static void event(enum mock_event value)
 {
@@ -179,9 +183,10 @@ static void add_bootstrap_generation(
 struct phipfs_drive_info phipfs_drive(enum phipfs_volume volume)
 {
     struct phipfs_drive_info info;
+    if (drive_observer != NULL) drive_observer();
     memset(&info, 0, sizeof(info));
     info.volume = volume;
-    info.present = true;
+    info.present = !drive_unavailable;
     info.mounted = true;
     info.healthy = true;
     info.total_bytes = UINT64_C(64) * 1024U * 1024U;
@@ -1751,6 +1756,70 @@ static int test_repository_floor_is_durable_and_monotonic(void)
     return 0;
 }
 
+static enum package_service_status probe_service_entry(unsigned entry,
+    struct package_service_report *report)
+{
+    uint8_t bytes[1];
+    size_t count = 99U;
+    uint64_t floor = 99U;
+    const struct package_service_prepare_request request = {0};
+    enum package_service_status status;
+    switch (entry) {
+    case 0U: return package_service_recover(report);
+    case 1U:
+        status = package_service_snapshot(bytes, sizeof(bytes), &count, report);
+        if (count != 0U) claim_probe_failed = true;
+        return status;
+    case 2U:
+        status = package_service_repair_snapshot(bytes, sizeof(bytes), &count, report);
+        if (count != 0U) claim_probe_failed = true;
+        return status;
+    case 3U:
+        status = package_service_repository_floor_read(&floor, report);
+        if (floor != 0U) claim_probe_failed = true;
+        return status;
+    case 4U: return package_service_repository_floor_advance(1U, report);
+    case 5U: return package_service_prepare(&request, report);
+    case 6U: return package_service_bootstrap(&request, report);
+    default: return package_service_commit(report);
+    }
+}
+
+static void probe_service_reentry(void)
+{
+    struct package_service_report report;
+    /* Avoid recursion if the implementation has the old check/set gap. */
+    drive_observer = NULL;
+    ++claim_probe_calls;
+    for (unsigned entry = 0U; entry < 8U; ++entry) {
+        if (probe_service_entry(entry, &report) != PACKAGE_SERVICE_STATUS_BUSY ||
+            report.status != PACKAGE_SERVICE_STATUS_BUSY ||
+            report.live_file_handles != 0U || report.live_allocations != 0U ||
+            report.peak_file_handles != 0U || report.peak_allocations != 0U ||
+            report.bytes_read != 0U || report.bytes_written != 0U)
+            claim_probe_failed = true;
+    }
+    drive_observer = probe_service_reentry;
+}
+
+static int test_service_request_claim(void)
+{
+    struct package_service_report report;
+    reset_filesystem();
+    drive_unavailable = true;
+    drive_observer = probe_service_reentry;
+    for (unsigned entry = 0U; entry < 8U; ++entry) {
+        CHECK(probe_service_entry(entry, &report) == PACKAGE_SERVICE_STATUS_UNAVAILABLE &&
+            report.live_file_handles == 0U && report.live_allocations == 0U &&
+            report.peak_file_handles == 0U && report.peak_allocations == 0U &&
+            report.bytes_read == 0U && report.bytes_written == 0U, 190);
+    }
+    drive_observer = NULL;
+    drive_unavailable = false;
+    CHECK(!claim_probe_failed && claim_probe_calls == 8U && event_count == 0U, 191);
+    return 0;
+}
+
 int main(void)
 {
     static uint8_t old_database[OLD_DATABASE_BYTES];
@@ -1773,7 +1842,10 @@ int main(void)
     build_authority(bootstrap_authority, bootstrap_database,
         NEW_DATABASE_BYTES);
     build_journal(journal, old_database, new_database);
-    result = test_absent_state_is_distinct();
+    result = test_service_request_claim();
+    if (result == 0) {
+        result = test_absent_state_is_distinct();
+    }
     if (result == 0) {
         result = test_selected_generation_without_journal(old_database,
             old_authority);

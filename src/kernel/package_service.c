@@ -2453,7 +2453,7 @@ enum package_service_status package_service_recover(
     zero_bytes(report, sizeof(*report));
     report->filesystem_status = PHIPFS_STATUS_OK;
     report->state_status = PACKAGE_STATE_STATUS_OK;
-    if (servicing) {
+    if (__atomic_test_and_set(&servicing, __ATOMIC_ACQUIRE)) {
         report->status = PACKAGE_SERVICE_STATUS_BUSY;
         return report->status;
     }
@@ -2461,11 +2461,11 @@ enum package_service_status package_service_recover(
     if (!drive.present || !drive.mounted || !drive.healthy ||
         !heap_is_active()) {
         report->status = PACKAGE_SERVICE_STATUS_UNAVAILABLE;
+        __atomic_clear(&servicing, __ATOMIC_RELEASE);
         return report->status;
     }
     zero_bytes(&context, sizeof(context));
     context.report = report;
-    servicing = true;
     status = recover_internal(&context);
     enum package_service_status entries_release = release_bytes(&context,
         (void **)&context.entries);
@@ -2476,7 +2476,7 @@ enum package_service_status package_service_recover(
         report->live_allocations != 0U) {
         status = PACKAGE_SERVICE_STATUS_RESOURCE;
     }
-    servicing = false;
+    __atomic_clear(&servicing, __ATOMIC_RELEASE);
     report->status = status;
     return status;
 }
@@ -2503,7 +2503,7 @@ enum package_service_status package_service_snapshot(
     zero_bytes(report, sizeof(*report));
     report->filesystem_status = PHIPFS_STATUS_OK;
     report->state_status = PACKAGE_STATE_STATUS_OK;
-    if (servicing) {
+    if (__atomic_test_and_set(&servicing, __ATOMIC_ACQUIRE)) {
         report->status = PACKAGE_SERVICE_STATUS_BUSY;
         return report->status;
     }
@@ -2511,11 +2511,11 @@ enum package_service_status package_service_snapshot(
     if (!drive.present || !drive.mounted || !drive.healthy ||
         !heap_is_active()) {
         report->status = PACKAGE_SERVICE_STATUS_UNAVAILABLE;
+        __atomic_clear(&servicing, __ATOMIC_RELEASE);
         return report->status;
     }
     zero_bytes(&context, sizeof(context));
     context.report = report;
-    servicing = true;
     status = recover_internal(&context);
     if (status != PACKAGE_SERVICE_STATUS_OK) {
         goto release;
@@ -2578,7 +2578,7 @@ release:
     if (report->live_file_handles != 0U || report->live_allocations != 0U) {
         status = PACKAGE_SERVICE_STATUS_RESOURCE;
     }
-    servicing = false;
+    __atomic_clear(&servicing, __ATOMIC_RELEASE);
     report->status = status;
     return status;
 }
@@ -2605,7 +2605,7 @@ enum package_service_status package_service_repair_snapshot(
     zero_bytes(report, sizeof(*report));
     report->filesystem_status = PHIPFS_STATUS_OK;
     report->state_status = PACKAGE_STATE_STATUS_OK;
-    if (servicing) {
+    if (__atomic_test_and_set(&servicing, __ATOMIC_ACQUIRE)) {
         report->status = PACKAGE_SERVICE_STATUS_BUSY;
         return report->status;
     }
@@ -2613,11 +2613,11 @@ enum package_service_status package_service_repair_snapshot(
     if (!drive.present || !drive.mounted || !drive.healthy ||
         !heap_is_active()) {
         report->status = PACKAGE_SERVICE_STATUS_UNAVAILABLE;
+        __atomic_clear(&servicing, __ATOMIC_RELEASE);
         return report->status;
     }
     zero_bytes(&context, sizeof(context));
     context.report = report;
-    servicing = true;
     status = recover_internal(&context);
     if (status != PACKAGE_SERVICE_STATUS_OK &&
             (status != PACKAGE_SERVICE_STATUS_INCOMPLETE ||
@@ -2683,7 +2683,7 @@ release:
     if (report->live_file_handles != 0U || report->live_allocations != 0U) {
         status = PACKAGE_SERVICE_STATUS_RESOURCE;
     }
-    servicing = false;
+    __atomic_clear(&servicing, __ATOMIC_RELEASE);
     report->status = status;
     return status;
 }
@@ -2707,7 +2707,7 @@ enum package_service_status package_service_repository_floor_read(
     zero_bytes(report, sizeof(*report));
     report->filesystem_status = PHIPFS_STATUS_OK;
     report->state_status = PACKAGE_STATE_STATUS_OK;
-    if (servicing) {
+    if (__atomic_test_and_set(&servicing, __ATOMIC_ACQUIRE)) {
         report->status = PACKAGE_SERVICE_STATUS_BUSY;
         return report->status;
     }
@@ -2715,11 +2715,11 @@ enum package_service_status package_service_repository_floor_read(
     if (!drive.present || !drive.mounted || !drive.healthy ||
         !heap_is_active()) {
         report->status = PACKAGE_SERVICE_STATUS_UNAVAILABLE;
+        __atomic_clear(&servicing, __ATOMIC_RELEASE);
         return report->status;
     }
     zero_bytes(&context, sizeof(context));
     context.report = report;
-    servicing = true;
     status = repository_floor_read_internal(&context, repository_floor,
         &current_present, &current_version, &new_present, &new_version);
     if (report->live_file_handles != 0U || report->live_allocations != 0U) {
@@ -2728,7 +2728,7 @@ enum package_service_status package_service_repository_floor_read(
     if (status != PACKAGE_SERVICE_STATUS_OK) {
         *repository_floor = 0U;
     }
-    servicing = false;
+    __atomic_clear(&servicing, __ATOMIC_RELEASE);
     report->status = status;
     return status;
 }
@@ -2747,7 +2747,7 @@ enum package_service_status package_service_repository_floor_advance(
     zero_bytes(report, sizeof(*report));
     report->filesystem_status = PHIPFS_STATUS_OK;
     report->state_status = PACKAGE_STATE_STATUS_OK;
-    if (servicing) {
+    if (__atomic_test_and_set(&servicing, __ATOMIC_ACQUIRE)) {
         report->status = PACKAGE_SERVICE_STATUS_BUSY;
         return report->status;
     }
@@ -2755,16 +2755,16 @@ enum package_service_status package_service_repository_floor_advance(
     if (!drive.present || !drive.mounted || !drive.healthy || drive.read_only ||
         !heap_is_active()) {
         report->status = PACKAGE_SERVICE_STATUS_UNAVAILABLE;
+        __atomic_clear(&servicing, __ATOMIC_RELEASE);
         return report->status;
     }
     zero_bytes(&context, sizeof(context));
     context.report = report;
-    servicing = true;
     status = repository_floor_advance_internal(&context, repository_version);
     if (report->live_file_handles != 0U || report->live_allocations != 0U) {
         status = PACKAGE_SERVICE_STATUS_RESOURCE;
     }
-    servicing = false;
+    __atomic_clear(&servicing, __ATOMIC_RELEASE);
     report->status = status;
     return status;
 }
@@ -2783,7 +2783,7 @@ enum package_service_status package_service_prepare(
     zero_bytes(report, sizeof(*report));
     report->filesystem_status = PHIPFS_STATUS_OK;
     report->state_status = PACKAGE_STATE_STATUS_OK;
-    if (servicing) {
+    if (__atomic_test_and_set(&servicing, __ATOMIC_ACQUIRE)) {
         report->status = PACKAGE_SERVICE_STATUS_BUSY;
         return report->status;
     }
@@ -2791,11 +2791,11 @@ enum package_service_status package_service_prepare(
     if (!drive.present || !drive.mounted || !drive.healthy || drive.read_only ||
         !heap_is_active()) {
         report->status = PACKAGE_SERVICE_STATUS_UNAVAILABLE;
+        __atomic_clear(&servicing, __ATOMIC_RELEASE);
         return report->status;
     }
     zero_bytes(&context, sizeof(context));
     context.report = report;
-    servicing = true;
     status = prepare_internal(&context, request);
     enum package_service_status entries_release = release_bytes(&context,
         (void **)&context.entries);
@@ -2805,7 +2805,7 @@ enum package_service_status package_service_prepare(
     if (report->live_file_handles != 0U || report->live_allocations != 0U) {
         status = PACKAGE_SERVICE_STATUS_RESOURCE;
     }
-    servicing = false;
+    __atomic_clear(&servicing, __ATOMIC_RELEASE);
     report->status = status;
     return status;
 }
@@ -2824,7 +2824,7 @@ enum package_service_status package_service_bootstrap(
     zero_bytes(report, sizeof(*report));
     report->filesystem_status = PHIPFS_STATUS_OK;
     report->state_status = PACKAGE_STATE_STATUS_OK;
-    if (servicing) {
+    if (__atomic_test_and_set(&servicing, __ATOMIC_ACQUIRE)) {
         report->status = PACKAGE_SERVICE_STATUS_BUSY;
         return report->status;
     }
@@ -2832,11 +2832,11 @@ enum package_service_status package_service_bootstrap(
     if (!drive.present || !drive.mounted || !drive.healthy || drive.read_only ||
         !heap_is_active()) {
         report->status = PACKAGE_SERVICE_STATUS_UNAVAILABLE;
+        __atomic_clear(&servicing, __ATOMIC_RELEASE);
         return report->status;
     }
     zero_bytes(&context, sizeof(context));
     context.report = report;
-    servicing = true;
     status = bootstrap_internal(&context, request);
     enum package_service_status entries_release = release_bytes(&context,
         (void **)&context.entries);
@@ -2846,7 +2846,7 @@ enum package_service_status package_service_bootstrap(
     if (report->live_file_handles != 0U || report->live_allocations != 0U) {
         status = PACKAGE_SERVICE_STATUS_RESOURCE;
     }
-    servicing = false;
+    __atomic_clear(&servicing, __ATOMIC_RELEASE);
     report->status = status;
     return status;
 }
@@ -2864,7 +2864,7 @@ enum package_service_status package_service_commit(
     zero_bytes(report, sizeof(*report));
     report->filesystem_status = PHIPFS_STATUS_OK;
     report->state_status = PACKAGE_STATE_STATUS_OK;
-    if (servicing) {
+    if (__atomic_test_and_set(&servicing, __ATOMIC_ACQUIRE)) {
         report->status = PACKAGE_SERVICE_STATUS_BUSY;
         return report->status;
     }
@@ -2872,11 +2872,11 @@ enum package_service_status package_service_commit(
     if (!drive.present || !drive.mounted || !drive.healthy || drive.read_only ||
         !heap_is_active()) {
         report->status = PACKAGE_SERVICE_STATUS_UNAVAILABLE;
+        __atomic_clear(&servicing, __ATOMIC_RELEASE);
         return report->status;
     }
     zero_bytes(&context, sizeof(context));
     context.report = report;
-    servicing = true;
     status = commit_internal(&context);
     enum package_service_status entries_release = release_bytes(&context,
         (void **)&context.entries);
@@ -2886,7 +2886,7 @@ enum package_service_status package_service_commit(
     if (report->live_file_handles != 0U || report->live_allocations != 0U) {
         status = PACKAGE_SERVICE_STATUS_RESOURCE;
     }
-    servicing = false;
+    __atomic_clear(&servicing, __ATOMIC_RELEASE);
     report->status = status;
     return status;
 }
