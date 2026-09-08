@@ -2406,6 +2406,12 @@ qemu-test-ext4-applications-inodes: iso $(FAT32_SYSTEM_IMAGE)
 		--system $(FAT32_SYSTEM_IMAGE) --ffmpeg $(FFMPEG) \
 		--output $(TEST_BUILD_DIR)/ext4-applications/$(shell git rev-parse --short HEAD)/inode-exhaustion
 
+.PHONY: qemu-test-ext4-notes-inodes
+qemu-test-ext4-notes-inodes: iso $(FAT32_SYSTEM_IMAGE)
+	$(PYTHON) tools/ext4_application_space_test.py --notes --inodes --iso $(ISO) \
+		--system $(FAT32_SYSTEM_IMAGE) \
+		--output $(TEST_BUILD_DIR)/ext4-applications/$(shell git rev-parse --short HEAD)/notes-inode-exhaustion
+
 capture-networking: iso $(FAT32_SYSTEM_IMAGE) $(FAT32_DATA_IMAGE)
 	rm -rf $(NETWORK_CAPTURE_DIR)
 	$(PYTHON) tools/capture-networking.py --iso $(ISO) \

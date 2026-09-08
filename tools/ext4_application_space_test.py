@@ -15,6 +15,7 @@ import ext4_kernel_read
 
 capture = applications.capture
 PAINT_BYTES = 54 + 320 * 180 * 3
+NOTES_CONTENT = b"Notes survived inode exhaustion."
 
 
 def click(pointer, x, y):
@@ -22,12 +23,16 @@ def click(pointer, x, y):
     pointer.click()
 
 
-def dump_paint(image, tools, destination):
-    ext4_image._debugfs(tools, image, f'dump /PAINT.BMP "{destination.as_posix()}"')
+def dump_document(image, tools, destination, name):
+    ext4_image._debugfs(tools, image, f'dump /{name} "{destination.as_posix()}"')
     return destination.read_bytes()
 
 
 def boot(args, image, output, work, number, original, before):
+    name = "NOTES.TXT" if args.notes else "PAINT.BMP"
+    app = "Notes" if args.notes else "Paint"
+    dock = capture.DOCK_NOTES if args.notes else capture.DOCK_CANVAS
+    length = len(NOTES_CONTENT) if args.notes else PAINT_BYTES
     serial = output / f"boot-{number}.log"
     port = capture.free_port()
     command = [args.qemu, "-machine", "accel=tcg", "-m", "128M", "-smp", "1",
@@ -46,39 +51,47 @@ def boot(args, image, output, work, number, original, before):
             if number == 1:
                 offset = serial.stat().st_size
                 pointer.rehome()
-                click(pointer, capture.dock_item_center(capture.DOCK_CANVAS), capture.DOCK_POINTER_Y)
-                capture.wait_serial_after(serial, offset, b"Phipia: Paint opened")
+                click(pointer, capture.dock_item_center(dock), capture.DOCK_POINTER_Y)
+                if not args.notes:
+                    capture.wait_serial_after(serial, offset, b"Phipia: Paint opened")
                 pointer.settle_guest(0.5)
                 # First application window is the home frame (82,40 860x602).
                 click(pointer, 873, 56)
                 pointer.settle_guest(0.4)
-                click(pointer, 220, 96)
-                click(pointer, 370, 407)
-                click(pointer, 500, 328)
-                for _ in range(4):
-                    qmp.hmp("sendkey backspace")
-                pointer.settle_guest(0.2)
-                capture.send_text(qmp, "320", 0.060)
-                click(pointer, 500, 366)
-                for _ in range(3):
-                    qmp.hmp("sendkey backspace")
-                pointer.settle_guest(0.2)
-                capture.send_text(qmp, "180", 0.060)
-                click(pointer, 550, 445)
-                pointer.settle_guest(0.4)
-                pointer.drag_to(60, 200, 250, 290)
+                if args.notes:
+                    click(pointer, 27, 21)
+                    capture.send_text(qmp, NOTES_CONTENT.decode("ascii"), 0.060)
+                else:
+                    click(pointer, 220, 96)
+                    click(pointer, 370, 407)
+                    click(pointer, 500, 328)
+                    for _ in range(4):
+                        qmp.hmp("sendkey backspace")
+                    pointer.settle_guest(0.2)
+                    capture.send_text(qmp, "320", 0.060)
+                    click(pointer, 500, 366)
+                    for _ in range(3):
+                        qmp.hmp("sendkey backspace")
+                    pointer.settle_guest(0.2)
+                    capture.send_text(qmp, "180", 0.060)
+                    click(pointer, 550, 445)
+                    pointer.settle_guest(0.4)
+                    pointer.drag_to(60, 200, 250, 290)
                 offset = serial.stat().st_size
-                click(pointer, 42, 16)
+                if args.notes:
+                    qmp.hmp("sendkey ctrl-s")
+                else:
+                    click(pointer, 42, 16)
                 capture.wait_serial_after(serial, offset, b"Phipia: Save failed: ", timeout=90.0)
                 failure_trace = serial.read_bytes()[offset:]
                 if b"Phipia: Save failed: volume has no free cluster\n" not in failure_trace:
-                    raise RuntimeError("Paint save failed for a reason other than PHIPFS_STATUS_FULL")
+                    raise RuntimeError(f"{app} save failed for a reason other than PHIPFS_STATUS_FULL")
                 if b"runtime disabled" in serial.read_bytes() or b"Phipia PANIC" in serial.read_bytes():
                     raise RuntimeError("storage refusal disabled the desktop")
-                capture.capture_png(qmp, work, output, "paint-full-refused")
+                capture.capture_png(qmp, work, output, f"{app.lower()}-full-refused")
                 tools = ext4_image.require_tools()
-                if dump_paint(image, tools, output / "paint-after-refusal.bmp") != original:
-                    raise RuntimeError("failed Paint publication changed the original image")
+                if dump_document(image, tools, output / f"refused-{name}", name) != original:
+                    raise RuntimeError(f"failed {app} publication changed the original document")
                 refused = ext4_image.parse_superblock(image.read_bytes())
                 if any(refused[field] != before[field] for field in ("free_blocks", "free_inodes")):
                     raise RuntimeError("failed Paint save leaked blocks or an inode")
@@ -91,18 +104,21 @@ def boot(args, image, output, work, number, original, before):
                 if reclaimed["free_blocks"] != before["free_blocks"] + 64 or reclaimed["free_inodes"] != before["free_inodes"] + 1:
                     raise RuntimeError("Phip did not reclaim the exact repair file")
                 pointer.rehome()
-                click(pointer, capture.dock_item_center(capture.DOCK_CANVAS), capture.DOCK_POINTER_Y)
+                click(pointer, capture.dock_item_center(dock), capture.DOCK_POINTER_Y)
                 pointer.settle_guest(0.5)
                 offset = serial.stat().st_size
-                click(pointer, 42, 16)
-                capture.wait_serial_after(serial, offset, b"Phipia: Paint saved PAINT.BMP", timeout=90.0)
-                capture.wait_for_named_file(image, "PAINT.BMP", PAINT_BYTES, filesystem="ext4")
-                capture.capture_png(qmp, work, output, "paint-space-reclaimed-retry")
+                if args.notes:
+                    qmp.hmp("sendkey ctrl-s")
+                else:
+                    click(pointer, 42, 16)
+                capture.wait_serial_after(serial, offset, f"Phipia: {app} saved {name}".encode(), timeout=90.0)
+                capture.wait_for_named_file(image, name, length, filesystem="ext4")
+                capture.capture_png(qmp, work, output, f"{app.lower()}-space-reclaimed-retry")
                 applications.terminal(qmp, pointer)
             else:
                 applications.terminal(qmp, pointer)
-                applications.command(qmp, serial, "stat PAINT.BMP", b"172854 bytes")
-                capture.capture_png(qmp, work, output, "paint-low-space-cold-boot")
+                applications.command(qmp, serial, f"stat {name}", f"{length} bytes".encode())
+                capture.capture_png(qmp, work, output, f"{app.lower()}-low-space-cold-boot")
             applications.command(qmp, serial, "sync", b"data synchronized")
             applications.command(qmp, serial, "reboot", applications.REBOOT)
             if applications.CENSUS not in serial.read_bytes() or process.wait(timeout=30) != 0:
@@ -130,6 +146,8 @@ def boot(args, image, output, work, number, original, before):
 
 
 def inspect(image, output, label, before, released_blocks, original, expected=None):
+    notes = before.get("application") == "Notes"
+    name = "NOTES.TXT" if notes else "PAINT.BMP"
     tools = ext4_image.require_tools()
     target = output / label
     target.mkdir()
@@ -137,14 +155,15 @@ def inspect(image, output, label, before, released_blocks, original, expected=No
     if report["needs_recovery"] or report["free_blocks"] != before["free_blocks"] + released_blocks or \
             report["free_inodes"] != before["free_inodes"] + 1:
         raise RuntimeError("Paint retry or reclamation changed allocation accounting")
-    content = dump_paint(image, tools, target / "PAINT.BMP")
-    if len(content) != PAINT_BYTES or content == original or (expected is not None and content != expected):
-        raise RuntimeError("Paint retry did not preserve its edited bitmap across reboot")
+    content = dump_document(image, tools, target / name, name)
+    if len(content) != (len(NOTES_CONTENT) if notes else PAINT_BYTES) or content == original or \
+            (expected is not None and content != expected) or (notes and content != NOTES_CONTENT):
+        raise RuntimeError("application retry did not preserve its exact edited document across reboot")
     names = ext4_image._debugfs(tools, image, "ls -p /")
     (target / "namespace.txt").write_text(names)
-    if any("/PNTMP" in line for line in names.splitlines()):
-        raise RuntimeError("Paint retry leaked an owned scratch file")
-    manifest = {"PAINT.BMP": {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()},
+    if any("/PNTMP" in line or "/SNTMP" in line for line in names.splitlines()):
+        raise RuntimeError("application retry leaked an owned scratch file")
+    manifest = {name: {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()},
         "system/release": None}
     if "inode_fill_count" in before:
         inode_names = ext4_image._debugfs(tools, image, "ls -p /inode-full")
@@ -172,7 +191,10 @@ def main():
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--inodes", action="store_true")
+    parser.add_argument("--notes", action="store_true")
     args = parser.parse_args()
+    if args.notes and not args.inodes:
+        parser.error("--notes currently requires --inodes")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     image = output / "ext4-data.raw"
@@ -181,12 +203,16 @@ def main():
     (output / "head.txt").write_text(subprocess.check_output(["git", "rev-parse", "HEAD"], text=True))
     with tempfile.TemporaryDirectory(prefix="paint-space-", dir=output) as raw:
         work = Path(raw)
-        bitmap = work / "PAINT.BMP"
-        subprocess.run([args.ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i",
-            str(Path(__file__).resolve().parent.parent / "assets/phipia/wallpaper.png"),
-            "-vf", "scale=320:180", "-pix_fmt", "bgr24", "-c:v", "bmp", str(bitmap)], check=True)
+        name = "NOTES.TXT" if args.notes else "PAINT.BMP"
+        bitmap = work / name
+        if args.notes:
+            bitmap.write_bytes(b"Original note.")
+        else:
+            subprocess.run([args.ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i",
+                str(Path(__file__).resolve().parent.parent / "assets/phipia/wallpaper.png"),
+                "-vf", "scale=320:180", "-pix_fmt", "bgr24", "-c:v", "bmp", str(bitmap)], check=True)
         original = bitmap.read_bytes()
-        ext4_image._run([tools["debugfs"], "-w", "-R", f'write "{bitmap.as_posix()}" /PAINT.BMP', image])
+        ext4_image._run([tools["debugfs"], "-w", "-R", f'write "{bitmap.as_posix()}" /{name}', image])
         available = ext4_image.parse_superblock(image.read_bytes())["free_blocks"]
         if available <= 128:
             raise RuntimeError("Paint fixture has insufficient initial free space")
@@ -215,6 +241,7 @@ def main():
             (output / "fixture-debugfs.txt").write_text(result.stdout)
             (output / "inode-namespace-before.txt").write_text(ext4_image._debugfs(tools, image, "ls -p /inode-full"))
         before = ext4_image.inspect_image(image, tools=tools)
+        before["application"] = "Notes" if args.notes else "Paint"
         if args.inodes:
             if before["free_inodes"] != 0 or before["free_blocks"] <= 128 or released != 64:
                 raise RuntimeError("Paint fixture does not isolate inode exhaustion with sufficient free blocks")
@@ -227,7 +254,7 @@ def main():
         boot(args, image, output, work, 2, original, before)
         inspect(image, output, "after-cold-boot", before, released, original, saved)
     exhaustion = "inode exhaustion" if args.inodes else "ENOSPC"
-    print(f"ext4 Paint {exhaustion} original preservation, in-memory retry, Phip reclamation, cold boot, Linux readback and fsck: PASS")
+    print(f"ext4 {before['application']} {exhaustion} original preservation, in-memory retry, Phip reclamation, cold boot, Linux readback and fsck: PASS")
 
 
 if __name__ == "__main__":
