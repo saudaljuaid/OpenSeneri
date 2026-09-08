@@ -1308,7 +1308,14 @@ $(BUILD_DIR)/ext4-append-contention-host-test: tools/ext4-append-contention-host
 		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion -Iinclude \
 		tools/ext4-append-contention-host-test.c $(HOST_THREAD_FLAGS) -Wl,--gc-sections -o $@
 
-ext4-tests: $(BUILD_DIR)/vfs-vnode-host-test $(BUILD_DIR)/vfs-mount-host-test $(BUILD_DIR)/vfs-directory-host-test $(BUILD_DIR)/ext4-append-contention-host-test
+$(BUILD_DIR)/ext4-registry-host-test: tools/ext4-registry-host-test.c tools/ext4-vfs-host-test.c src/kernel/ext4_fs.c \
+		include/phipia/ext4_fs.h include/phipia/nvme.h include/phipia/slot_claim.h include/phipia/cpu.h
+	mkdir -p $(dir $@)
+	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections \
+		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion -Iinclude \
+		tools/ext4-registry-host-test.c $(HOST_THREAD_FLAGS) -Wl,--gc-sections -o $@
+
+ext4-tests: $(BUILD_DIR)/vfs-vnode-host-test $(BUILD_DIR)/vfs-mount-host-test $(BUILD_DIR)/vfs-directory-host-test $(BUILD_DIR)/ext4-append-contention-host-test $(BUILD_DIR)/ext4-registry-host-test
 
 $(BUILD_DIR)/ext4-nvme-close-host-test: tools/ext4-nvme-close-host-test.c \
 		src/kernel/nvme.c include/phipia/nvme.h include/phipia/dma.h
@@ -1355,6 +1362,7 @@ ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesys
 	$(BUILD_DIR)/vfs-vnode-host-test
 	$(BUILD_DIR)/vfs-directory-host-test
 	$(BUILD_DIR)/ext4-append-contention-host-test
+	$(BUILD_DIR)/ext4-registry-host-test
 	$(BUILD_DIR)/vfs-file-claims-host-test
 	$(BUILD_DIR)/vfs-directory-claims-host-test
 	$(BUILD_DIR)/ext4-handle-claims-host-test

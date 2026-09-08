@@ -60,6 +60,7 @@ static struct ext4_handle_state ext4_handles[EXT4_MAX_HANDLES];
 /* A claim covers reservation, publication and deferred close. Only final
  * retirement releases it, so independent volume leases cannot share a slot. */
 static bool ext4_handle_claims[EXT4_MAX_HANDLES];
+static bool handle_metadata_owned;
 static enum phipfs_status ext4_last_mount_status[PHIPFS_VOLUME_COUNT];
 static struct phipia_ext4_mount_diagnostic
     ext4_mount_diagnostics[PHIPFS_VOLUME_COUNT];
@@ -161,6 +162,22 @@ _Static_assert(offsetof(struct phipia_ext4_identity, recovered_transactions) ==
     "ext4 identity C/Rust ABI offset drift");
 _Static_assert(offsetof(struct phipia_ext4_identity, recovery_performed) == 44U,
     "ext4 recovery C/Rust ABI offset drift");
+
+/* Bounded registry memory only. Rust/storage callbacks run after release. */
+static bool handle_metadata_acquire(void)
+{
+    const bool restore_interrupts = cpu_interrupts_enabled();
+    cpu_interrupt_disable();
+    while (__atomic_test_and_set(&handle_metadata_owned, __ATOMIC_ACQUIRE))
+        __asm__ volatile("pause" ::: "memory");
+    return restore_interrupts;
+}
+
+static void handle_metadata_release(bool restore_interrupts)
+{
+    __atomic_clear(&handle_metadata_owned, __ATOMIC_RELEASE);
+    if (restore_interrupts) cpu_interrupt_enable();
+}
 
 static void zero_bytes(void *pointer, size_t length)
 {
@@ -429,8 +446,10 @@ static enum phipfs_status end_operation(struct ext4_mount_state *mount,
 
 static void retire_handle_slot(size_t slot)
 {
+    const bool restore_interrupts = handle_metadata_acquire();
     zero_bytes(&ext4_handles[slot], sizeof(ext4_handles[slot]));
     phipia_slot_release(ext4_handle_claims, slot);
+    handle_metadata_release(restore_interrupts);
 }
 
 static void release_operation(struct ext4_mount_state *mount)
@@ -439,11 +458,14 @@ static void release_operation(struct ext4_mount_state *mount)
      * but its backing state must survive until the operation stops using it. */
     for (;;) {
         for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
-            struct ext4_handle_state *state = &ext4_handles[index];
-
-            if (state->active && state->closing && valid_volume(state->volume) &&
-                &ext4_mounts[state->volume] == mount) {
-                if (state->directory_snapshot != 0U) phipia_ext4_snapshot_free(state->directory_snapshot);
+            const bool restore_interrupts = handle_metadata_acquire();
+            const struct ext4_handle_state *state = &ext4_handles[index];
+            const bool retiring = state->active && state->closing && valid_volume(state->volume) &&
+                &ext4_mounts[state->volume] == mount;
+            const uintptr_t snapshot = retiring ? state->directory_snapshot : 0U;
+            handle_metadata_release(restore_interrupts);
+            if (retiring) {
+                if (snapshot != 0U) phipia_ext4_snapshot_free(snapshot);
                 retire_handle_slot(index);
             }
         }
@@ -451,11 +473,13 @@ static void release_operation(struct ext4_mount_state *mount)
         // A close can arrive after its slot was scanned but before the guard
         // was released. Either reclaim it now or leave it to the next owner.
         bool pending_close = false;
+        const bool restore_interrupts = handle_metadata_acquire();
         for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
             const struct ext4_handle_state *state = &ext4_handles[index];
             if (state->active && state->closing && valid_volume(state->volume) &&
                 &ext4_mounts[state->volume] == mount) pending_close = true;
         }
+        handle_metadata_release(restore_interrupts);
         if (!pending_close) return;
         bool idle = false;
         if (!__atomic_compare_exchange_n(&mount->operation_active, &idle,
@@ -558,8 +582,10 @@ static enum phipfs_status end_operation_with_cursor(
     // A failed read or seek must not advance its cursor. Publish after storage
     // teardown succeeds, still under the lease and before deferred closes can
     // retire/reuse this descriptor. A reentrant close has already hidden it.
+    const bool restore_interrupts = handle_metadata_acquire();
     if (cursor_handle != NULL && cursor_handle->active && !cursor_handle->closing)
         cursor_handle->offset = cursor_offset;
+    handle_metadata_release(restore_interrupts);
     ++mount->completion_count;
     release_operation(mount);
     return PHIPFS_STATUS_OK;
@@ -763,7 +789,7 @@ static void fill_stat(
     destination->read_only = false;
 }
 
-static enum phipfs_status handle_state(
+static enum phipfs_status handle_state_locked(
     phipfs_handle handle,
     struct ext4_handle_state **state
 )
@@ -789,6 +815,26 @@ static enum phipfs_status handle_state(
     return PHIPFS_STATUS_OK;
 }
 
+static enum phipfs_status handle_state(phipfs_handle handle, struct ext4_handle_state **state)
+{
+    /* Only an owned volume guard (or quiescent host inspection) may retain
+     * this pointer. Unleased callers use handle_snapshot below. */
+    const bool restore_interrupts = handle_metadata_acquire();
+    const enum phipfs_status status = handle_state_locked(handle, state);
+    handle_metadata_release(restore_interrupts);
+    return status;
+}
+
+static enum phipfs_status handle_snapshot(phipfs_handle handle, struct ext4_handle_state *snapshot)
+{
+    const bool restore_interrupts = handle_metadata_acquire();
+    struct ext4_handle_state *state;
+    const enum phipfs_status status = handle_state_locked(handle, &state);
+    if (status == PHIPFS_STATUS_OK) *snapshot = *state;
+    handle_metadata_release(restore_interrupts);
+    return status;
+}
+
 static enum phipfs_status leased_handle_state(phipfs_handle handle,
     struct ext4_mount_state *mount, struct ext4_handle_state **state)
 {
@@ -811,6 +857,7 @@ static void initialize_reserved_handle(size_t slot, enum phipfs_volume volume,
     enum phipfs_access access, bool directory, uintptr_t snapshot, phipfs_handle *handle)
 {
     const size_t length = path_length(path);
+    const bool restore_interrupts = handle_metadata_acquire();
     zero_bytes(&ext4_handles[slot], sizeof(ext4_handles[slot]));
     ext4_handles[slot].generation = generation(&next_handle_generation);
     ext4_handles[slot].mount_generation = ext4_mounts[volume].generation;
@@ -823,6 +870,7 @@ static void initialize_reserved_handle(size_t slot, enum phipfs_volume volume,
     copy_bytes(ext4_handles[slot].path, path, length + 1U);
     ext4_handles[slot].active = true;
     *handle = ext4_handles[slot].generation << 8U | (uint64_t)(slot + 1U);
+    handle_metadata_release(restore_interrupts);
 }
 
 static enum phipfs_status allocate_handle(enum phipfs_volume volume,
@@ -838,7 +886,7 @@ static enum phipfs_status allocate_handle(enum phipfs_volume volume,
     return PHIPFS_STATUS_OK;
 }
 
-static void update_open_sizes(enum phipfs_volume volume, uint64_t inode,
+static void update_open_sizes_locked(enum phipfs_volume volume, uint64_t inode,
     uint64_t size)
 {
     for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
@@ -852,8 +900,16 @@ static void update_open_sizes(enum phipfs_volume volume, uint64_t inode,
     }
 }
 
+static void update_open_sizes(enum phipfs_volume volume, uint64_t inode, uint64_t size)
+{
+    const bool restore_interrupts = handle_metadata_acquire();
+    update_open_sizes_locked(volume, inode, size);
+    handle_metadata_release(restore_interrupts);
+}
+
 static size_t collect_open_inodes(enum phipfs_volume volume, uint64_t *inodes, bool include_directories)
 {
+    const bool restore_interrupts = handle_metadata_acquire();
     size_t count = 0U;
     for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
         if (ext4_handles[index].active &&
@@ -864,17 +920,22 @@ static size_t collect_open_inodes(enum phipfs_volume volume, uint64_t *inodes, b
             inodes[count++] = ext4_handles[index].inode;
         }
     }
+    handle_metadata_release(restore_interrupts);
     return count;
 }
 
 static bool volume_has_open_handles(enum phipfs_volume volume)
 {
+    const bool restore_interrupts = handle_metadata_acquire();
+    bool found = false;
     for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
         if (ext4_handles[index].active && ext4_handles[index].volume == volume) {
-            return true;
+            found = true;
+            break;
         }
     }
-    return false;
+    handle_metadata_release(restore_interrupts);
+    return found;
 }
 
 void ext4_backend_initialize(void)
@@ -1021,12 +1082,18 @@ bool ext4_backend_resources_released(void)
             mount->close_failed || mount->orphan_cleanup_pending || mount->rust_mount != 0U ||
             mount->session.active) return false;
     }
+    const bool restore_interrupts = handle_metadata_acquire();
+    bool released = true;
     for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
         const struct ext4_handle_state *handle = &ext4_handles[index];
         if (handle->active || handle->closing || handle->directory_snapshot != 0U ||
-            __atomic_load_n(&ext4_handle_claims[index], __ATOMIC_ACQUIRE)) return false;
+            __atomic_load_n(&ext4_handle_claims[index], __ATOMIC_ACQUIRE)) {
+            released = false;
+            break;
+        }
     }
-    return true;
+    handle_metadata_release(restore_interrupts);
+    return released;
 }
 
 bool ext4_backend_mount_diagnostic(enum phipfs_volume volume,
@@ -1091,10 +1158,11 @@ enum phipfs_status ext4_backend_unmount(enum phipfs_volume volume)
 
 enum phipfs_status ext4_backend_unlink_held_file(phipfs_handle handle, const char *path)
 {
-    struct ext4_handle_state *state;
+    struct ext4_handle_state initial;
+    struct ext4_handle_state *state = &initial;
     const size_t length = path_length(path);
     if (length == 0U || length >= PHIPFS_MAX_PATH) return PHIPFS_STATUS_PATH;
-    enum phipfs_status status = handle_state(handle, &state);
+    enum phipfs_status status = handle_snapshot(handle, &initial);
     if (status != PHIPFS_STATUS_OK) return status;
     if (state->directory || (state->access & PHIPFS_ACCESS_WRITE) == 0U) return PHIPFS_STATUS_ACCESS;
     struct ext4_mount_state *mount = &ext4_mounts[state->volume];
@@ -1153,23 +1221,28 @@ static enum phipfs_status sync_volume_handle(enum phipfs_volume volume, phipfs_h
          * cached EOFs while the same lease excludes another mutation; keep
          * each file position unchanged. A failed refresh remains retryable. */
         for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
+            bool restore_interrupts = handle_metadata_acquire();
             struct ext4_handle_state *state = &ext4_handles[index];
+            const struct ext4_handle_state snapshot = *state;
+            handle_metadata_release(restore_interrupts);
             struct phipia_ext4_metadata metadata;
 
-            if (!state->active || state->directory || state->volume != volume ||
-                state->mount_generation != mount->generation) {
+            if (!snapshot.active || snapshot.directory || snapshot.volume != volume ||
+                snapshot.mount_generation != mount->generation) {
                 continue;
             }
             zero_bytes(&metadata, sizeof(metadata));
-            status = map_status(phipia_ext4_stat_inode(mount->rust_mount, state->inode, &metadata));
+            status = map_status(phipia_ext4_stat_inode(mount->rust_mount, snapshot.inode, &metadata));
             if (status != PHIPFS_STATUS_OK) {
                 break;
             }
-            if (metadata.inode != state->inode) {
+            if (metadata.inode != snapshot.inode) {
                 status = PHIPFS_STATUS_STALE_HANDLE;
                 break;
             }
+            restore_interrupts = handle_metadata_acquire();
             state->size = metadata.size;
+            handle_metadata_release(restore_interrupts);
         }
     }
     close_status = end_operation(mount, NULL);
@@ -1183,11 +1256,12 @@ enum phipfs_status ext4_backend_sync(enum phipfs_volume volume)
 
 enum phipfs_status ext4_backend_fstat(phipfs_handle handle, struct phipfs_stat *stat)
 {
-    struct ext4_handle_state *state;
+    struct ext4_handle_state initial;
+    struct ext4_handle_state *state = &initial;
     struct phipia_ext4_metadata metadata;
     if (stat == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
     zero_bytes(stat, sizeof(*stat));
-    enum phipfs_status status = handle_state(handle, &state);
+    enum phipfs_status status = handle_snapshot(handle, &initial);
     if (status != PHIPFS_STATUS_OK) return status;
     struct ext4_mount_state *mount = &ext4_mounts[state->volume];
     status = begin_operation(mount, false);
@@ -1203,12 +1277,13 @@ enum phipfs_status ext4_backend_fstat(phipfs_handle handle, struct phipfs_stat *
 
 enum phipfs_status ext4_backend_publish_file(phipfs_handle handle, const char *source, const char *destination)
 {
-    struct ext4_handle_state *state;
+    struct ext4_handle_state initial;
+    struct ext4_handle_state *state = &initial;
     const size_t source_length = path_length(source);
     const size_t destination_length = path_length(destination);
     if (source_length == 0U || source_length >= PHIPFS_MAX_PATH ||
         destination_length == 0U || destination_length >= PHIPFS_MAX_PATH) return PHIPFS_STATUS_PATH;
-    enum phipfs_status status = handle_state(handle, &state);
+    enum phipfs_status status = handle_snapshot(handle, &initial);
     if (status != PHIPFS_STATUS_OK) return status;
     if (state->directory || (state->access & PHIPFS_ACCESS_WRITE) == 0U) return PHIPFS_STATUS_ACCESS;
     struct ext4_mount_state *mount = &ext4_mounts[state->volume];
@@ -1228,8 +1303,9 @@ enum phipfs_status ext4_backend_publish_file(phipfs_handle handle, const char *s
 
 enum phipfs_status ext4_backend_fsync(phipfs_handle handle)
 {
-    struct ext4_handle_state *state;
-    const enum phipfs_status status = handle_state(handle, &state);
+    struct ext4_handle_state initial;
+    struct ext4_handle_state *state = &initial;
+    const enum phipfs_status status = handle_snapshot(handle, &initial);
     return status == PHIPFS_STATUS_OK ? sync_volume_handle(state->volume, handle) : status;
 }
 
@@ -1343,13 +1419,13 @@ enum phipfs_status ext4_backend_open_options(enum phipfs_volume volume, const ch
 
 enum phipfs_status ext4_backend_close(phipfs_handle handle)
 {
+    const bool restore_interrupts = handle_metadata_acquire();
     struct ext4_handle_state *state;
-    enum phipfs_status status = handle_state(handle, &state);
+    enum phipfs_status status = handle_state_locked(handle, &state);
 
     if (status == PHIPFS_STATUS_OK) {
         const enum phipfs_volume volume = state->volume;
         struct ext4_mount_state *mount = &ext4_mounts[volume];
-        const bool cleanup = mount->orphan_cleanup_pending;
         bool idle = false;
 
         state->closing = true;
@@ -1357,15 +1433,18 @@ enum phipfs_status ext4_backend_close(phipfs_handle handle)
                 true, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
             // The active operation owns final release; sync/unmount can
             // subsequently finish any orphan cleanup it leaves pending.
+            handle_metadata_release(restore_interrupts);
             return PHIPFS_STATUS_OK;
         }
+        handle_metadata_release(restore_interrupts);
+        const bool cleanup = mount->orphan_cleanup_pending;
         release_operation(mount);
         /* Close releases the descriptor; it is not a durability barrier.
          * Writes have already reported their commit result. Try reclaiming
          * unreferenced orphans now; a refused plan remains mount-owned and
          * retryable through sync/unmount, including forced process teardown. */
         if (cleanup) (void)ext4_backend_sync(volume);
-    }
+    } else handle_metadata_release(restore_interrupts);
     return status;
 }
 
@@ -1373,7 +1452,8 @@ static enum phipfs_status read_handle(phipfs_handle handle,
     uint8_t *destination, size_t capacity, uint64_t offset,
     size_t *read_bytes, bool advance)
 {
-    struct ext4_handle_state *state;
+    struct ext4_handle_state initial;
+    struct ext4_handle_state *state = &initial;
     struct ext4_mount_state *mount;
     enum phipfs_status status;
     enum phipfs_status close_status;
@@ -1382,7 +1462,7 @@ static enum phipfs_status read_handle(phipfs_handle handle,
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
     *read_bytes = 0U;
-    status = handle_state(handle, &state);
+    status = handle_snapshot(handle, &initial);
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
@@ -1660,7 +1740,8 @@ enum phipfs_status ext4_backend_rename_probe(enum phipfs_volume volume,
 enum phipfs_status ext4_backend_write(phipfs_handle handle,
     const uint8_t *source, size_t source_bytes, size_t *written_bytes)
 {
-    struct ext4_handle_state *state;
+    struct ext4_handle_state initial;
+    struct ext4_handle_state *state = &initial;
     struct ext4_mount_state *mount;
     uint64_t end;
     enum phipfs_status status;
@@ -1670,7 +1751,7 @@ enum phipfs_status ext4_backend_write(phipfs_handle handle,
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
     *written_bytes = 0U;
-    status = handle_state(handle, &state);
+    status = handle_snapshot(handle, &initial);
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
@@ -1708,8 +1789,10 @@ enum phipfs_status ext4_backend_write(phipfs_handle handle,
             status = PHIPFS_STATUS_CORRUPT;
         } else {
             end = state->offset + *written_bytes;
+            const bool restore_interrupts = handle_metadata_acquire();
             state->offset = end;
-            if (end > state->size) update_open_sizes(state->volume, state->inode, end);
+            if (end > state->size) update_open_sizes_locked(state->volume, state->inode, end);
+            handle_metadata_release(restore_interrupts);
         }
     }
     close_status = end_operation(mount, NULL);
@@ -1719,7 +1802,8 @@ enum phipfs_status ext4_backend_write(phipfs_handle handle,
 enum phipfs_status ext4_backend_append(phipfs_handle handle,
     const uint8_t *source, size_t source_bytes, size_t *written_bytes)
 {
-    struct ext4_handle_state *state;
+    struct ext4_handle_state initial;
+    struct ext4_handle_state *state = &initial;
     struct ext4_mount_state *mount;
     uint64_t start = 0U;
     enum phipfs_status status;
@@ -1729,7 +1813,7 @@ enum phipfs_status ext4_backend_append(phipfs_handle handle,
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
     *written_bytes = 0U;
-    status = handle_state(handle, &state);
+    status = handle_snapshot(handle, &initial);
     if (status != PHIPFS_STATUS_OK) return status;
     if (state->directory) return PHIPFS_STATUS_IS_DIRECTORY;
     if ((state->access & PHIPFS_ACCESS_WRITE) == 0U) return PHIPFS_STATUS_ACCESS;
@@ -1750,8 +1834,10 @@ enum phipfs_status ext4_backend_append(phipfs_handle handle,
         } else {
             // Publish the durable EOF before releasing the writer lease. A
             // later append must not have its newer size overwritten by us.
+            const bool restore_interrupts = handle_metadata_acquire();
             state->offset = start + *written_bytes;
-            update_open_sizes(state->volume, state->inode, state->offset);
+            update_open_sizes_locked(state->volume, state->inode, state->offset);
+            handle_metadata_release(restore_interrupts);
         }
     }
     close_status = end_operation(mount, NULL);
@@ -1761,7 +1847,8 @@ enum phipfs_status ext4_backend_append(phipfs_handle handle,
 enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
     enum phipfs_seek_origin origin, uint64_t *position)
 {
-    struct ext4_handle_state *state;
+    struct ext4_handle_state initial;
+    struct ext4_handle_state *state = &initial;
     struct ext4_mount_state *mount = NULL;
     bool storage_lease = false;
     uint64_t base;
@@ -1772,7 +1859,7 @@ enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
     *position = 0U;
-    status = handle_state(handle, &state);
+    status = handle_snapshot(handle, &initial);
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
@@ -1823,7 +1910,11 @@ enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
         }
         target = base + (uint64_t)offset;
     }
-    if (!storage_lease) state->offset = target;
+    if (!storage_lease) {
+        const bool restore_interrupts = handle_metadata_acquire();
+        state->offset = target;
+        handle_metadata_release(restore_interrupts);
+    }
 done:
     if (mount != NULL) {
         if (storage_lease) {
@@ -1945,7 +2036,8 @@ enum phipfs_status ext4_backend_directory_open_with_stat(enum phipfs_volume volu
 enum phipfs_status ext4_backend_directory_read(phipfs_handle handle,
     struct phipfs_list_entry *entry, bool *present)
 {
-    struct ext4_handle_state *state;
+    struct ext4_handle_state initial;
+    struct ext4_handle_state *state = &initial;
     enum phipfs_status status;
 
     if (entry == NULL || present == NULL) {
@@ -1953,7 +2045,7 @@ enum phipfs_status ext4_backend_directory_read(phipfs_handle handle,
     }
     zero_bytes(entry, sizeof(*entry));
     *present = false;
-    status = handle_state(handle, &state);
+    status = handle_snapshot(handle, &initial);
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
@@ -1966,7 +2058,9 @@ enum phipfs_status ext4_backend_directory_read(phipfs_handle handle,
     status = leased_handle_state(handle, mount, &state);
     if (status == PHIPFS_STATUS_OK) status = indexed_entry(state, state->offset, entry, present);
     if (status == PHIPFS_STATUS_OK && *present) {
+        const bool restore_interrupts = handle_metadata_acquire();
         ++state->offset;
+        handle_metadata_release(restore_interrupts);
     }
     release_operation(mount);
     return status;
@@ -2093,8 +2187,9 @@ enum phipfs_status ext4_backend_set_times(enum phipfs_volume volume, const char 
 
 enum phipfs_status ext4_backend_ftruncate(phipfs_handle handle, uint64_t size)
 {
-    struct ext4_handle_state *state;
-    enum phipfs_status status = handle_state(handle, &state);
+    struct ext4_handle_state initial;
+    struct ext4_handle_state *state = &initial;
+    enum phipfs_status status = handle_snapshot(handle, &initial);
     if (status != PHIPFS_STATUS_OK) return status;
     if (state->directory) return PHIPFS_STATUS_IS_DIRECTORY;
     if ((state->access & PHIPFS_ACCESS_WRITE) == 0U) return PHIPFS_STATUS_ACCESS;

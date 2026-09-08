@@ -49,6 +49,10 @@ static void check_test_slot(size_t slot, size_t worker, size_t round, uint64_t t
 }
 #else
 #include "../src/kernel/ext4_fs.c"
+static _Thread_local bool host_interrupts_enabled = true;
+bool cpu_interrupts_enabled(void) { return host_interrupts_enabled; }
+void cpu_interrupt_disable(void) { host_interrupts_enabled = false; }
+void cpu_interrupt_enable(void) { host_interrupts_enabled = true; }
 #define TEST_CAPACITY EXT4_MAX_HANDLES
 #define TEST_CLAIMS ext4_handle_claims
 #define TEST_STATES ext4_handles

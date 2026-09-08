@@ -182,10 +182,16 @@ copies one entry and advances its cursor while locked; sixteen competing host
 readers check each entry appears exactly once. Streaming reads copy their
 backend token and pin the mount before unlocking. Reentrant directory close
 and reuse preserve generations and release all pins, including overflow errors.
-These protections do not establish complete SMP filesystem support: published
-backend handle state and cross-volume backend registry scans still need their
-own lifecycle synchronization. The admitted execution model remains one
-core, with backend operations serialized by the volume guard.
+The backend registry now protects publication, initial handle snapshots,
+cross-volume inode scans, cursor/EOF publication and retirement with a separate
+short metadata lock. Close marks a generation stale under that lock; the volume
+guard still owns deferred destruction, with snapshot freeing outside the lock.
+Host tests cover sixteen competing closes (one owner), deferred reclamation,
+8,000 cross-volume allocation generations and coherent inode censuses.
+These protections do not establish complete SMP filesystem support: backend
+mount state, coordinator and device execution still need end-to-end concurrency
+proof. The admitted execution model remains one core, with backend operations
+serialized by the volume guard.
 
 ## Read-write admission
 

@@ -11,6 +11,10 @@
 #include <sched.h>
 #endif
 #include "../src/kernel/ext4_fs.c"
+static _Thread_local bool host_interrupts_enabled = true;
+bool cpu_interrupts_enabled(void) { return host_interrupts_enabled; }
+void cpu_interrupt_disable(void) { host_interrupts_enabled = false; }
+void cpu_interrupt_enable(void) { host_interrupts_enabled = true; }
 
 #define WORKERS 16U
 #define ROUNDS 500U
@@ -38,6 +42,7 @@ enum nvme_status nvme_volume_open(struct nvme_volume_session *session,
     uint32_t controller, bool writable)
 {
     assert(controller == 1U && writable && !session->active);
+    assert(cpu_interrupts_enabled());
     assert(__atomic_fetch_add(&owners, 1U, __ATOMIC_ACQ_REL) == 0U);
     ++opens;
     session->active = true;
@@ -51,6 +56,7 @@ enum nvme_status nvme_volume_open(struct nvme_volume_session *session,
 enum nvme_status nvme_volume_close(struct nvme_volume_session *session)
 {
     assert(session->active && __atomic_load_n(&owners, __ATOMIC_ACQUIRE) == 1U);
+    assert(cpu_interrupts_enabled());
     session->active = false;
     ++closes;
     assert(__atomic_fetch_sub(&owners, 1U, __ATOMIC_ACQ_REL) == 1U);

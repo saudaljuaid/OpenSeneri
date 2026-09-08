@@ -4,6 +4,10 @@
 #include <stdio.h>
 #include <string.h>
 #include "../src/kernel/ext4_fs.c"
+static _Thread_local bool host_interrupts_enabled = true;
+bool cpu_interrupts_enabled(void) { return host_interrupts_enabled; }
+void cpu_interrupt_disable(void) { host_interrupts_enabled = false; }
+void cpu_interrupt_enable(void) { host_interrupts_enabled = true; }
 
 static unsigned opens;
 static unsigned closes;
@@ -56,6 +60,7 @@ static void close_from_callback(unsigned kind)
     uint64_t position = 99U;
     struct ext4_handle_state *held;
     const size_t index = (size_t)((callback_handle & 0xffU) - 1U);
+    assert(index < EXT4_MAX_HANDLES);
 
     assert(ext4_mounts[PHIPFS_VOLUME_DATA].operation_active);
     assert(ext4_backend_seek(callback_handle, 0, PHIPFS_SEEK_START, &position) == PHIPFS_STATUS_BUSY);
@@ -156,6 +161,7 @@ int32_t phipia_ext4_snapshot_entry(uintptr_t snapshot, uint64_t index,
 
 void phipia_ext4_snapshot_free(uintptr_t snapshot)
 {
+    assert(cpu_interrupts_enabled());
     assert(snapshot == 2U && live_snapshots == 1U);
     --live_snapshots;
     ++freed_snapshots;
@@ -214,6 +220,7 @@ int32_t phipia_ext4_append(uintptr_t mounted, const uint8_t *path,
 enum nvme_status nvme_volume_open(struct nvme_volume_session *session,
     uint32_t controller_index, bool writable)
 {
+    assert(cpu_interrupts_enabled());
     assert(!session->active);
     if (reenter_on_open) {
         reenter_on_open = false;
@@ -243,6 +250,7 @@ enum nvme_status nvme_volume_open(struct nvme_volume_session *session,
 
 enum nvme_status nvme_volume_close(struct nvme_volume_session *session)
 {
+    assert(cpu_interrupts_enabled());
     assert(session->active);
     close_from_callback(4U);
     if (reenter_on_close) {
