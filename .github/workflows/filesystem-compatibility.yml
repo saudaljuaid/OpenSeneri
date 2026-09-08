@@ -149,12 +149,11 @@ jobs:
                           --locked --offline --test revoke_allocations -- --include-ignored --nocapture \
                           2>&1 | tee evidence/ext4/revoke-allocation-host.log
                   if [[ '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
-                      printf '%s\n' 'Application probe: full host, recovery and release suites remain required.' \
+                      printf '%s\n' 'Application probe: complete journal/coordinator fixtures run below; remaining recovery and release gates are separate.' \
                           >evidence/ext4/APPLICATION-PROBE.txt
-                      exit 0
                   fi
                   export CARGO_TARGET_DIR="$PWD/build/ext4-transaction-target"
-                  if [[ "$PHIPIA_EXT4_CUT_OPERATION" == 'storage-refusals' ]]; then
+                  if [[ "$PHIPIA_EXT4_CUT_OPERATION" == 'storage-refusals' || '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
                       cargo test --manifest-path tools/ext4-transaction-tests/Cargo.toml \
                           --locked --offline --lib --test coordinator -- --nocapture \
                           2>&1 | tee evidence/ext4/journal-and-coordinator-host.log
