@@ -506,6 +506,23 @@ static enum phipfs_status save_app(unsigned app)
 
 static void storage_errors_keep_application_open(void)
 {
+    const enum save_fault note_failures[] = { CREATE_FULL, WRITE_FAIL, FIRST_SYNC_FAIL, PUBLISH_FAIL };
+    for (size_t index = 0U; index < sizeof(note_failures) / sizeof(note_failures[0]); ++index) {
+        reset_save(note_failures[index]);
+        storage_error_dialogs = 0U;
+        state.active = true;
+        state.layout.panel = (struct ui_rect){ 0U, 0U, 200U, 200U };
+        struct ui_rect note_damage = { 0U, 0U, 0U, 0U };
+        assert(application_storage_action(APPLICATION_NOTES_SAVE, &note_damage) == UI_STATUS_OK);
+        assert(state.active && note_dirty && storage_error_dialogs == 1U && note_damage.width != 0U);
+        assert(live_handles == 0U && scratch_inode == 0U);
+        assert(target_length == 3U && memcmp(target_bytes, "old", 3U) == 0);
+        assert(strcmp(note_buffer, "complete new note\n") == 0);
+        fault = SAVE_OK;
+        assert(application_storage_action(APPLICATION_NOTES_SAVE, &note_damage) == UI_STATUS_OK);
+        assert(!note_dirty && storage_error_dialogs == 1U && live_handles == 0U && scratch_inode == 0U);
+        assert(target_length == expected_length && memcmp(target_bytes, expected_bytes, expected_length) == 0);
+    }
     for (unsigned app = 1U; app <= 3U; ++app) {
         const enum application_storage_action action = app == 1U ? APPLICATION_MEDIA_SAVE :
             (app == 2U ? APPLICATION_PAINT_SAVE : APPLICATION_MEDIA_EXPORT);
@@ -530,7 +547,7 @@ static void storage_errors_keep_application_open(void)
     struct ui_rect damage = { 0U, 0U, 0U, 0U };
     assert(application_storage_action(APPLICATION_PAINT_SAVE, &damage) == UI_STATUS_OK);
     assert(paint_saved && storage_error_dialogs == 0U && live_handles == 0U);
-    puts("Paint and Media ENOSPC/IO failures retain documents, close ownership and keep the desktop active: PASS");
+    puts("Notes, Paint and Media ENOSPC/IO failures retain documents, close ownership and keep the desktop active: PASS");
 }
 
 static void settings_persistence(void)

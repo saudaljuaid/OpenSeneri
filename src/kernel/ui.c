@@ -4240,7 +4240,7 @@ static enum phipfs_status media_editor_save(void)
 }
 
 enum application_storage_action {
-    APPLICATION_PAINT_SAVE, APPLICATION_MEDIA_SAVE, APPLICATION_MEDIA_EXPORT
+    APPLICATION_PAINT_SAVE, APPLICATION_MEDIA_SAVE, APPLICATION_MEDIA_EXPORT, APPLICATION_NOTES_SAVE
 };
 
 static enum ui_status application_storage_action(
@@ -4248,6 +4248,14 @@ static enum ui_status application_storage_action(
 {
     enum phipfs_status status;
     if (action == APPLICATION_PAINT_SAVE) status = paint_save();
+    else if (action == APPLICATION_NOTES_SAVE) {
+        status = note_save();
+        if (status == PHIPFS_STATUS_OK) {
+            console_serial_write("Phipia: Notes saved ");
+            console_serial_write(note_path);
+            console_serial_write("\n");
+        }
+    }
     else if (action == APPLICATION_MEDIA_SAVE) status = media_editor_save();
     else {
         media_editor_export_active = true;
@@ -9347,8 +9355,7 @@ static enum ui_status apply_event(
         if (event->control && (event->character == 's' ||
                 event->character == 'S')) {
             phipia_note_to_buffer();
-            return note_save() == PHIPFS_STATUS_OK ? UI_STATUS_OK :
-                UI_STATUS_FILESYSTEM_FAILURE;
+            return application_storage_action(APPLICATION_NOTES_SAVE, damage);
         }
         if (event->character == '\b') {
             notes_status = notes_key_backspace(damage);
