@@ -958,6 +958,24 @@ int main(void)
         assert(count == 1U && bytes[0] == 0x55U && state->offset == 4U);
         assert(ext4_backend_close(first) == PHIPFS_STATUS_OK && opens == closes);
     }
+    for (unsigned append = 0U; append < 2U; ++append) {
+        assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ_WRITE, &first) == PHIPFS_STATUS_OK);
+        assert(ext4_backend_seek(first, 3, PHIPFS_SEEK_START, &position) == PHIPFS_STATUS_OK);
+        const uint64_t expected_cursor = append != 0U ? disk_size + 2U : 5U;
+        close_reports_failure = true;
+        size_t count = 99U;
+        assert((append != 0U ? ext4_backend_append(first, (const uint8_t *)"ok", 2U, &count) :
+            ext4_backend_write(first, (const uint8_t *)"ok", 2U, &count)) == PHIPFS_STATUS_IO);
+        assert(count == 2U); /* Coordinator completed; only controller teardown failed. */
+        assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->offset == expected_cursor && state->size == disk_size);
+        const unsigned committed_appends = appends;
+        assert(ext4_backend_append(first, (const uint8_t *)"again", 5U, &count) == PHIPFS_STATUS_IO);
+        assert(count == 0U && appends == committed_appends);
+        close_reports_failure = false;
+        assert(ext4_backend_fsync(first) == PHIPFS_STATUS_OK);
+        assert(state->offset == expected_cursor && state->size == disk_size && appends == committed_appends);
+        assert(ext4_backend_close(first) == PHIPFS_STATUS_OK && opens == closes);
+    }
     for (unsigned directory = 0U; directory < 2U; ++directory) {
         expect_registered_before_close = true;
         close_reports_failure = true;

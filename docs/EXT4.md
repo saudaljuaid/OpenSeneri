@@ -420,8 +420,9 @@ real fixture pins that rollback across an allocation-bearing, deliberately
 refused pre-commit classification. Once a storage operation has started,
 rollback would be unsafe because an unknown prefix may already be durable; the
 retained plan is retried instead. VFS writes pass their exact handle offset and
-bounded source bytes into the same classifier and advance the cursor only after
-the commit, checkpoint, journal-tail update, and storage lease close succeed.
+bounded source bytes into the same classifier and advance the cursor after
+commit, checkpoint and journal-tail update, before closing the storage lease.
+The controller-teardown failure contract below retains this committed result.
 The admitted
 `JournalRing` is also retained for the full Rust mount lifetime. C opens a
 writable NVMe lease before sync or unmount preparation; Rust
@@ -515,6 +516,11 @@ Successful writes publish their cursor and shared EOF while still owning the
 volume lease. A later writer cannot be followed by an older EOF update from
 the previous writer. If controller teardown then fails, that committed cursor
 and EOF remain visible while the mount refuses further storage operations.
+The C backend returns the completed write count alongside that teardown error;
+sync retries controller release without reapplying the completed write or append.
+Read, pread, readlink and xattr errors instead report zero bytes. Read and
+SEEK_END publish cursor changes only after teardown succeeds under the same
+lease; a failed seek reports no new position and retains the prior cursor.
 
 Drive capacity reports use the last readable allocator count captured before
 operation teardown. They do not borrow the Rust coordinator during a mutation;
