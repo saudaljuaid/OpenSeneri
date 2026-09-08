@@ -2613,7 +2613,7 @@ qemu-test-ext4-link-powercuts: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_unlink_power
 		$(if $(GRUB_MODULE_DIR),--grub-module-dir '$(GRUB_MODULE_DIR)') \
 		--accel '$(QEMU_ACCEL)'
 
-qemu-test-ext4-symlink-powercuts qemu-test-ext4-symlink-long-powercuts qemu-test-ext4-chmod-powercuts qemu-test-ext4-times-powercuts qemu-test-ext4-rename-powercuts qemu-test-ext4-rename-cross-powercuts: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_unlink_powercut_test.py tools/ext4_powercut_test.py tools/ext4_kernel_read.py
+qemu-test-ext4-symlink-powercuts qemu-test-ext4-symlink-long-powercuts qemu-test-ext4-chmod-powercuts qemu-test-ext4-times-powercuts qemu-test-ext4-rename-powercuts qemu-test-ext4-rename-cross-powercuts qemu-test-ext4-overwrite-powercuts: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_unlink_powercut_test.py tools/ext4_powercut_test.py tools/ext4_kernel_read.py
 	$(PYTHON) tools/ext4_unlink_powercut_test.py --operation '$(patsubst qemu-test-ext4-%-powercuts,%,$@)' \
 		--kernel '$(KERNEL)' --fixture '$(EXT4_FIXTURE)' \
 		--output '$(TEST_BUILD_DIR)/ext4-unlink-powercuts/$(shell git rev-parse --short HEAD)/$(patsubst qemu-test-ext4-%-powercuts,%,$@)' \

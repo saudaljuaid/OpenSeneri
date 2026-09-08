@@ -43,11 +43,11 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
         removed = "removed-directory"
     if operation in ("rename", "rename-cross"):
         removed = "rename-source"
-    if operation not in ("truncate", "grow", "append", "chmod", "times", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") and f"/{removed}/" in namespace:
+    if operation not in ("truncate", "grow", "append", "overwrite", "chmod", "times", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") and f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
     (output / "namespace.txt").write_text(namespace)
-    expected_files = {} if operation in ("truncate", "grow", "append", "chmod", "times", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") else {f"data/user/{removed}": None}
+    expected_files = {} if operation in ("truncate", "grow", "append", "overwrite", "chmod", "times", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") else {f"data/user/{removed}": None}
     if operation in ("symlink", "symlink-long"):
         target_name = LONG_SYMLINK_TARGET if operation == "symlink-long" else "link-source"
         literal = ext4_image._debugfs(tools, image, "stat /data/user/symbolic-alias")
@@ -78,6 +78,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
             target_name, target_size = "link-alias", 4500
         if operation == "append":
             target_name, target_size = "append-target", 9000
+        if operation == "overwrite":
+            target_name, target_size = "overwrite-target", 4500
         if operation in ("chmod", "times"):
             target_name, target_size = "metadata-target", 1700
         if operation in ("rename", "rename-cross"):
@@ -87,6 +89,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
             expected_content = b"t" * 1700 + bytes(target_size - 1700)
         if operation == "append":
             expected_content = b"t" * 4500 + b"s" * 4500
+        if operation == "overwrite":
+            expected_content = b"t" * 123 + b"s" * 4097 + b"t" * 280
         target_output = ext4_image._debugfs(tools, image, f"stat /data/user/{target_name}")
         target = ext4_image._parse_stat(target_output, f"/data/user/{target_name}")
         if target["inode"] != replacement_inode or target["size"] != target_size or target["links"] != (2 if operation in ("mkdir", "link") else 1):
@@ -104,6 +108,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
             raise RuntimeError("sparse growth allocated physical hole blocks")
         if operation == "append" and target["block_count_512"] != 24:
             raise RuntimeError("append allocated the wrong physical blocks")
+        if operation == "overwrite" and (target["block_count_512"] != 16 or target["mode"] != "0644"):
+            raise RuntimeError("in-place overwrite changed physical allocation or mode")
         if operation in ("rename", "rename-cross"):
             collision_name = "rename-destination/occupied" if operation == "rename-cross" else "rename-existing"
             collision = ext4_image._parse_stat(ext4_image._debugfs(tools, image,
@@ -195,6 +201,7 @@ def run(args):
     truncating = args.operation in ("truncate", "grow")
     growing = args.operation == "grow"
     appending = args.operation == "append"
+    overwriting = args.operation == "overwrite"
     metadata_change = args.operation in ("chmod", "times")
     creating = args.operation in ("create", "mkdir")
     directory = args.operation == "mkdir"
@@ -235,6 +242,9 @@ def run(args):
     if appending:
         pass_marker = "ST EXT4 VFS append old-or-new tail shared EOF allocation census exact"
         state_marker = "ST EXT4 APPEND initial"
+    if overwriting:
+        pass_marker = "ST EXT4 VFS overwrite flush-boundary contents held inode allocation census exact"
+        state_marker = "ST EXT4 OVERWRITE initial"
     if metadata_change:
         pass_marker = "ST EXT4 VFS metadata old-or-new held inode fields contents allocation census exact"
         state_marker = "ST EXT4 METADATA initial"
@@ -289,6 +299,9 @@ def run(args):
         if appending:
             source.write_bytes(b"t" * 4500)
             files = [(source, "append-target"), (empty, "CUTAPPEND.TST")]
+        if overwriting:
+            source.write_bytes(b"t" * 4500)
+            files = [(source, "overwrite-target"), (empty, "CUTOVER.TST")]
         if metadata_change:
             source.write_bytes(b"t" * 1700)
             files = [(source, "metadata-target"), (empty, "CUTMODE.TST" if args.operation == "chmod" else "CUTTIMES.TST")]
@@ -316,6 +329,8 @@ def run(args):
         removed = symlink_target
     if appending:
         removed = "append-target"
+    if overwriting:
+        removed = "overwrite-target"
     if metadata_change:
         removed = "metadata-target"
     if renaming:
@@ -339,11 +354,11 @@ def run(args):
         reclaimed = -1
     if metadata_change:
         reclaimed, initial_blocks, initial_size = 0, 1, 1700
-    if renaming:
+    if renaming or overwriting:
         reclaimed = 0
     if not creating and (target["size"] != initial_size or target["block_count_512"] != initial_blocks * 8):
         raise RuntimeError("held-unlink input has unexpected allocation geometry")
-    replacement_inode = target["inode"] if truncating or attributing or linking or appending or metadata_change or renaming else None
+    replacement_inode = target["inode"] if truncating or attributing or linking or appending or overwriting or metadata_change or renaming else None
     expected_collision_inode = None
     if renaming:
         expected_collision_inode = ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
@@ -354,7 +369,7 @@ def run(args):
         if source_stat["size"] != 4500 or source_stat["block_count_512"] != 16:
             raise RuntimeError("held-replace source allocation geometry changed")
         replacement_inode = source_stat["inode"]
-    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating or attributing or linking or appending or metadata_change or renaming else 1)
+    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating or attributing or linking or appending or overwriting or metadata_change or renaming else 1)
     if creating:
         expected_blocks, expected_inodes = before["free_blocks"] - (1 if directory else 0), before["free_inodes"] - 1
     if symlinking:
@@ -376,6 +391,14 @@ def run(args):
     if not 1 <= len(boundaries) <= 64 or [int(number) for number, _ in boundaries] != list(range(1, len(boundaries) + 1)):
         raise RuntimeError("held-unlink trace is not a bounded contiguous boundary sequence")
     first_commit = next(int(number) for number, name in boundaries if name == "commit")
+    # Existing allocated data is written home before metadata commit. This
+    # harness cuts after flushes, not between individual writes: it cannot
+    # establish whole-write atomicity or exclude mixed bytes at other cuts.
+    first_visible = first_commit
+    if overwriting:
+        first_visible = next(int(number) for number, name in boundaries if name == "ordered-data")
+        if first_visible >= first_commit:
+            raise RuntimeError("overwrite omitted ordered-data durability before metadata commit")
     reports = []
     repeated_recovery = []
     for number, boundary in boundaries:
@@ -395,7 +418,7 @@ def run(args):
         status, transcript = recovery._run_qemu(args.qemu, args.accel, iso, image,
             output / f"cut-{cut:02d}-reboot.log", args.timeout)
         verify_exit(status, transcript, pass_marker)
-        expected_state = "new" if cut >= first_commit else "old"
+        expected_state = "new" if cut >= first_visible else "old"
         if transcript.count(f"{state_marker} {expected_state}\n") != 1:
             raise RuntimeError(f"held-unlink boundary {cut} violated durable {expected_state} namespace")
         report = inspect(image, tools, output / f"cut-{cut:02d}", expected_blocks, expected_inodes, replacement_inode, args.operation, expected_parent_links, expected_collision_inode)
@@ -435,6 +458,7 @@ def run(args):
                 repeated_recovery.append({"cut": second_cut, "boundary": recovery_boundary, "result": result,
                     "crashed_sha256": hashlib.sha256(second_crashed.read_bytes()).hexdigest()})
     (output / "report.json").write_text(json.dumps({"operation": args.operation, "before": before, "reports": reports,
+        "cut_scope": "after durability flushes only; no whole-write atomicity claim",
         "repeated_recovery": repeated_recovery,
         "kernel_sha256": hashlib.sha256(args.kernel.read_bytes()).hexdigest(),
         "fixture_sha256": hashlib.sha256(args.fixture.read_bytes()).hexdigest()}, indent=2, sort_keys=True) + "\n")
@@ -443,7 +467,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--operation", choices=("unlink", "replace", "rename", "rename-cross", "truncate", "grow", "append", "chmod", "times", "create", "mkdir", "rmdir", "xattr", "xattr-remove", "link", "symlink", "symlink-long"), default="unlink")
+    parser.add_argument("--operation", choices=("unlink", "replace", "rename", "rename-cross", "truncate", "grow", "append", "overwrite", "chmod", "times", "create", "mkdir", "rmdir", "xattr", "xattr-remove", "link", "symlink", "symlink-long"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

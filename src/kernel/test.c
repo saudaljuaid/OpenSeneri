@@ -5611,6 +5611,65 @@ static _Noreturn void ext4_vfs_append_powercut(void)
     kernel_test_pass();
 }
 
+static bool ext4_vfs_overwrite_cut_contents(phipfs_handle file)
+{
+    uint8_t bytes[4500];
+    size_t count;
+    ext4_vfs_require(phipfs_pread(file, bytes, sizeof(bytes), 0U, &count), "overwrite cut held contents");
+    if (count != sizeof(bytes)) kernel_test_fail("ext4 overwrite cut changed size");
+    const bool changed = bytes[123] == 's';
+    for (size_t index = 0U; index < sizeof(bytes); ++index) {
+        const uint8_t expected = changed && index >= 123U && index < 4220U ? 's' : 't';
+        if (bytes[index] != expected) kernel_test_fail("ext4 overwrite cut mixed bytes at a flush boundary");
+    }
+    return changed;
+}
+
+static _Noreturn void ext4_vfs_overwrite_powercut(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/overwrite-target";
+    phipfs_handle writer, reader;
+    struct phipfs_stat original, after;
+    size_t count;
+    uint64_t position;
+    uint8_t changed[4097];
+    ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ_WRITE, &writer), "overwrite cut writer");
+    ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &reader), "overwrite cut reader");
+    ext4_vfs_require(phipfs_fstat(writer, &original), "overwrite cut original inode");
+    if (original.directory || original.size != 4500U || original.links != 1U || original.mode != 0100644U)
+        kernel_test_fail("ext4 overwrite cut unexpected original inode");
+    const uint64_t free_bytes = phipfs_drive(volume).free_bytes;
+    if (!ext4_vfs_overwrite_cut_contents(reader)) {
+        console_write("ST EXT4 OVERWRITE initial old\n");
+        for (size_t index = 0U; index < sizeof(changed); ++index) changed[index] = 's';
+        ext4_vfs_require(phipfs_seek(writer, 123, PHIPFS_SEEK_START, &position), "overwrite cut unaligned seek");
+        if (position != 123U) kernel_test_fail("ext4 overwrite cut wrong start");
+        ext4_vfs_require(phipfs_write(writer, changed, sizeof(changed), &count), "overwrite cut two partial blocks");
+        if (count != sizeof(changed)) kernel_test_fail("ext4 overwrite cut short write");
+        ext4_vfs_require(phipfs_seek(writer, 0, PHIPFS_SEEK_CURRENT, &position), "overwrite cut final cursor");
+        if (position != 4220U) kernel_test_fail("ext4 overwrite cut wrong final cursor");
+    } else console_write("ST EXT4 OVERWRITE initial new\n");
+    if (!ext4_vfs_overwrite_cut_contents(reader) || !ext4_vfs_overwrite_cut_contents(writer))
+        kernel_test_fail("ext4 overwrite cut did not publish both partial blocks");
+    ext4_vfs_require(phipfs_fstat(reader, &after), "overwrite cut held inode");
+    if (after.object_id != original.object_id || after.size != original.size || after.links != original.links ||
+        after.mode != original.mode || after.uid != original.uid || after.gid != original.gid ||
+        phipfs_drive(volume).free_bytes != free_bytes)
+        kernel_test_fail("ext4 overwrite cut changed inode or allocation");
+    ext4_vfs_require(phipfs_fsync(writer), "overwrite cut fsync");
+    ext4_vfs_require(phipfs_close(reader), "overwrite cut reader close");
+    ext4_vfs_require(phipfs_close(writer), "overwrite cut writer close");
+    ext4_vfs_require(phipfs_sync(volume), "overwrite cut final sync");
+    ext4_vfs_require(phipfs_unmount(volume), "overwrite cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 overwrite cut resource census failed");
+    console_write("ST EXT4 VFS overwrite flush-boundary contents held inode allocation census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_link_powercut(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -6046,6 +6105,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         ext4_vfs_link_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTAPPEND.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_append_powercut();
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTOVER.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_overwrite_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTMODE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_metadata_powercut(false);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTTIMES.TST", &stat) == PHIPFS_STATUS_OK)
