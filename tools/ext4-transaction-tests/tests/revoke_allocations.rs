@@ -295,3 +295,40 @@ fn transaction_image_and_record_allocation_refusals_leave_no_partial_stage() {
     }
     println!("transaction staging: two allocation refusals for each image class; all {calls} initial-plan refusals release buffers and preserve exact retry");
 }
+
+#[test]
+fn classification_allocation_refusals_do_not_seal_or_consume_the_stage() {
+    fn staged() -> JournalMutationStage {
+        let stage = JournalMutationStage::new(Box::new(ZeroReader), 100_001 * JOURNAL_BLOCK_BYTES as u64).unwrap();
+        Ext4Write::write(&stage, 100 * JOURNAL_BLOCK_BYTES as u64, &[0x33; JOURNAL_BLOCK_BYTES]).unwrap();
+        Ext4Write::write(&stage, 200 * JOURNAL_BLOCK_BYTES as u64, &[0x44; JOURNAL_BLOCK_BYTES]).unwrap();
+        Ext4Write::revoke_blocks(&stage, 300, 3).unwrap();
+        stage
+    }
+    let mut base = JournalTransaction::new(17, [0x5a; 16], 100_000).unwrap();
+    base.stage_ordered_data(101, &[0x55; JOURNAL_BLOCK_BYTES]).unwrap();
+    base.stage_metadata(201, &[0x66; JOURNAL_BLOCK_BYTES]).unwrap();
+    base.stage_revocation(301).unwrap();
+    let original = base.clone();
+    let reference_stage = staged();
+    let (expected, calls) = measured(|| reference_stage.build_transaction(&base, &[100]).unwrap());
+    assert!(calls > 0);
+    for ordinal in 1..=calls {
+        let stage = staged();
+        let before = stage.staged_images();
+        FAIL_AT.with(|at| at.set(ordinal));
+        let (result, _) = measured(|| stage.build_transaction(&base, &[100]));
+        FAIL_AT.with(|at| at.set(0));
+        assert!(result.is_err(), "classification allocation {ordinal} must refuse");
+        assert_eq!(LIVE_DELTA.with(Cell::get), 0, "classification refusal leaked temporary images");
+        assert_eq!(base, original);
+        assert!(!stage.is_sealed());
+        assert_eq!(stage.staged_images(), before);
+        assert_eq!(stage.revoked_block_count(), 3);
+        assert_eq!(stage.build_transaction(&base, &[100]).unwrap(), expected);
+        assert!(stage.is_sealed());
+        stage.rollback();
+        assert!(stage.is_empty() && !stage.is_sealed());
+    }
+    println!("classification: all {calls} allocation refusals preserve unsealed stage and input, release temporary buffers, and permit exact retry/rollback");
+}

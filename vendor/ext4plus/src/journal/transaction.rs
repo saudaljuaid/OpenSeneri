@@ -1095,6 +1095,14 @@ pub struct JournalTransaction {
 }
 
 impl JournalTransaction {
+    pub(super) fn try_clone(&self) -> Result<Self, JournalTransactionError> {
+        let mut transaction = Self::new(self.sequence, *self.uuid.as_bytes(), self.maximum_block)?;
+        for image in &self.ordered_data { transaction.stage_ordered_data(image.block_index, &image.bytes)?; }
+        for image in &self.metadata { transaction.stage_metadata(image.block_index, &image.bytes)?; }
+        transaction.stage_revocations(&self.revoked_blocks)?;
+        Ok(transaction)
+    }
+
     /// Start a transaction for one admitted filesystem and journal sequence.
     ///
     /// `maximum_block` is the highest valid absolute filesystem block index,

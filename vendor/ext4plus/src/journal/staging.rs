@@ -237,9 +237,12 @@ impl JournalMutationStage {
                 return Err(JournalMutationPlanError::OrderedDataNotStaged);
             }
         }
-        let mut output = transaction.clone();
-        let revoked: Vec<u64> = state.revoked_blocks.iter().copied()
-            .filter(|block| !transaction.revokes_block(*block)).collect();
+        let mut output = transaction.try_clone()?;
+        let mut revoked = Vec::new();
+        revoked.try_reserve_exact(state.revoked_blocks.len())
+            .map_err(|_| JournalTransactionError::TooManyBlocks)?;
+        revoked.extend(state.revoked_blocks.iter().copied()
+            .filter(|block| !transaction.revokes_block(*block)));
         output.stage_revocations(&revoked)?;
         for (block, bytes) in state.blocks.iter() {
             if output.revokes_block(*block) {
