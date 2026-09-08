@@ -25,6 +25,9 @@ checked by inode identity, including symlink aliases, with a 1,024-ancestor
 refusal bound. Indexed directory moves preserve their htree checksum and
 passed Linux fixture verification at `7b47c59`.
 File handles perform reads, writes, append and sync refresh by inode identity.
+The Rust bridge coalesces block reads up to the requested length or EOF under
+the existing volume lease. A later block I/O error remains an error with no
+successful byte count or cursor advance; the destination buffer is unspecified.
 No-replace file/directory rename can therefore preserve open handles, including
 descendants of moved directories; directory iterators own their snapshots. Hard-linked
 paths report the same inode identity to the vnode table. Symlinks are resolved

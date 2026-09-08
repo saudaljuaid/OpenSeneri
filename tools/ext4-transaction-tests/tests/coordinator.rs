@@ -792,13 +792,63 @@ fn append_uses_live_eof_through_aliases_and_refuses_overflow_without_writes() {
 }
 
 #[test]
+fn bridge_reads_coalesce_unaligned_blocks_and_preserve_late_io_errors() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let name = b"system/read-range";
+    let owned = ext4::prepare_open(&mut mounted, name, 3, 5, 0o600).unwrap();
+    let payload: Vec<u8> = (0..8193).map(|index| (index * 37 + 11) as u8).collect();
+    assert_eq!(ext4::write_inode(&mut mounted, owned.inode, 4095, &payload), Ok(payload.len()));
+    ext4::sync(&mut mounted).unwrap();
+    let image = path.with_extension("coordinator-read-range.img");
+    DEVICE.with_borrow(|device| std::fs::write(&image, &device.bytes).unwrap());
+    let mapping = std::process::Command::new("debugfs")
+        .args(["-R", "bmap /system/read-range 1"]).arg(&image).output().unwrap();
+    assert!(mapping.status.success());
+    let second_block: u64 = String::from_utf8(mapping.stdout).unwrap().trim().parse().unwrap();
+    assert_ne!(second_block, 0);
+    for inode_read in [false, true] {
+        let read = |offset, output: &mut [u8]| if inode_read {
+            ext4::pread_inode(&mounted, owned.inode, offset, output)
+        } else { ext4::pread(&mounted, name, offset, output) };
+        let mut output = vec![0xa5; payload.len() + 7];
+        assert_eq!(read(4095, &mut output), Ok(payload.len()));
+        assert_eq!(&output[..payload.len()], payload);
+        assert_eq!(&output[payload.len()..], &[0xa5; 7]);
+        let mut hole = vec![0xa5; 4096];
+        assert_eq!(read(0, &mut hole), Ok(hole.len()));
+        assert!(hole[..4095].iter().all(|byte| *byte == 0));
+        assert_eq!(hole[4095], payload[0]);
+        assert_eq!(read(u64::MAX, &mut hole), Ok(0));
+        assert_eq!(read(4095, &mut []), Ok(0));
+        DEVICE.with_borrow_mut(|device| {
+            device.watched_read_block = Some(second_block);
+            device.watched_reads = 0;
+            device.fail_watched_read = Some(1);
+        });
+        assert_eq!(read(4095, &mut output), Err(Status::Io));
+        DEVICE.with_borrow_mut(|device| {
+            assert_eq!(device.watched_reads, 1);
+            device.watched_read_block = None;
+            device.fail_watched_read = None;
+        });
+        assert_eq!(read(4095, &mut output), Ok(payload.len()));
+        assert_eq!(&output[..payload.len()], payload);
+    }
+    ext4::unlink_file_probe(&mut mounted, name).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-read-range-clean");
+}
+
+#[test]
 fn held_file_unlink_binds_identity_retries_and_recovers_without_leaking_allocations() {
     let Some(path) = fixture() else { return };
     let mut mounted = mount_fixture(&path);
     let free = ext4::free_bytes(&mounted).unwrap();
     let name = b"system/owned-temp";
     let owned = ext4::prepare_open(&mut mounted, name, 3, 5, 0o600).unwrap();
-    ext4::write_inode(&mut mounted, owned.inode, 4095, b"incomplete-save").unwrap();
+    assert_eq!(ext4::write_inode(&mut mounted, owned.inode, 4095, b"incomplete-save"), Ok(15));
     ext4::sync(&mut mounted).unwrap();
     let initial = DEVICE.with_borrow_mut(|device| {
         device.events.clear();

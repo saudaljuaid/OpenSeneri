@@ -2555,7 +2555,23 @@ pub(crate) fn stat_inode(mounted: &Mounted, number: u64) -> Result<Metadata, Sta
 
 pub(crate) fn pread_inode(mounted: &Mounted, number: u64, offset: u64, destination: &mut [u8]) -> Result<usize, Status> {
     let mut file = open_io_target(mounted.readable_filesystem()?, &inode_key(number)?)?;
-    file.read_bytes_at(destination, offset).map_err(map_error)
+    read_file_range(&mut file, offset, destination)
+}
+
+// Upstream reads stop at a filesystem block boundary. The bridge holds the
+// volume's read lease for this entire request, so coalesce those pieces without
+// changing the inode or cursor. On I/O failure retain the existing error contract
+// (no successful byte count; the caller must disregard the destination buffer).
+fn read_file_range(file: &mut ext4plus::file::File, offset: u64, destination: &mut [u8]) -> Result<usize, Status> {
+    let mut completed = 0usize;
+    while completed < destination.len() {
+        let position = offset.checked_add(completed as u64).ok_or(Status::Range)?;
+        let count = file.read_bytes_at(&mut destination[completed..], position).map_err(map_error)?;
+        if count == 0 { break; }
+        if count > destination.len() - completed { return Err(Status::Invalid); }
+        completed += count;
+    }
+    Ok(completed)
 }
 
 /// Read bytes at a 64-bit offset without changing any shared cursor.
@@ -2570,7 +2586,7 @@ pub(crate) fn pread(
         .readable_filesystem()?
         .open(absolute.as_slice())
         .map_err(map_error)?;
-    file.read_bytes_at(destination, offset).map_err(map_error)
+    read_file_range(&mut file, offset, destination)
 }
 
 /// Owned point-in-time directory entries, released with their VFS handle.
