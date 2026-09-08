@@ -180,6 +180,24 @@ pub enum JournalCommitOperation {
     WriteHomeMetadata(JournalBlockImage),
 }
 
+impl JournalCommitOperation {
+    fn try_clone(&self) -> Result<Self, JournalTransactionError> {
+        Ok(match self {
+            Self::WriteFilesystemSuperblock { start_byte, image } =>
+                Self::WriteFilesystemSuperblock { start_byte: *start_byte, image: image.clone() },
+            Self::WriteOrderedData(image) => Self::WriteOrderedData(image.try_clone()?),
+            Self::Flush(boundary) => Self::Flush(*boundary),
+            Self::WriteJournal { journal_block, kind, bytes } => Self::WriteJournal {
+                journal_block: *journal_block, kind: *kind, bytes: try_copy_bytes(bytes)?,
+            },
+            Self::WriteJournalSuperblock { journal_block, image } => Self::WriteJournalSuperblock {
+                journal_block: *journal_block, image: image.try_clone()?,
+            },
+            Self::WriteHomeMetadata(image) => Self::WriteHomeMetadata(image.try_clone()?),
+        })
+    }
+}
+
 /// Synchronous storage used to execute an already validated journal plan.
 ///
 /// Implementations must not reorder writes across [`JournalStorage::flush`].
@@ -1984,7 +2002,7 @@ impl JournalRing {
             journal_block: superblock_block,
             image: live_superblock,
         });
-        operations.extend(prepared.operations.iter().cloned());
+        for operation in &prepared.operations { operations.push(operation.try_clone()?); }
         self.active
             .get_mut(index)
             .ok_or(JournalTransactionError::ReservationUnknown)?
@@ -2042,17 +2060,18 @@ impl JournalRing {
         } else {
             superblock.with_state(self.next_sequence, 0)?
         };
+        let mut operations = Vec::new();
+        operations.try_reserve_exact(2).map_err(|_| JournalTransactionError::TooManyBlocks)?;
+        operations.push(JournalCommitOperation::WriteJournalSuperblock {
+                journal_block: superblock_block,
+                image: state,
+            });
+        operations.push(JournalCommitOperation::Flush(JournalFlush::JournalState));
         self.active
             .front_mut()
             .ok_or(JournalTransactionError::ReservationUnknown)?
             .state = ReservationState::TailStatePrepared;
-        Ok(vec![
-            JournalCommitOperation::WriteJournalSuperblock {
-                journal_block: superblock_block,
-                image: state,
-            },
-            JournalCommitOperation::Flush(JournalFlush::JournalState),
-        ])
+        Ok(operations)
     }
 
     /// Mark a commit flush durable, preserving transaction sequence order.

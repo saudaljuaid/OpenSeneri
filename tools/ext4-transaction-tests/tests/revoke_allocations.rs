@@ -205,3 +205,50 @@ fn recovery_checkpoint_allocation_refusals_preserve_marker_and_retry() {
     }
     println!("recovery checkpoint: all {calls} allocation refusals preserve marker, release buffers, and retry identically");
 }
+
+#[test]
+fn live_plan_allocation_refusals_preserve_reservations_and_retry() {
+    let superblock = JournalSuperblockImage::new_clean(17, [0x5a; 16], 9).unwrap();
+    let mut ring = superblock.map_clean_ring(100_000, &[999, 1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007]).unwrap();
+    let mut transaction = ring.begin_transaction().unwrap();
+    transaction.stage_ordered_data(100, &[0x33; JOURNAL_BLOCK_BYTES]).unwrap();
+    transaction.stage_metadata(200, &[0x44; JOURNAL_BLOCK_BYTES]).unwrap();
+    transaction.stage_revocation(300).unwrap();
+    let prepared = ring.prepare(&transaction).unwrap();
+    let reserved = ring.clone();
+    let (commit, commit_calls) = measured(|| ring.prepare_commit_plan(&prepared).unwrap());
+    assert_eq!(commit_calls, 9, "live state plus validated copy, operation vector, ordered/home images and four journal records");
+    let started = ring.clone();
+    for prior in [&reserved, &started] {
+        for ordinal in 1..=commit_calls {
+            let mut candidate = prior.clone();
+            FAIL_AT.with(|at| at.set(ordinal));
+            let (result, _) = measured(|| candidate.prepare_commit_plan(&prepared));
+            FAIL_AT.with(|at| at.set(0));
+            assert!(result.is_err(), "commit allocation {ordinal} must refuse");
+            assert_eq!(LIVE_DELTA.with(Cell::get), 0, "commit refusal leaked buffers");
+            assert_eq!(&candidate, prior, "refusal changed reservation state or slots");
+            assert_eq!(candidate.prepare_commit_plan(&prepared).unwrap(), commit);
+        }
+    }
+    ring.mark_commit_durable(prepared.ticket()).unwrap();
+    let durable = ring.clone();
+    let (checkpoint, checkpoint_calls) = measured(|| ring.prepare_checkpoint_plan(prepared.ticket()).unwrap());
+    assert_eq!(checkpoint_calls, 3, "journal state plus validated copy and operation vector");
+    let tail_prepared = ring.clone();
+    for prior in [&durable, &tail_prepared] {
+        for ordinal in 1..=checkpoint_calls {
+            let mut candidate = prior.clone();
+            FAIL_AT.with(|at| at.set(ordinal));
+            let (result, _) = measured(|| candidate.prepare_checkpoint_plan(prepared.ticket()));
+            FAIL_AT.with(|at| at.set(0));
+            assert!(result.is_err());
+            assert_eq!(LIVE_DELTA.with(Cell::get), 0, "tail refusal leaked buffers");
+            assert_eq!(&candidate, prior, "refusal reclaimed slots or changed the durable tail");
+            assert_eq!(candidate.prepare_checkpoint_plan(prepared.ticket()).unwrap(), checkpoint);
+            candidate.checkpoint_durable(prepared.ticket()).unwrap();
+            assert_eq!(candidate.used_slots(), 0);
+        }
+    }
+    println!("live plans: {commit_calls} commit and {checkpoint_calls} checkpoint allocation refusals in initial and retry states; reservations and exact plans preserved");
+}
