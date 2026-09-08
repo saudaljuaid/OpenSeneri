@@ -401,6 +401,8 @@ static enum phipfs_status map_status(int32_t status)
         return PHIPFS_STATUS_SYMLINK_LOOP;
     case PHIPIA_EXT4_STATUS_STALE:
         return PHIPFS_STATUS_STALE_HANDLE;
+    case PHIPIA_EXT4_STATUS_ARGUMENT:
+        return PHIPFS_STATUS_INVALID_ARGUMENT;
     default:
         return PHIPFS_STATUS_CORRUPT;
     }

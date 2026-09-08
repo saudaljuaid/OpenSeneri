@@ -1102,7 +1102,7 @@ fn mode_and_inline_xattrs_survive_remount_and_rollback_enospc() {
     assert_eq!(ext4::free_bytes(&mounted), Ok(free));
     assert_eq!(ext4::get_xattr(&mounted, name, b"user.note", &mut output), Ok(5));
     assert_eq!(&output[..5], b"first");
-    assert_eq!(ext4::set_xattr(&mut mounted, name, b"security.capability", Some(b"x")), Err(Status::Invalid));
+    assert_eq!(ext4::set_xattr(&mut mounted, name, b"security.capability", Some(b"x")), Err(Status::Argument));
     ext4::set_xattr(&mut mounted, name, b"user.note", Some(b"changed")).unwrap();
     ext4::set_xattr(&mut mounted, name, b"user.empty", Some(b"")).unwrap();
     ext4::sync(&mut mounted).unwrap();
@@ -5579,7 +5579,7 @@ fn directory_move_updates_parents_and_rejects_descendant_cycles() {
         device.bytes.clone()
     });
     assert_eq!(ext4::rename_probe(&mut mounted, source,
-        b"system/tree/child/cycle"), Err(Status::Invalid));
+        b"system/tree/child/cycle"), Err(Status::Argument));
     assert_eq!(ext4::stat(&mounted, source), Ok(identity));
     assert_eq!(ext4::free_bytes(&mounted), Ok(free));
     // Remount so the successful trace includes marker activation from clean.
@@ -5626,9 +5626,9 @@ fn directory_move_updates_parents_and_rejects_descendant_cycles() {
     debugfs(&image, "symlink /system/tree-alias /data/user/tree/child");
     let mut mounted = mount_fixture(&image);
     assert_eq!(ext4::rename_probe(&mut mounted, destination,
-        b"system/tree-alias/cycle"), Err(Status::Invalid));
+        b"system/tree-alias/cycle"), Err(Status::Argument));
     assert_eq!(ext4::rename_probe(&mut mounted, destination,
-        b"data/user/tree/child/existing"), Err(Status::Invalid));
+        b"data/user/tree/child/existing"), Err(Status::Argument));
     ext4::sync(&mut mounted).unwrap();
     ext4::unmount(&mounted).unwrap();
     fsck(&path, "coordinator-directory-cycle");

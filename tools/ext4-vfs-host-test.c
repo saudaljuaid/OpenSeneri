@@ -513,6 +513,8 @@ int main(void)
 {
     assert(map_status(PHIPIA_EXT4_STATUS_SYMLINK_LOOP) == PHIPFS_STATUS_SYMLINK_LOOP);
     assert(map_status(PHIPIA_EXT4_STATUS_NAME_TOO_LONG) == PHIPFS_STATUS_NAME_TOO_LONG);
+    assert(map_status(PHIPIA_EXT4_STATUS_ARGUMENT) == PHIPFS_STATUS_INVALID_ARGUMENT);
+    assert(map_status(PHIPIA_EXT4_STATUS_INVALID) == PHIPFS_STATUS_CORRUPT);
     phipfs_handle first;
     phipfs_handle second;
     struct ext4_handle_state *state;

@@ -553,6 +553,7 @@ fn map_error(error: Ext4Error) -> Status {
         Ext4Error::IsADirectory => Status::IsDirectory,
         Ext4Error::PathTooLong => Status::NameTooLong,
         Ext4Error::TooManySymlinks => Status::SymlinkLoop,
+        Ext4Error::MalformedPath => Status::Argument,
         Ext4Error::FileTooLarge => Status::Range,
         Ext4Error::InvalidTimestamp => Status::Range,
         Ext4Error::IsASpecialFile => Status::Special,
@@ -1650,7 +1651,7 @@ pub(crate) fn set_times(mounted: &mut Mounted, path: &[u8], atime_seconds: u64,
 
 fn validate_user_xattr(name: &[u8]) -> Result<(), Status> {
     if !name.starts_with(b"user.") || name.len() <= 5 || name.len() > 255 || name.contains(&0) {
-        return Err(Status::Invalid);
+        return Err(Status::Argument);
     }
     Ok(())
 }
@@ -2765,6 +2766,8 @@ pub(crate) enum Status {
     SymlinkLoop = 16,
     /// A supplied inode no longer matches the named object.
     Stale = 17,
+    /// The request is malformed; the filesystem itself is not corrupt.
+    Argument = 18,
 }
 
 const _: i32 = Status::Volume as i32;
