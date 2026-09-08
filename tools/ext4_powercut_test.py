@@ -50,7 +50,7 @@ def _build_iso(
     *,
     scenario: str = "ext4-recovery",
 ) -> None:
-    if scenario not in ("ext4-recovery", "ext4-geometry-refusal"):
+    if scenario not in ("ext4-recovery", "ext4-geometry-refusal", "ext4-admission-refusal"):
         raise PowerCutError("unsupported ext4 test scenario")
     if cut is not None and storage_cut is not None:
         raise PowerCutError("durability and device-command cuts are mutually exclusive")
