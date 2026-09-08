@@ -71,6 +71,16 @@ jobs:
                   printf '%s\n' 'Diagnostic ext4 boot only; all milestone gates remain required.' \
                       >evidence/ext4/DIAGNOSTIC-ONLY.txt
                   make kernel lint 2>&1 | tee evidence/ext4/diagnostic-build.log
+                  make build/tests/ext4/phipia-ext4.raw
+                  export PHIPIA_EXT4_RUST_FIXTURE="$PWD/build/tests/ext4/phipia-ext4.raw"
+                  export CARGO_TARGET_DIR="$PWD/build/ext4-transaction-target"
+                  for regression in admitted_fixture_has_complete_storage_and_namespace_census \
+                      namespace_counts_parents_types_and_unique_names_are_checked_before_mutation \
+                      commit_reload_failure_hides_view_and_retry_does_not_rewrite_storage; do
+                      cargo test --manifest-path tools/ext4-transaction-tests/Cargo.toml \
+                          --locked --offline --test coordinator "$regression" -- --exact --nocapture \
+                          2>&1 | tee "evidence/ext4/${regression}.log"
+                  done
             - name: Exercise ext4 VFS recovery and durability boundaries
               if: ${{ !cancelled() }}
               shell: bash

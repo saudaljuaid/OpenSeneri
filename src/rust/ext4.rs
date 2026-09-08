@@ -360,6 +360,11 @@ fn discard_uncommitted_stage(mounted: &mut Mounted, needs_recovery: bool) -> Res
 }
 
 #[cfg(test)]
+pub(crate) fn staging_storage_released(mounted: &Mounted) -> bool {
+    mounted.stage.is_empty() && !mounted.stage.is_sealed()
+}
+
+#[cfg(test)]
 pub(crate) fn set_stage_block_limit(mounted: &mut Mounted, block_limit: usize) -> Result<(), Status> {
     mounted.readable_filesystem()?;
     let recovery = mounted.journal.filesystem_recovery_marker_is_durable().map_err(|_| Status::Invalid)?;
@@ -996,6 +1001,12 @@ fn resume_pending_mutation_inner(mounted: &mut Mounted) -> Result<usize, Status>
                 .as_ref()
                 .ok_or(Status::Invalid)?
                 .written;
+            // Both home checkpoint and journal-tail flush have succeeded. The
+            // sealed overlay is no longer needed for retries, which now only
+            // reload disk state. Release its block images before allocating the
+            // namespace census; retaining both exhausts kernel heap descriptors.
+            mounted.filesystem = None;
+            mounted.stage.rollback();
             replace_staged_view(mounted, true)?;
             mounted.pending_mutation = None;
             // An external exact retry may finish a failed open's plan. Its

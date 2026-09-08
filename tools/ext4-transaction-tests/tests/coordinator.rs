@@ -297,6 +297,8 @@ fn commit_reload_failure_hides_view_and_retry_does_not_rewrite_storage() {
         assert_eq!(device.events.last(), Some(&Event::Flush(5)));
         assert!(device.failed_reads > 0);
     });
+    assert!(ext4::staging_storage_released(&mounted),
+        "checkpointed images must be freed even when the subsequent reload fails");
     assert_public_reads_refused(&mounted);
     DEVICE.with_borrow_mut(|device| {
         device.events.clear();
