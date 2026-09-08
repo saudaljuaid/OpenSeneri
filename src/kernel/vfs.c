@@ -65,6 +65,7 @@ struct vfs_directory_state {
 
 static struct vfs_mount_state mounts[PHIPFS_VOLUME_COUNT];
 static struct vfs_vnode_state vnodes[VFS_MAX_VNODES];
+static bool vnode_reservations[VFS_MAX_VNODES];
 static struct vfs_open_file_state open_files[VFS_MAX_OPEN_FILES];
 static struct vfs_directory_state directories[VFS_MAX_DIRECTORY_ITERATORS];
 static uint16_t vnode_buckets[VFS_VNODE_BUCKETS];
@@ -351,16 +352,17 @@ static void vnode_remove_from_bucket(size_t vnode_index)
     }
 }
 
-static enum phipfs_status vnode_retain(
+static enum phipfs_status vnode_retain_reserved(
     enum phipfs_volume volume,
     const char *canonical,
     const struct phipfs_stat *stat,
-    size_t *vnode_index
+    size_t *vnode_index,
+    size_t reserved
 )
 {
     size_t bucket;
     uint16_t current;
-    size_t free_index = VFS_MAX_VNODES;
+    size_t free_index = reserved;
 
     if (stat == NULL || vnode_index == NULL || !valid_volume(volume) ||
         !mounts[volume].active) {
@@ -387,8 +389,8 @@ static enum phipfs_status vnode_retain(
         }
         current = vnode->next_bucket;
     }
-    for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) {
-        if (!vnodes[index].active) {
+    for (size_t index = 0U; free_index == VFS_MAX_VNODES && index < VFS_MAX_VNODES; ++index) {
+        if (!vnodes[index].active && !vnode_reservations[index]) {
             free_index = index;
             break;
         }
@@ -411,6 +413,12 @@ static enum phipfs_status vnode_retain(
     ++mounts[volume].references;
     *vnode_index = free_index;
     return PHIPFS_STATUS_OK;
+}
+
+static enum phipfs_status vnode_retain(enum phipfs_volume volume,
+    const char *canonical, const struct phipfs_stat *stat, size_t *vnode_index)
+{
+    return vnode_retain_reserved(volume, canonical, stat, vnode_index, VFS_MAX_VNODES);
 }
 
 static void vnode_release(size_t vnode_index, uint64_t generation)
@@ -731,6 +739,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     phipfs_handle backend_handle = 0U;
     size_t vnode_index = VFS_NO_INDEX;
     size_t slot = VFS_MAX_OPEN_FILES;
+    size_t reserved_vnode = VFS_MAX_VNODES;
     enum phipfs_status status;
 
     if (handle == NULL) {
@@ -761,6 +770,21 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     // published while the backend operation is incomplete.
     open_files[slot].opening = true;
     ++mounts[volume].references;
+    if (backend->open_options != NULL && flags != 0U) {
+        // Destructive prepared opens need storage for their resulting inode
+        // before the backend can commit. Other callbacks must not consume it.
+        for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) {
+            if (!vnodes[index].active && !vnode_reservations[index]) {
+                vnode_reservations[index] = true;
+                reserved_vnode = index;
+                break;
+            }
+        }
+        if (reserved_vnode == VFS_MAX_VNODES) {
+            status = PHIPFS_STATUS_NO_HANDLES;
+            goto failed;
+        }
+    }
     struct phipfs_stat opened_stat;
     if (backend->open_options == NULL) {
         // Compatibility backends retain their checked parent traversal.
@@ -794,7 +818,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
          * Bind the VFS description to the inode actually held by the backend. */
         if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnodes[vnode_index].generation);
         vnode_index = VFS_NO_INDEX;
-        status = vnode_retain(volume, canonical, &opened_stat, &vnode_index);
+        status = vnode_retain_reserved(volume, canonical, &opened_stat, &vnode_index, reserved_vnode);
         if (status != PHIPFS_STATUS_OK) {
             (void)backend->close(backend_handle);
             goto failed;
@@ -808,6 +832,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     open_files[slot].backend_handle = backend_handle;
     open_files[slot].vnode_index = (uint16_t)vnode_index;
     open_files[slot].active = true;
+    if (reserved_vnode != VFS_MAX_VNODES) vnode_reservations[reserved_vnode] = false;
     --mounts[volume].references;
     *handle = encode_handle(slot, open_files[slot].generation);
     if (backend->open_options == NULL && (flags & PHIPFS_OPEN_TRUNCATE) != 0U) {
@@ -820,6 +845,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     }
     return PHIPFS_STATUS_OK;
 failed:
+    if (reserved_vnode != VFS_MAX_VNODES) vnode_reservations[reserved_vnode] = false;
     if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnodes[vnode_index].generation);
     open_files[slot].opening = false;
     --mounts[volume].references;

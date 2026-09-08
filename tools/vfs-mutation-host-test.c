@@ -22,6 +22,7 @@ static unsigned file_sync_calls;
 static unsigned file_stat_calls;
 static unsigned publication_calls;
 static unsigned held_unlink_calls;
+static bool consume_last_vnode;
 
 static enum phipfs_status held_unlink(phipfs_handle handle, const char *path)
 {
@@ -65,6 +66,11 @@ static enum phipfs_status prepared_open(enum phipfs_volume volume, const char *p
     assert(access == PHIPFS_ACCESS_READ_WRITE && flags == expected_prepared_flags);
     assert(mode == 01720U);
     ++prepared_calls;
+    if (consume_last_vnode) {
+        struct phipfs_stat other = { .object_id = 99999U };
+        size_t index;
+        assert(vnode_retain(volume, "callback", &other, &index) == PHIPFS_STATUS_NO_HANDLES);
+    }
     if (mutation_result != PHIPFS_STATUS_OK) return mutation_result;
     *handle = 77U;
     memset(result, 0, sizeof(*result));
@@ -467,6 +473,30 @@ int main(void)
     assert(phipfs_fstat(opened, &metadata) == PHIPFS_STATUS_STALE_HANDLE && file_stat_calls == 1U);
     assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
     for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) assert(!vnodes[index].active);
+    size_t occupied[VFS_MAX_VNODES];
+    for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) {
+        metadata.object_id = 1000U + index;
+        assert(vnode_retain(PHIPFS_VOLUME_DATA, "held", &metadata, &occupied[index]) == PHIPFS_STATUS_OK);
+    }
+    const unsigned before_vnode_full = prepared_calls;
+    assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,
+        expected_prepared_flags, 01720U, &opened) == PHIPFS_STATUS_NO_HANDLES);
+    assert(opened == 0U && prepared_calls == before_vnode_full && live_backend_handles == 0U);
+    vnode_release(occupied[VFS_MAX_VNODES - 1U], vnodes[occupied[VFS_MAX_VNODES - 1U]].generation);
+    consume_last_vnode = true;
+    for (unsigned failure = 0U; failure < 2U; ++failure) {
+        mutation_result = failure == 0U ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK;
+        assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,
+            expected_prepared_flags, 01720U, &opened) == mutation_result);
+        if (failure == 0U) assert(opened == 0U);
+        else assert(phipfs_close(opened) == PHIPFS_STATUS_OK);
+        for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) assert(!vnode_reservations[index]);
+        assert(live_backend_handles == 0U && mounts[PHIPFS_VOLUME_DATA].references == VFS_MAX_VNODES - 1U);
+    }
+    consume_last_vnode = false;
+    for (size_t index = 0U; index + 1U < VFS_MAX_VNODES; ++index)
+        vnode_release(occupied[index], vnodes[occupied[index]].generation);
+    assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
     nested_open_reservations();
     puts("VFS journal mutation retries, nested open reservations, backend errors, path bounds and vnode census: PASS");
     return 0;
