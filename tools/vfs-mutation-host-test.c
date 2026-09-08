@@ -322,9 +322,9 @@ static void nested_open_reservations(void)
             assert(nested_live == 0U && mounts[PHIPFS_VOLUME_DATA].references == 0U);
             for (size_t index = 0U; index < VFS_MAX_VNODES; ++index) assert(!vnodes[index].active);
             for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index)
-                assert(!open_files[index].active && !open_files[index].opening);
+                assert(!open_files[index].active && !open_files[index].opening && !open_file_claims[index]);
             for (size_t index = 0U; index < VFS_MAX_DIRECTORY_ITERATORS; ++index)
-                assert(!directories[index].active && !directories[index].opening);
+                assert(!directories[index].active && !directories[index].opening && !directory_claims[index]);
         }
     }
 }
@@ -494,11 +494,13 @@ int main(void)
     assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ,
         PHIPFS_OPEN_TRUNCATE, 01720U, &opened) == PHIPFS_STATUS_ACCESS);
     assert(opened == 0U && prepared_calls == 2U);
-    for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index) open_files[index].active = true;
+    for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index) {
+        assert(phipia_slot_claim(open_file_claims, VFS_MAX_OPEN_FILES) != VFS_MAX_OPEN_FILES);
+    }
     assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,
         PHIPFS_OPEN_CREATE | PHIPFS_OPEN_TRUNCATE, 01720U, &opened) == PHIPFS_STATUS_NO_HANDLES);
     assert(opened == 0U && prepared_calls == 2U);
-    for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index) open_files[index].active = false;
+    for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index) phipia_slot_release(open_file_claims, index);
     expected_prepared_flags = PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE;
     mutation_result = PHIPFS_STATUS_EXISTS;
     assert(phipfs_open_options(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_READ_WRITE,

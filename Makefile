@@ -1260,6 +1260,19 @@ $(BUILD_DIR)/ext4-handle-claims-host-test: tools/ext4-handle-claims-host-test.c 
 		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion -Iinclude \
 		tools/ext4-handle-claims-host-test.c $(HOST_THREAD_FLAGS) -Wl,--gc-sections -o $@
 
+$(BUILD_DIR)/vfs-file-claims-host-test $(BUILD_DIR)/vfs-directory-claims-host-test: \
+		tools/ext4-handle-claims-host-test.c src/kernel/vfs.c \
+		include/phipia/vfs_backend.h include/phipia/fat32_fs.h include/phipia/slot_claim.h
+	mkdir -p $(dir $@)
+	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections \
+		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion -Iinclude \
+		-DPHIPIA_TEST_VFS_$(if $(findstring directory,$@),DIRECTORIES,FILES) \
+		tools/ext4-handle-claims-host-test.c $(HOST_THREAD_FLAGS) -Wl,--gc-sections -o $@
+
+$(BUILD_DIR)/ext4-vfs-host-test $(BUILD_DIR)/ext4-handle-claims-host-test \
+		$(BUILD_DIR)/vfs-mutation-host-test $(BUILD_DIR)/ext4-nvme-close-host-test \
+		$(BUILD_DIR)/ext4-msix-close-host-test: include/phipia/slot_claim.h
+
 $(BUILD_DIR)/vfs-mutation-host-test: tools/vfs-mutation-host-test.c \
 		src/kernel/vfs.c include/phipia/vfs_backend.h include/phipia/fat32_fs.h
 	mkdir -p $(dir $@)
@@ -1307,7 +1320,9 @@ $(BUILD_DIR)/keyboard-channel-host-test: tools/keyboard-channel-host-test.c src/
 		-Wall -Wextra -Werror -Wpedantic -Wshadow -Iinclude \
 		tools/keyboard-channel-host-test.c -Wl,--gc-sections -o $@
 
-ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesystem-host-test $(BUILD_DIR)/ext4-vfs-host-test $(BUILD_DIR)/ext4-handle-claims-host-test $(BUILD_DIR)/vfs-mutation-host-test $(BUILD_DIR)/ext4-nvme-close-host-test $(BUILD_DIR)/ext4-msix-close-host-test $(BUILD_DIR)/notes-ext4-host-test $(BUILD_DIR)/shell-ext4-host-test $(BUILD_DIR)/ui-animation-clip-host-test $(BUILD_DIR)/keyboard-channel-host-test
+ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesystem-host-test $(BUILD_DIR)/ext4-vfs-host-test $(BUILD_DIR)/ext4-handle-claims-host-test $(BUILD_DIR)/vfs-file-claims-host-test $(BUILD_DIR)/vfs-directory-claims-host-test $(BUILD_DIR)/vfs-mutation-host-test $(BUILD_DIR)/ext4-nvme-close-host-test $(BUILD_DIR)/ext4-msix-close-host-test $(BUILD_DIR)/notes-ext4-host-test $(BUILD_DIR)/shell-ext4-host-test $(BUILD_DIR)/ui-animation-clip-host-test $(BUILD_DIR)/keyboard-channel-host-test
+	$(BUILD_DIR)/vfs-file-claims-host-test
+	$(BUILD_DIR)/vfs-directory-claims-host-test
 	$(BUILD_DIR)/ext4-handle-claims-host-test
 	$(BUILD_DIR)/keyboard-channel-host-test
 	$(BUILD_DIR)/ui-animation-clip-host-test

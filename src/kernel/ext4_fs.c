@@ -8,6 +8,7 @@
 #include <phipia/cpu.h>
 #include <phipia/ext4_fs.h>
 #include <phipia/nvme.h>
+#include <phipia/slot_claim.h>
 #include <phipia/wall_clock.h>
 
 #define EXT4_MAX_HANDLES PHIPFS_MAX_HANDLES
@@ -415,7 +416,7 @@ static enum phipfs_status end_operation(struct ext4_mount_state *mount,
 static void retire_handle_slot(size_t slot)
 {
     zero_bytes(&ext4_handles[slot], sizeof(ext4_handles[slot]));
-    __atomic_store_n(&ext4_handle_claims[slot], false, __ATOMIC_RELEASE);
+    phipia_slot_release(ext4_handle_claims, slot);
 }
 
 static void release_operation(struct ext4_mount_state *mount)
@@ -788,12 +789,7 @@ static enum phipfs_status leased_handle_state(phipfs_handle handle,
 
 static size_t reserve_handle_slot(void)
 {
-    for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
-        bool unclaimed = false;
-        if (__atomic_compare_exchange_n(&ext4_handle_claims[index], &unclaimed,
-                true, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return index;
-    }
-    return EXT4_MAX_HANDLES;
+    return phipia_slot_claim(ext4_handle_claims, EXT4_MAX_HANDLES);
 }
 
 static void initialize_reserved_handle(size_t slot, enum phipfs_volume volume,

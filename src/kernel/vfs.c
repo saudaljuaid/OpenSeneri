@@ -12,6 +12,7 @@
 #include <phipia/fat32_fs.h>
 #include <phipia/ext4_fs.h>
 #include <phipia/vfs_backend.h>
+#include <phipia/slot_claim.h>
 
 #define VFS_MAX_VNODES 128U
 #define VFS_VNODE_BUCKETS 64U
@@ -69,7 +70,9 @@ static struct vfs_mount_state mounts[PHIPFS_VOLUME_COUNT];
 static struct vfs_vnode_state vnodes[VFS_MAX_VNODES];
 static bool vnode_reservations[VFS_MAX_VNODES];
 static struct vfs_open_file_state open_files[VFS_MAX_OPEN_FILES];
+static bool open_file_claims[VFS_MAX_OPEN_FILES];
 static struct vfs_directory_state directories[VFS_MAX_DIRECTORY_ITERATORS];
+static bool directory_claims[VFS_MAX_DIRECTORY_ITERATORS];
 static uint16_t vnode_buckets[VFS_VNODE_BUCKETS];
 static uint64_t next_mount_generation = UINT64_C(1);
 static uint64_t next_vnode_generation = UINT64_C(1);
@@ -215,14 +218,13 @@ static bool text_equal(const char *left, const char *right)
 
 static uint64_t next_generation(uint64_t *counter, uint64_t maximum)
 {
-    uint64_t result = *counter;
-
-    ++*counter;
-    if (result == 0U || result > maximum) {
-        result = 1U;
-        *counter = 2U;
+    uint64_t observed = __atomic_load_n(counter, __ATOMIC_RELAXED);
+    for (;;) {
+        const uint64_t result = observed == 0U || observed > maximum ? 1U : observed;
+        const uint64_t following = result + 1U;
+        if (__atomic_compare_exchange_n(counter, &observed, following, false,
+                __ATOMIC_RELAXED, __ATOMIC_RELAXED)) return result;
     }
-    return result;
 }
 
 static enum phipfs_status canonicalize_path(
@@ -643,9 +645,11 @@ bool phipfs_resources_released(void)
     for (size_t index = 0U; index < VFS_MAX_VNODES; ++index)
         if (vnodes[index].active || vnodes[index].references != 0U || vnode_reservations[index]) return false;
     for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index)
-        if (open_files[index].active || open_files[index].opening || open_files[index].backend_handle != 0U) return false;
+        if (open_files[index].active || open_files[index].opening || open_files[index].backend_handle != 0U ||
+            __atomic_load_n(&open_file_claims[index], __ATOMIC_ACQUIRE)) return false;
     for (size_t index = 0U; index < VFS_MAX_DIRECTORY_ITERATORS; ++index)
-        if (directories[index].active || directories[index].opening || directories[index].backend_handle != 0U) return false;
+        if (directories[index].active || directories[index].opening || directories[index].backend_handle != 0U ||
+            __atomic_load_n(&directory_claims[index], __ATOMIC_ACQUIRE)) return false;
     return true;
 }
 
@@ -655,7 +659,9 @@ void phipfs_initialize(void)
     zero_bytes(vnodes, sizeof(vnodes));
     zero_bytes(vnode_reservations, sizeof(vnode_reservations));
     zero_bytes(open_files, sizeof(open_files));
+    zero_bytes(open_file_claims, sizeof(open_file_claims));
     zero_bytes(directories, sizeof(directories));
+    zero_bytes(directory_claims, sizeof(directory_claims));
     for (size_t index = 0U; index < VFS_VNODE_BUCKETS; ++index) {
         vnode_buckets[index] = VFS_NO_INDEX;
     }
@@ -795,12 +801,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     status = resolve_metadata_path(volume, path, canonical);
     if (status != PHIPFS_STATUS_OK) return status;
     const struct vfs_backend_ops *backend = mounts[volume].backend;
-    for (size_t index = 0U; index < VFS_MAX_OPEN_FILES; ++index) {
-        if (!open_files[index].active && !open_files[index].opening) {
-            slot = index;
-            break;
-        }
-    }
+    slot = phipia_slot_claim(open_file_claims, VFS_MAX_OPEN_FILES);
     if (slot == VFS_MAX_OPEN_FILES) {
         return PHIPFS_STATUS_NO_HANDLES;
     }
@@ -889,6 +890,7 @@ failed:
     if (vnode_index != VFS_NO_INDEX) vnode_release(vnode_index, vnodes[vnode_index].generation);
     open_files[slot].opening = false;
     --mounts[volume].references;
+    phipia_slot_release(open_file_claims, slot);
     return status;
 }
 
@@ -913,6 +915,7 @@ enum phipfs_status phipfs_close(phipfs_handle handle)
     // Retire the VFS identity before final-close cleanup can free and reuse
     // the backend inode number during a subsequent namespace operation.
     vnode_release(vnode_index, vnode_generation);
+    phipia_slot_release(open_file_claims, (size_t)(state - open_files));
     return backend->close(backend_handle);
 }
 
@@ -1144,12 +1147,7 @@ enum phipfs_status phipfs_directory_open(
         vnode_release(vnode_index, vnodes[vnode_index].generation);
         return PHIPFS_STATUS_NOT_DIRECTORY;
     }
-    for (size_t index = 0U; index < VFS_MAX_DIRECTORY_ITERATORS; ++index) {
-        if (!directories[index].active && !directories[index].opening) {
-            slot = index;
-            break;
-        }
-    }
+    slot = phipia_slot_claim(directory_claims, VFS_MAX_DIRECTORY_ITERATORS);
     if (slot == VFS_MAX_DIRECTORY_ITERATORS) {
         vnode_release(vnode_index, vnodes[vnode_index].generation);
         return PHIPFS_STATUS_NO_HANDLES;
@@ -1179,6 +1177,7 @@ enum phipfs_status phipfs_directory_open(
     if (status != PHIPFS_STATUS_OK) {
         vnode_release(vnode_index, vnodes[vnode_index].generation);
         zero_bytes(&directories[slot], sizeof(directories[slot]));
+        phipia_slot_release(directory_claims, slot);
         return status;
     }
     if (directories[slot].streaming && backend->directory_open_with_stat != NULL) {
@@ -1187,6 +1186,7 @@ enum phipfs_status phipfs_directory_open(
         if (status != PHIPFS_STATUS_OK) {
             (void)backend->directory_close(directories[slot].backend_handle);
             zero_bytes(&directories[slot], sizeof(directories[slot]));
+            phipia_slot_release(directory_claims, slot);
             return status;
         }
     }
@@ -1258,6 +1258,7 @@ enum phipfs_status phipfs_directory_close(phipfs_directory_handle handle)
     state->active = false;
     state->backend_handle = 0U;
     vnode_release(vnode_index, vnode_generation);
+    phipia_slot_release(directory_claims, (size_t)(state - directories));
     if (streaming) status = backend->directory_close(backend_handle);
     return status;
 }

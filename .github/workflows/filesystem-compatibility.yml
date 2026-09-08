@@ -120,6 +120,9 @@ jobs:
                   make build/ext4-vfs-host-test build/ext4-handle-claims-host-test
                   build/ext4-vfs-host-test 2>&1 | tee evidence/ext4/ext4-vfs-host.log
                   build/ext4-handle-claims-host-test 2>&1 | tee evidence/ext4/ext4-handle-claims-host.log
+                  make build/vfs-file-claims-host-test build/vfs-directory-claims-host-test
+                  build/vfs-file-claims-host-test 2>&1 | tee evidence/ext4/vfs-file-claims-host.log
+                  build/vfs-directory-claims-host-test 2>&1 | tee evidence/ext4/vfs-directory-claims-host.log
                   make build/keyboard-channel-host-test
                   build/keyboard-channel-host-test 2>&1 | tee evidence/ext4/application-keyboard-host.log
                   if [[ '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
