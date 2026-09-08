@@ -14,7 +14,7 @@ permissions:
     contents: read
 
 concurrency:
-    group: filesystem-compatibility-${{ github.ref }}
+    group: filesystem-compatibility-${{ github.ref }}${{ inputs.ext4_only && '-ext4' || '' }}
     cancel-in-progress: true
 
 jobs:
