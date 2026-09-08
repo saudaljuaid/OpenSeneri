@@ -110,8 +110,20 @@ validates the superblock, group descriptors, and existing journal. Phipia walks
 the reachable namespace (at most 8,192 entries and 512 queued directories),
 validating directory blocks,
 inode metadata and timestamps, extended-attribute names and values, symlink
-targets, and the first and last mapped byte of non-empty files. Remaining file
-extent/data checks are lazy and occur on pread.
+targets, and the first and last mapped byte of non-empty files. The complete
+mapping/allocation census also checks exclusive data and extent-node ownership,
+shared xattr reference counts, fixed metadata, reserved inodes and bitmap totals.
+Reads validate the requested file data through ext4plus.
+
+Names, inode references, cycle tracking and pending directory paths are packed
+into fallibly grown buffers. Linear directories validate the inode named by each
+checked entry directly; indexed directories additionally verify that htree lookup
+resolves every leaf entry to that same inode. Failed admission exposes no view.
+After a transaction's home checkpoint and clean journal-tail flush are durable,
+the coordinator releases the old view and sealed stage before reloading. Failed
+reload still hides the filesystem, and its exact retry does not repeat storage
+writes. The bounded ordinary VFS recovery journey, clean remount, resource census
+and read-only e2fsck passed at `31af4c3`; the full Stage 2 gate remains unverified.
 
 The drive report derives `free_bytes` from ext4plus's checked, in-memory
 superblock allocator counters, multiplies it by the admitted 4 KiB block size,

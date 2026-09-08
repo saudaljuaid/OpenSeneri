@@ -362,6 +362,18 @@ only after an explicit capacity failure has been fully rolled back. Real
 The coordinator refuses fixed allocator metadata as ordered file data or as a
 freed/revoked block. `is_fixed_metadata_block` covers bitmap blocks, inode tables,
 and primary/backup superblock and descriptor tables in the non-flex/non-resize
-profile. This is not a complete ownership census for directory/extent/xattr
-blocks shared across inodes. The corrupt-alias fixtures await Linux verification
-at `d2affe4`; they require byte-identical refusal, not clean fsck of corrupt input.
+profile. `BlockAllocationSnapshot` also claims data and mapping nodes exclusively,
+counts shared external-xattr references, and compares the complete ownership map
+against allocation bitmaps. The namespace pass checks allocated inode reachability,
+link counts, directory parents, entry types and duplicate names. The corresponding
+hostile-fixture suite passed Linux verification at `a674c98`; corrupt inputs require
+byte-identical refusal, not a clean fsck result.
+
+Validated inode IDs, extent ownership ranges and external-xattr reference records
+use sorted, fallibly grown vectors. These preserve the original uniqueness,
+overlap and reference-count checks while avoiding one kernel allocation descriptor
+per B-tree node. Reservations happen before adding the corresponding claims or
+counters. The 65,536-range budget remains unchanged; bitmap group caches and
+directory counts remain separate. Full-scale allocation behavior is not implied
+by these representation changes. Linux validation of the latest packed range and
+xattr changes remains pending in the implementation ledger.
