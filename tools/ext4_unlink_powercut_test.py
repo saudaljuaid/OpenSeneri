@@ -21,7 +21,8 @@ import ext4_powercut_test as recovery
 PASS = "ST EXT4 VFS held-unlink old-or-new cleanup census exact"
 LONG_SYMLINK_TARGET = "link-source-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz"
 PHYSICAL_OPERATIONS = ("rename", "rename-cross", "rename-wrap", "append", "truncate", "grow", "create",
-    "chmod", "times", "xattr", "xattr-remove")
+    "chmod", "times", "xattr", "xattr-remove", "unlink", "replace", "mkdir", "rmdir",
+    "link", "symlink", "symlink-long")
 STORAGE_CONTROLS = {"append": "APPFAIL.BIN", "overwrite": "OVERFAIL.BIN",
     "truncate": "TRUNCFAIL.BIN", "grow": "GROWFAIL.BIN",
     "rename": "RENFAIL.BIN", "rename-cross": "RENFAIL.BIN",
