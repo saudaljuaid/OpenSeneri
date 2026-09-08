@@ -206,7 +206,7 @@ jobs:
               shell: bash
               run: |
                   set -o pipefail
-                  make qemu-test-fat32-data qemu-test-ext4-applications qemu-test-ext4-applications-low-space qemu-test-ext4-applications-inodes qemu-test-ext4-notes-inodes QEMU_ACCEL=tcg \
+                  make qemu-test-fat32-data qemu-test-ext4-applications qemu-test-ext4-applications-low-space qemu-test-ext4-applications-inodes qemu-test-ext4-notes-inodes qemu-test-ext4-media-export-low-space qemu-test-ext4-media-export-inodes QEMU_ACCEL=tcg \
                       2>&1 | tee evidence/ext4/applications.log
             - name: Exercise ordinary ext4 VFS ENOSPC rollback
               if: ${{ !cancelled() && !inputs.ext4_boot_probe && !inputs.ext4_application_probe }}

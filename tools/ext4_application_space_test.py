@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Refuse a Paint save on block/inode exhaustion, reclaim in Phip, and retry."""
+"""Refuse an application save/export on exhaustion, reclaim in Phip, and retry."""
 
 import argparse
 import hashlib
@@ -29,9 +29,9 @@ def dump_document(image, tools, destination, name):
 
 
 def boot(args, image, output, work, number, original, before):
-    name = "NOTES.TXT" if args.notes else "PAINT.BMP"
-    app = "Notes" if args.notes else "Paint"
-    dock = capture.DOCK_NOTES if args.notes else capture.DOCK_CANVAS
+    name = "NOTES.TXT" if args.notes else ("EXPORT.BMP" if args.media_export else "PAINT.BMP")
+    app = "Notes" if args.notes else ("Media Editor" if args.media_export else "Paint")
+    dock = capture.DOCK_NOTES if args.notes else (capture.DOCK_MEDIA_EDITOR if args.media_export else capture.DOCK_CANVAS)
     length = len(NOTES_CONTENT) if args.notes else PAINT_BYTES
     serial = output / f"boot-{number}.log"
     port = capture.free_port()
@@ -52,13 +52,18 @@ def boot(args, image, output, work, number, original, before):
                 offset = serial.stat().st_size
                 pointer.rehome()
                 click(pointer, capture.dock_item_center(dock), capture.DOCK_POINTER_Y)
-                if not args.notes:
+                if not args.notes and not args.media_export:
                     capture.wait_serial_after(serial, offset, b"Phipia: Paint opened")
                 pointer.settle_guest(0.5)
                 # First application window is the home frame (82,40 860x602).
                 click(pointer, 873, 56)
                 pointer.settle_guest(0.4)
-                if args.notes:
+                if args.media_export:
+                    qmp.hmp("sendkey ctrl-n")
+                    pointer.settle_guest(0.35)
+                    qmp.hmp("sendkey ctrl-o")
+                    pointer.settle_guest(0.70)
+                elif args.notes:
                     click(pointer, 27, 21)
                     capture.send_text(qmp, NOTES_CONTENT.decode("ascii"), 0.060)
                 else:
@@ -78,13 +83,16 @@ def boot(args, image, output, work, number, original, before):
                     pointer.settle_guest(0.4)
                     pointer.drag_to(60, 200, 250, 290)
                 offset = serial.stat().st_size
-                if args.notes:
+                if args.media_export:
+                    qmp.hmp("sendkey ctrl-e")
+                elif args.notes:
                     qmp.hmp("sendkey ctrl-s")
                 else:
                     click(pointer, 42, 16)
-                capture.wait_serial_after(serial, offset, b"Phipia: Save failed: ", timeout=90.0)
+                failure_prefix = b"Phipia: Export failed: " if args.media_export else b"Phipia: Save failed: "
+                capture.wait_serial_after(serial, offset, failure_prefix, timeout=90.0)
                 failure_trace = serial.read_bytes()[offset:]
-                if b"Phipia: Save failed: volume has no free cluster\n" not in failure_trace:
+                if failure_prefix + b"volume has no free cluster\n" not in failure_trace:
                     raise RuntimeError(f"{app} save failed for a reason other than PHIPFS_STATUS_FULL")
                 if b"runtime disabled" in serial.read_bytes() or b"Phipia PANIC" in serial.read_bytes():
                     raise RuntimeError("storage refusal disabled the desktop")
@@ -114,11 +122,14 @@ def boot(args, image, output, work, number, original, before):
                 click(pointer, capture.dock_item_center(dock), capture.DOCK_POINTER_Y)
                 pointer.settle_guest(0.5)
                 offset = serial.stat().st_size
-                if args.notes:
+                if args.media_export:
+                    qmp.hmp("sendkey ctrl-e")
+                elif args.notes:
                     qmp.hmp("sendkey ctrl-s")
                 else:
                     click(pointer, 42, 16)
-                capture.wait_serial_after(serial, offset, f"Phipia: {app} saved {name}".encode(), timeout=90.0)
+                success = b"Phipia: Media exported EXPORT.BMP" if args.media_export else f"Phipia: {app} saved {name}".encode()
+                capture.wait_serial_after(serial, offset, success, timeout=90.0)
                 capture.wait_for_named_file(image, name, length, filesystem="ext4")
                 capture.capture_png(qmp, work, output, f"{app.lower()}-space-reclaimed-retry")
                 applications.terminal(qmp, pointer)
@@ -154,7 +165,8 @@ def boot(args, image, output, work, number, original, before):
 
 def inspect(image, output, label, before, released_blocks, original, expected=None):
     notes = before.get("application") == "Notes"
-    name = "NOTES.TXT" if notes else "PAINT.BMP"
+    media = before.get("application") == "Media Editor"
+    name = "NOTES.TXT" if notes else ("EXPORT.BMP" if media else "PAINT.BMP")
     tools = ext4_image.require_tools()
     target = output / label
     target.mkdir()
@@ -168,10 +180,16 @@ def inspect(image, output, label, before, released_blocks, original, expected=No
         raise RuntimeError("application retry did not preserve its exact edited document across reboot")
     names = ext4_image._debugfs(tools, image, "ls -p /")
     (target / "namespace.txt").write_text(names)
-    if any("/PNTMP" in line or "/SNTMP" in line for line in names.splitlines()):
+    if any(any(f"/{prefix}" in line for prefix in ("PNTMP", "SNTMP", "MEXTP")) for line in names.splitlines()):
         raise RuntimeError("application retry leaked an owned scratch file")
     manifest = {name: {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()},
         "system/release": None}
+    if media:
+        source = dump_document(image, tools, target / "AAA.BMP", "AAA.BMP")
+        if hashlib.sha256(source).hexdigest() != before["import_sha256"] or len(source) != PAINT_BYTES or \
+                source[54:] != content[54:]:
+            raise RuntimeError("Media export changed the unmodified imported pixels or its source file")
+        manifest["AAA.BMP"] = {"bytes": len(source), "sha256": before["import_sha256"]}
     if "inode_fill_count" in before:
         inode_names = ext4_image._debugfs(tools, image, "ls -p /inode-full")
         if sorted(inode_names.splitlines()) != sorted((output / "inode-namespace-before.txt").read_text().splitlines()):
@@ -198,7 +216,9 @@ def main():
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--inodes", action="store_true")
-    parser.add_argument("--notes", action="store_true")
+    application = parser.add_mutually_exclusive_group()
+    application.add_argument("--notes", action="store_true")
+    application.add_argument("--media-export", action="store_true")
     args = parser.parse_args()
     if args.notes and not args.inodes:
         parser.error("--notes currently requires --inodes")
@@ -210,7 +230,7 @@ def main():
     (output / "head.txt").write_text(subprocess.check_output(["git", "rev-parse", "HEAD"], text=True))
     with tempfile.TemporaryDirectory(prefix="paint-space-", dir=output) as raw:
         work = Path(raw)
-        name = "NOTES.TXT" if args.notes else "PAINT.BMP"
+        name = "NOTES.TXT" if args.notes else ("EXPORT.BMP" if args.media_export else "PAINT.BMP")
         bitmap = work / name
         if args.notes:
             bitmap.write_bytes(b"Original note.")
@@ -218,6 +238,16 @@ def main():
             subprocess.run([args.ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i",
                 str(Path(__file__).resolve().parent.parent / "assets/phipia/wallpaper.png"),
                 "-vf", "scale=320:180", "-pix_fmt", "bgr24", "-c:v", "bmp", str(bitmap)], check=True)
+        imported = None
+        if args.media_export:
+            imported = bitmap.read_bytes()
+            source = work / "AAA.BMP"
+            source.write_bytes(imported)
+            # First by insertion and name, so the normal import shortcut finds it.
+            ext4_image._run([tools["debugfs"], "-w", "-R", f'write "{source.as_posix()}" /AAA.BMP', image])
+            previous = bytearray(imported)
+            previous[54] ^= 0xff  # Valid prior BMP with a different first pixel.
+            bitmap.write_bytes(previous)
         original = bitmap.read_bytes()
         ext4_image._run([tools["debugfs"], "-w", "-R", f'write "{bitmap.as_posix()}" /{name}', image])
         available = ext4_image.parse_superblock(image.read_bytes())["free_blocks"]
@@ -248,7 +278,9 @@ def main():
             (output / "fixture-debugfs.txt").write_text(result.stdout)
             (output / "inode-namespace-before.txt").write_text(ext4_image._debugfs(tools, image, "ls -p /inode-full"))
         before = ext4_image.inspect_image(image, tools=tools)
-        before["application"] = "Notes" if args.notes else "Paint"
+        before["application"] = "Notes" if args.notes else ("Media Editor" if args.media_export else "Paint")
+        if imported is not None:
+            before["import_sha256"] = hashlib.sha256(imported).hexdigest()
         if args.inodes:
             if before["free_inodes"] != 0 or before["free_blocks"] <= 128 or released != 64:
                 raise RuntimeError("Paint fixture does not isolate inode exhaustion with sufficient free blocks")
