@@ -5213,6 +5213,52 @@ static _Noreturn void ext4_vfs_replace_powercut(void)
     kernel_test_pass();
 }
 
+static _Noreturn void ext4_vfs_create_powercut(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/created-target";
+    struct phipfs_stat metadata, held;
+    phipfs_handle file = 0U, reader = 0U, collision = 99U;
+    uint8_t byte;
+    size_t count = 99U;
+    const enum phipfs_status initial = phipfs_lstat_path(volume, name, &metadata);
+    if (initial == PHIPFS_STATUS_NOT_FOUND) {
+        console_write("ST EXT4 CREATE initial old\n");
+        ext4_vfs_require(phipfs_open_options(volume, name, PHIPFS_ACCESS_READ_WRITE,
+            PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0640U, &file), "create cut exclusive open");
+    } else if (initial == PHIPFS_STATUS_OK) {
+        console_write("ST EXT4 CREATE initial new\n");
+        ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ_WRITE, &file), "create cut existing open");
+    } else kernel_test_fail("ext4 create cut state is neither absent nor committed");
+    ext4_vfs_require(phipfs_fstat(file, &metadata), "create cut file identity");
+    if (metadata.directory || metadata.size != 0U || metadata.links != 1U ||
+        (metadata.mode & 0777U) != 0640U)
+        kernel_test_fail("ext4 create cut changed mode type size or links");
+    if (phipfs_open_options(volume, name, PHIPFS_ACCESS_READ_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0600U, &collision) != PHIPFS_STATUS_EXISTS || collision != 0U)
+        kernel_test_fail("ext4 create cut exclusive retry changed the file or leaked a handle");
+    ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &reader), "create cut second reader");
+    ext4_vfs_require(phipfs_fstat(reader, &held), "create cut reader identity");
+    if (held.object_id != metadata.object_id || held.mode != metadata.mode)
+        kernel_test_fail("ext4 create cut reader observed another inode");
+    ext4_vfs_require(phipfs_pread(reader, &byte, 1U, 0U, &count), "create cut empty contents");
+    if (count != 0U) kernel_test_fail("ext4 create cut exposed uninitialized bytes");
+    ext4_vfs_require(phipfs_fsync(file), "create cut file sync");
+    ext4_vfs_require(phipfs_close(reader), "create cut reader close");
+    ext4_vfs_require(phipfs_close(file), "create cut writer close");
+    if (phipfs_fstat(file, &held) != PHIPFS_STATUS_STALE_HANDLE ||
+        phipfs_fstat(reader, &held) != PHIPFS_STATUS_STALE_HANDLE)
+        kernel_test_fail("ext4 create cut retained closed handles");
+    ext4_vfs_require(phipfs_sync(volume), "create cut final sync");
+    ext4_vfs_require(phipfs_unmount(volume), "create cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 create cut resource census failed");
+    console_write("ST EXT4 VFS create exclusive mode empty contents census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_truncate_powercut(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5451,6 +5497,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         ext4_vfs_replace_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTTRUNC.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_truncate_powercut();
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTCREATE.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_create_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/LOWSPACE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_low_space();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/INOFULL.TST", &stat) == PHIPFS_STATUS_OK)

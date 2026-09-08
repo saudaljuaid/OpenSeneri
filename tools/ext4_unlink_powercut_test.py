@@ -33,19 +33,23 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
         raise RuntimeError("held-unlink recovery leaked allocations or retained recovery state")
     namespace = ext4_image._debugfs(tools, image, "ls -p /data/user")
     removed = "owned-cut" if replacement_inode is None else "replace-source"
-    if operation != "truncate" and f"/{removed}/" in namespace:
+    if operation not in ("truncate", "create") and f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
     (output / "namespace.txt").write_text(namespace)
-    expected_files = {} if operation == "truncate" else {f"data/user/{removed}": None}
+    expected_files = {} if operation in ("truncate", "create") else {f"data/user/{removed}": None}
     if replacement_inode is not None:
         target_name = "truncate-target" if operation == "truncate" else "replace-target"
         target_size = 1700 if operation == "truncate" else 4500
+        if operation == "create":
+            target_name, target_size = "created-target", 0
         expected_content = (b"t" if operation == "truncate" else b"s") * target_size
         target = ext4_image._parse_stat(ext4_image._debugfs(tools, image,
             f"stat /data/user/{target_name}"), f"/data/user/{target_name}")
         if target["inode"] != replacement_inode or target["size"] != target_size or target["links"] != 1:
             raise RuntimeError("held-replace published the wrong inode or link count")
+        if operation == "create" and (target["mode"] != "0640" or target["block_count_512"] != 0):
+            raise RuntimeError("created inode mode or empty allocation changed")
         content = output / f"{target_name}.bin"
         ext4_image._debugfs(tools, image, f'dump -p /data/user/{target_name} "{content.as_posix()}"')
         if content.read_bytes() != expected_content:
@@ -81,11 +85,15 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
 def run(args):
     replacement = args.operation == "replace"
     truncating = args.operation == "truncate"
+    creating = args.operation == "create"
     pass_marker = PASS if not replacement else "ST EXT4 VFS held-replace old-or-new cleanup census exact"
     state_marker = "ST EXT4 HELD REPLACE initial" if replacement else "ST EXT4 HELD UNLINK initial"
     if truncating:
         pass_marker = "ST EXT4 VFS truncate old-or-new tail shared EOF census exact"
         state_marker = "ST EXT4 TRUNCATE initial"
+    if creating:
+        pass_marker = "ST EXT4 VFS create exclusive mode empty contents census exact"
+        state_marker = "ST EXT4 CREATE initial"
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     tools = ext4_image.require_tools()
@@ -109,6 +117,8 @@ def run(args):
         if truncating:
             source.write_bytes(b"t" * 4500)
             files = [(source, "truncate-target"), (empty, "CUTTRUNC.TST")]
+        if creating:
+            files = [(empty, "CUTCREATE.TST")]
         for file, name in files:
             ext4_image._run([tools["debugfs"], "-w", "-R",
                 f'write "{file.as_posix()}" /data/user/{name}', initial])
@@ -116,11 +126,11 @@ def run(args):
     # Unlink/replace final close reclaims the removed inode. Shrink frees only
     # the second data block and retains the inode and partial first block.
     removed = "truncate-target" if truncating else ("replace-target" if replacement else "owned-cut")
-    target = ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
+    target = None if creating else ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
         f"stat /data/user/{removed}"), f"/data/user/{removed}")
     reclaimed = 1 if replacement or truncating else 2
     initial_blocks = 1 if replacement else 2
-    if target["size"] != (3000 if replacement else 4500) or target["block_count_512"] != initial_blocks * 8:
+    if not creating and (target["size"] != (3000 if replacement else 4500) or target["block_count_512"] != initial_blocks * 8):
         raise RuntimeError("held-unlink input has unexpected allocation geometry")
     replacement_inode = target["inode"] if truncating else None
     if replacement:
@@ -130,6 +140,8 @@ def run(args):
             raise RuntimeError("held-replace source allocation geometry changed")
         replacement_inode = source_stat["inode"]
     expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating else 1)
+    if creating:
+        expected_blocks, expected_inodes = before["free_blocks"], before["free_inodes"] - 1
     iso = output / "verify.iso"
     recovery._build_iso(args.kernel.resolve(), iso, args.grub_mkrescue, args.grub_module_dir, None)
     baseline = output / "complete.raw"
@@ -137,6 +149,10 @@ def run(args):
     status, transcript = recovery._run_qemu(args.qemu, args.accel, iso, baseline,
         output / "complete.log", args.timeout)
     verify_exit(status, transcript, pass_marker)
+    if creating:
+        created = ext4_image._parse_stat(ext4_image._debugfs(tools, baseline,
+            "stat /data/user/created-target"), "/data/user/created-target")
+        replacement_inode = created["inode"]
     inspect(baseline, tools, output / "complete", expected_blocks, expected_inodes, replacement_inode, args.operation)
     boundaries = re.findall(r"^ST EXT4 DURABLE (\d+) ([a-z-]+)$", transcript, re.MULTILINE)
     if not 1 <= len(boundaries) <= 64 or [int(number) for number, _ in boundaries] != list(range(1, len(boundaries) + 1)):
@@ -209,7 +225,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--operation", choices=("unlink", "replace", "truncate"), default="unlink")
+    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "create"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
