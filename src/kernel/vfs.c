@@ -1212,7 +1212,7 @@ enum phipfs_status phipfs_stat_path(
     return PHIPFS_STATUS_OK;
 }
 
-enum phipfs_status phipfs_lstat_path(enum phipfs_volume volume,
+static enum phipfs_status vfs_lstat_path_pinned(enum phipfs_volume volume,
     const char *path, struct phipfs_stat *stat)
 {
     char canonical[PHIPFS_MAX_PATH];
@@ -1252,7 +1252,7 @@ enum phipfs_status phipfs_list(
     return status;
 }
 
-enum phipfs_status phipfs_directory_open(
+static enum phipfs_status vfs_directory_open_pinned(
     enum phipfs_volume volume,
     const char *path,
     phipfs_directory_handle *handle
@@ -1397,7 +1397,7 @@ enum phipfs_status phipfs_create(enum phipfs_volume volume, const char *path)
     return phipfs_create_mode(volume, path, UINT16_C(0644));
 }
 
-enum phipfs_status phipfs_create_mode(enum phipfs_volume volume,
+static enum phipfs_status vfs_create_mode_pinned(enum phipfs_volume volume,
     const char *path, uint16_t mode)
 {
     char canonical[PHIPFS_MAX_PATH];
@@ -1421,7 +1421,7 @@ enum phipfs_status phipfs_ftruncate(phipfs_handle handle, uint64_t size)
     return state->backend->truncate(vnode->volume, vnode->path, size);
 }
 
-enum phipfs_status phipfs_truncate(
+static enum phipfs_status vfs_truncate_pinned(
     enum phipfs_volume volume,
     const char *path,
     uint64_t size
@@ -1454,7 +1454,7 @@ enum phipfs_status phipfs_mkdir(enum phipfs_volume volume, const char *path)
     return phipfs_mkdir_mode(volume, path, 0755U);
 }
 
-enum phipfs_status phipfs_mkdir_mode(enum phipfs_volume volume, const char *path, uint16_t mode)
+static enum phipfs_status vfs_mkdir_mode_pinned(enum phipfs_volume volume, const char *path, uint16_t mode)
 {
     char canonical[PHIPFS_MAX_PATH];
     if ((mode & ~07777U) != 0U) return PHIPFS_STATUS_INVALID_ARGUMENT;
@@ -1466,7 +1466,7 @@ enum phipfs_status phipfs_mkdir_mode(enum phipfs_volume volume, const char *path
         backend->mkdir(volume, canonical);
 }
 
-enum phipfs_status phipfs_rename(
+static enum phipfs_status vfs_rename_pinned(
     enum phipfs_volume volume,
     const char *source,
     const char *destination
@@ -1484,7 +1484,7 @@ enum phipfs_status phipfs_rename(
         source_canonical, destination_canonical) : status;
 }
 
-enum phipfs_status phipfs_unlink(enum phipfs_volume volume, const char *path)
+static enum phipfs_status vfs_unlink_pinned(enum phipfs_volume volume, const char *path)
 {
     char canonical[PHIPFS_MAX_PATH];
     enum phipfs_status status = resolve_parent(volume, path, canonical);
@@ -1492,7 +1492,7 @@ enum phipfs_status phipfs_unlink(enum phipfs_volume volume, const char *path)
         mounts[volume].backend->unlink(volume, canonical) : status;
 }
 
-enum phipfs_status phipfs_remove(enum phipfs_volume volume, const char *path)
+static enum phipfs_status vfs_remove_pinned(enum phipfs_volume volume, const char *path)
 {
     char canonical[PHIPFS_MAX_PATH];
     enum phipfs_status status = resolve_parent(volume, path, canonical);
@@ -1504,7 +1504,7 @@ enum phipfs_status phipfs_remove(enum phipfs_volume volume, const char *path)
     return status == PHIPFS_STATUS_IS_DIRECTORY ? phipfs_rmdir(volume, canonical) : status;
 }
 
-enum phipfs_status phipfs_rename_replace(enum phipfs_volume volume,
+static enum phipfs_status vfs_rename_replace_pinned(enum phipfs_volume volume,
     const char *source, const char *destination)
 {
     char from[PHIPFS_MAX_PATH];
@@ -1528,7 +1528,7 @@ bool phipfs_has_atomic_replace(enum phipfs_volume volume)
         mounts[volume].backend->rename_replace != NULL;
 }
 
-enum phipfs_status phipfs_rmdir(enum phipfs_volume volume, const char *path)
+static enum phipfs_status vfs_rmdir_pinned(enum phipfs_volume volume, const char *path)
 {
     char canonical[PHIPFS_MAX_PATH];
     if (valid_volume(volume) && mounts[volume].active &&
@@ -1554,7 +1554,7 @@ enum phipfs_status phipfs_rmdir(enum phipfs_volume volume, const char *path)
         mounts[volume].backend->rmdir(volume, canonical) : status;
 }
 
-enum phipfs_status phipfs_link(
+static enum phipfs_status vfs_link_pinned(
     enum phipfs_volume volume,
     const char *source,
     const char *destination
@@ -1572,7 +1572,7 @@ enum phipfs_status phipfs_link(
         source_canonical, destination_canonical) : status;
 }
 
-enum phipfs_status phipfs_set_times(enum phipfs_volume volume, const char *path,
+static enum phipfs_status vfs_set_times_pinned(enum phipfs_volume volume, const char *path,
     const struct phipfs_times *times)
 {
     char canonical[PHIPFS_MAX_PATH];
@@ -1582,7 +1582,7 @@ enum phipfs_status phipfs_set_times(enum phipfs_volume volume, const char *path,
         mounts[volume].backend->set_times(volume, canonical, times);
 }
 
-enum phipfs_status phipfs_chmod(enum phipfs_volume volume, const char *path, uint16_t mode)
+static enum phipfs_status vfs_chmod_pinned(enum phipfs_volume volume, const char *path, uint16_t mode)
 {
     char canonical[PHIPFS_MAX_PATH];
     enum phipfs_status status = resolve_metadata_path(volume, path, canonical);
@@ -1591,7 +1591,7 @@ enum phipfs_status phipfs_chmod(enum phipfs_volume volume, const char *path, uin
         mounts[volume].backend->chmod(volume, canonical, mode);
 }
 
-enum phipfs_status phipfs_set_xattr(enum phipfs_volume volume, const char *path,
+static enum phipfs_status vfs_set_xattr_pinned(enum phipfs_volume volume, const char *path,
     const char *name, const uint8_t *value, size_t length, bool remove)
 {
     char canonical[PHIPFS_MAX_PATH];
@@ -1601,7 +1601,7 @@ enum phipfs_status phipfs_set_xattr(enum phipfs_volume volume, const char *path,
         mounts[volume].backend->set_xattr(volume, canonical, name, value, length, remove);
 }
 
-enum phipfs_status phipfs_get_xattr(enum phipfs_volume volume, const char *path,
+static enum phipfs_status vfs_get_xattr_pinned(enum phipfs_volume volume, const char *path,
     const char *name, uint8_t *output, size_t capacity, size_t *length)
 {
     char canonical[PHIPFS_MAX_PATH];
@@ -1615,7 +1615,7 @@ enum phipfs_status phipfs_get_xattr(enum phipfs_volume volume, const char *path,
     return status;
 }
 
-enum phipfs_status phipfs_symlink(enum phipfs_volume volume,
+static enum phipfs_status vfs_symlink_pinned(enum phipfs_volume volume,
     const char *path, const char *target)
 {
     char canonical[PHIPFS_MAX_PATH];
@@ -1628,7 +1628,7 @@ enum phipfs_status phipfs_symlink(enum phipfs_volume volume,
         mounts[volume].backend->symlink(volume, canonical, target);
 }
 
-enum phipfs_status phipfs_readlink(enum phipfs_volume volume,
+static enum phipfs_status vfs_readlink_pinned(enum phipfs_volume volume,
     const char *path, uint8_t *output, size_t capacity, size_t *read_bytes)
 {
     char canonical[PHIPFS_MAX_PATH];
@@ -1646,4 +1646,227 @@ enum phipfs_status phipfs_readlink(enum phipfs_volume volume,
     }
     return mounts[volume].backend->readlink == NULL ? PHIPFS_STATUS_ACCESS :
         mounts[volume].backend->readlink(volume, canonical, output, capacity, read_bytes);
+}
+
+/* Keep the mount identity stable through all path validation and backend
+ * results. These wrappers own references, not a lock across storage calls. */
+enum phipfs_status phipfs_lstat_path(enum phipfs_volume volume,
+    const char *path, struct phipfs_stat *stat)
+{
+    if (stat == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    zero_bytes(stat, sizeof(*stat));
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_lstat_path_pinned(volume, path, stat);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_directory_open(
+    enum phipfs_volume volume,
+    const char *path,
+    phipfs_directory_handle *handle
+)
+{
+    if (handle == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    *handle = 0U;
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_directory_open_pinned(volume, path, handle);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_create_mode(enum phipfs_volume volume,
+    const char *path, uint16_t mode)
+{
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_create_mode_pinned(volume, path, mode);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_truncate(
+    enum phipfs_volume volume,
+    const char *path,
+    uint64_t size
+)
+{
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_truncate_pinned(volume, path, size);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_mkdir_mode(enum phipfs_volume volume, const char *path, uint16_t mode)
+{
+    if ((mode & ~07777U) != 0U) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_mkdir_mode_pinned(volume, path, mode);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_rename(
+    enum phipfs_volume volume,
+    const char *source,
+    const char *destination
+)
+{
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_rename_pinned(volume, source, destination);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_unlink(enum phipfs_volume volume, const char *path)
+{
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_unlink_pinned(volume, path);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_remove(enum phipfs_volume volume, const char *path)
+{
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_remove_pinned(volume, path);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_rename_replace(enum phipfs_volume volume,
+    const char *source, const char *destination)
+{
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_rename_replace_pinned(volume, source, destination);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_rmdir(enum phipfs_volume volume, const char *path)
+{
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_rmdir_pinned(volume, path);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_link(
+    enum phipfs_volume volume,
+    const char *source,
+    const char *destination
+)
+{
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_link_pinned(volume, source, destination);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_set_times(enum phipfs_volume volume, const char *path,
+    const struct phipfs_times *times)
+{
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_set_times_pinned(volume, path, times);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_chmod(enum phipfs_volume volume, const char *path, uint16_t mode)
+{
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_chmod_pinned(volume, path, mode);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_set_xattr(enum phipfs_volume volume, const char *path,
+    const char *name, const uint8_t *value, size_t length, bool remove)
+{
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_set_xattr_pinned(volume, path, name, value, length, remove);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_get_xattr(enum phipfs_volume volume, const char *path,
+    const char *name, uint8_t *output, size_t capacity, size_t *length)
+{
+    if (length == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    *length = 0U;
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_get_xattr_pinned(volume, path, name, output, capacity, length);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_symlink(enum phipfs_volume volume,
+    const char *path, const char *target)
+{
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_symlink_pinned(volume, path, target);
+    mount_release(volume);
+    return status;
+}
+
+enum phipfs_status phipfs_readlink(enum phipfs_volume volume,
+    const char *path, uint8_t *output, size_t capacity, size_t *read_bytes)
+{
+    if (read_bytes == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    *read_bytes = 0U;
+    if (output == NULL || capacity == 0U) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    if (!valid_volume(volume)) return PHIPFS_STATUS_NOT_MOUNTED;
+    const struct vfs_backend_ops *backend;
+    enum phipfs_status status = mount_pin(volume, &backend);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = vfs_readlink_pinned(volume, path, output, capacity, read_bytes);
+    mount_release(volume);
+    return status;
 }

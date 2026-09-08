@@ -161,11 +161,12 @@ backend or storage call; the caller's interrupt state is restored. Mount
 reference increments refuse overflow. Host contention tests cover shared inode
 deduplication, coherent snapshots, reservation and final reclamation.
 Mount transitions reserve their state under the same metadata lock before
-backend calls. File opens, checked path lookups and filesystem sync pin their
-mount until completion, preventing teardown between lookup and vnode binding.
-These protections do not establish complete SMP filesystem support: remaining
-path mutations and published handle-state access still need their own
-lifecycle synchronization. The admitted execution model remains one
+backend calls. File/directory opens, path lookups and mutations, and filesystem
+sync pin their mount until completion, including error returns, preventing
+teardown between validation and backend access or vnode binding.
+These protections do not establish complete SMP filesystem support: published
+handle-state access and cross-volume backend registry scans still need their
+own lifecycle synchronization. The admitted execution model remains one
 core, with backend operations serialized by the volume guard.
 
 ## Read-write admission

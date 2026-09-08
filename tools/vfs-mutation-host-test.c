@@ -94,6 +94,7 @@ static enum phipfs_status read_attribute(enum phipfs_volume volume, const char *
     const char *name, uint8_t *output, size_t capacity, size_t *length)
 {
     assert(volume == PHIPFS_VOLUME_DATA && strcmp(path, "parent/file") == 0);
+    assert(phipfs_unmount(volume) == PHIPFS_STATUS_BUSY && cpu_interrupts_enabled());
     assert(strcmp(name, "user.test") == 0 && output != NULL && capacity == 4U);
     *length = 3U;
     return mutation_result;
@@ -200,7 +201,7 @@ static enum phipfs_status replaced_directory_read(phipfs_handle handle,
 static enum phipfs_status hidden_stat(enum phipfs_volume volume,
     const char *path, struct phipfs_stat *result)
 {
-    (void)volume;
+    assert(phipfs_unmount(volume) == PHIPFS_STATUS_BUSY && cpu_interrupts_enabled());
     ++stats;
     if (stat_succeeds) {
         assert(strcmp(path, expected_path) == 0);
@@ -215,6 +216,7 @@ static enum phipfs_status hidden_stat(enum phipfs_volume volume,
 static enum phipfs_status mutation(enum phipfs_volume volume, const char *path)
 {
     assert(volume == PHIPFS_VOLUME_DATA && strcmp(path, expected_path) == 0);
+    assert(phipfs_unmount(volume) == PHIPFS_STATUS_BUSY && cpu_interrupts_enabled());
     ++calls;
     return mutation_result;
 }
@@ -361,6 +363,7 @@ int main(void)
         assert(phipfs_link(PHIPFS_VOLUME_DATA, "parent/file", "other/target") == mutation_result);
         assert(phipfs_rename(PHIPFS_VOLUME_DATA, "parent/file", "other/target") == mutation_result);
         assert(phipfs_rename_replace(PHIPFS_VOLUME_DATA, "parent/file", "other/target") == mutation_result);
+        assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
     }
     assert(calls == 18U && stats == 0U);
     assert(phipfs_unlink(PHIPFS_VOLUME_DATA, "../parent/file") == PHIPFS_STATUS_PATH);
@@ -664,6 +667,19 @@ int main(void)
     assert(mounts[PHIPFS_VOLUME_DATA].generation == next_mount && !phipfs_resources_released());
     assert(phipfs_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK && unmount_calls == 4U);
     assert(phipfs_resources_released());
+    size_t absent_count = 99U;
+    uint8_t absent_bytes[4];
+    phipfs_directory_handle absent_directory = 99U;
+    struct phipfs_stat absent_stat = { .size = 99U };
+    assert(phipfs_get_xattr(PHIPFS_VOLUME_DATA, "file", "user.note", absent_bytes, sizeof(absent_bytes), &absent_count) ==
+        PHIPFS_STATUS_NOT_MOUNTED && absent_count == 0U);
+    absent_count = 99U;
+    assert(phipfs_readlink(PHIPFS_VOLUME_DATA, "file", absent_bytes, sizeof(absent_bytes), &absent_count) ==
+        PHIPFS_STATUS_NOT_MOUNTED && absent_count == 0U);
+    assert(phipfs_directory_open(PHIPFS_VOLUME_DATA, ".", &absent_directory) == PHIPFS_STATUS_NOT_MOUNTED && absent_directory == 0U);
+    assert(phipfs_lstat_path(PHIPFS_VOLUME_DATA, "file", &absent_stat) == PHIPFS_STATUS_NOT_MOUNTED && absent_stat.size == 0U);
+    assert(phipfs_resources_released());
+    puts("VFS path mutations pin admission through backend refusal and clear unavailable outputs without leaks: PASS");
     puts("VFS remount reserves admission through backend setup and publishes one successful generation: PASS");
     puts("VFS teardown blocks reentrant admission and retains mount generation across failed release: PASS");
     puts("VFS journal mutation retries, nested open reservations, backend errors, path bounds and vnode census: PASS");
