@@ -501,6 +501,14 @@ static enum package_service_status count_tree_files(
     return PACKAGE_SERVICE_STATUS_OK;
 }
 
+static bool same_observed_inode_metadata(const struct phipfs_stat *expected,
+    const struct phipfs_stat *observed)
+{
+    return !observed->directory && observed->size == expected->size &&
+        observed->object_id == expected->object_id && observed->links == expected->links &&
+        observed->mode == expected->mode;
+}
+
 static enum package_service_status verify_file(
     struct service_context *context,
     const char *path,
@@ -532,6 +540,13 @@ static enum package_service_status verify_file(
         return filesystem_failure(context, fs_status);
     }
     handle_acquired(context);
+    fs_status = phipfs_fstat(handle, &after);
+    if (fs_status != PHIPFS_STATUS_OK || !same_observed_inode_metadata(&before, &after)) {
+        enum package_service_status refused = fs_status == PHIPFS_STATUS_OK ?
+            PACKAGE_SERVICE_STATUS_IMMUTABLE_FILE : filesystem_failure(context, fs_status);
+        enum package_service_status closed = close_file(context, handle);
+        return closed == PACKAGE_SERVICE_STATUS_OK ? refused : closed;
+    }
     enum package_state_status state_status =
         package_state_sha256_initialize(&sha);
     enum package_service_status status = PACKAGE_SERVICE_STATUS_OK;
@@ -565,6 +580,11 @@ static enum package_service_status verify_file(
             status = PACKAGE_SERVICE_STATUS_IMMUTABLE_FILE;
         }
     }
+    if (status == PACKAGE_SERVICE_STATUS_OK) {
+        fs_status = phipfs_fstat(handle, &after);
+        if (fs_status != PHIPFS_STATUS_OK) status = filesystem_failure(context, fs_status);
+        else if (!same_observed_inode_metadata(&before, &after)) status = PACKAGE_SERVICE_STATUS_IMMUTABLE_FILE;
+    }
     enum package_service_status close_status = close_file(context, handle);
     if (status == PACKAGE_SERVICE_STATUS_OK) {
         status = close_status;
@@ -581,9 +601,7 @@ static enum package_service_status verify_file(
     if (fs_status != PHIPFS_STATUS_OK) {
         return filesystem_failure(context, fs_status);
     }
-    if (after.directory || after.size != before.size ||
-        after.object_id != before.object_id || after.links != before.links ||
-        after.mode != before.mode) {
+    if (!same_observed_inode_metadata(&before, &after)) {
         return PACKAGE_SERVICE_STATUS_IMMUTABLE_FILE;
     }
     ++context->report->files_verified;

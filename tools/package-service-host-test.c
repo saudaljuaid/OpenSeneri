@@ -61,6 +61,10 @@ static unsigned prepared_opens;
 static unsigned legacy_creates;
 static unsigned unlink_calls;
 static bool prepared_collision;
+static unsigned verification_fault;
+static unsigned verification_faults_seen;
+static bool restore_application_mode;
+static const char verified_application[] = "pkgstate/gen/00000000/00000002/root/bin/app";
 
 static void event(enum mock_event value)
 {
@@ -145,6 +149,8 @@ static void reset_filesystem(void)
     legacy_creates = 0U;
     unlink_calls = 0U;
     prepared_collision = false;
+    verification_fault = verification_faults_seen = 0U;
+    restore_application_mode = false;
     add_directory("pkgstate");
     add_directory("pkgstate/gen");
     add_directory("pkgstate/gen/00000000");
@@ -251,6 +257,11 @@ enum phipfs_status phipfs_open(
     if (nodes[node].directory) {
         return PHIPFS_STATUS_IS_DIRECTORY;
     }
+    if (verification_fault == 1U && strcmp(path, verified_application) == 0) {
+        node = add_node("different-inode", false, (const uint8_t *)"app", 3U, UINT16_C(0555));
+        verification_fault = 0U;
+        ++verification_faults_seen;
+    }
     for (size_t index = 0U; index < MOCK_MAX_HANDLES; ++index) {
         if (!handles[index].active) {
             handles[index].active = true;
@@ -296,11 +307,32 @@ static struct mock_handle *mock_handle(phipfs_handle handle)
     return &handles[handle - 1U];
 }
 
+enum phipfs_status phipfs_fstat(phipfs_handle handle, struct phipfs_stat *stat)
+{
+    memset(stat, 0, sizeof(*stat));
+    struct mock_handle *state = mock_handle(handle);
+    if (state == NULL) return PHIPFS_STATUS_STALE_HANDLE;
+    const struct mock_node *node = &nodes[state->node];
+    if (verification_fault == 2U && strcmp(node->path, verified_application) == 0) {
+        verification_fault = 0U;
+        ++verification_faults_seen;
+        return PHIPFS_STATUS_IO;
+    }
+    *stat = (struct phipfs_stat){ .size = node->byte_count, .object_id = node->object_id,
+        .mode = node->mode, .links = 1U, .directory = node->directory,
+        .read_only = (node->mode & UINT16_C(0222)) == 0U };
+    return PHIPFS_STATUS_OK;
+}
+
 enum phipfs_status phipfs_close(phipfs_handle handle)
 {
     struct mock_handle *state = mock_handle(handle);
     if (state == NULL) {
         return PHIPFS_STATUS_STALE_HANDLE;
+    }
+    if (restore_application_mode && strcmp(nodes[state->node].path, verified_application) == 0) {
+        nodes[state->node].mode = UINT16_C(0555);
+        restore_application_mode = false;
     }
     state->active = false;
     return PHIPFS_STATUS_OK;
@@ -325,6 +357,12 @@ enum phipfs_status phipfs_read(
     }
     state->offset += count;
     *read_bytes = count;
+    if (verification_fault == 3U && count != 0U && strcmp(node->path, verified_application) == 0) {
+        node->mode = UINT16_C(0600);
+        restore_application_mode = true;
+        verification_fault = 0U;
+        ++verification_faults_seen;
+    }
     return PHIPFS_STATUS_OK;
 }
 
@@ -1894,6 +1932,30 @@ static int test_prepared_file_ownership(void)
     return 0;
 }
 
+static int test_verification_holds_the_expected_inode(
+    const uint8_t database[NEW_DATABASE_BYTES],
+    const uint8_t authority[PACKAGE_STATE_AUTHORITY_BYTES],
+    const uint8_t journal[PACKAGE_STATE_JOURNAL_BYTES])
+{
+    for (unsigned fault = 1U; fault <= 3U; ++fault) {
+        struct package_service_report report;
+        reset_filesystem();
+        add_new_generation(database);
+        add_file(PACKAGE_SERVICE_AUTHORITY_PATH, authority, PACKAGE_STATE_AUTHORITY_BYTES, UINT16_C(0444));
+        add_file(PACKAGE_SERVICE_JOURNAL_PATH, journal, PACKAGE_STATE_JOURNAL_BYTES, UINT16_C(0444));
+        verification_fault = fault;
+        CHECK(package_service_recover(&report) == (fault == 2U ? PACKAGE_SERVICE_STATUS_FILESYSTEM :
+            PACKAGE_SERVICE_STATUS_INCOMPLETE), 310);
+        CHECK(verification_faults_seen == 1U && verification_fault == 0U && !restore_application_mode &&
+            !report.authority_replaced && !report.cleanup_complete && report_clean(&report), 311);
+        CHECK(find_node(PACKAGE_SERVICE_JOURNAL_PATH) != MOCK_MAX_NODES &&
+            selected_authority_generation(2U) && nodes[find_node(verified_application)].mode == UINT16_C(0555), 312);
+        CHECK(package_service_recover(&report) == PACKAGE_SERVICE_STATUS_OK && report.generation == 2U &&
+            report.cleanup_complete && report_clean(&report), 313);
+    }
+    return 0;
+}
+
 int main(void)
 {
     static uint8_t old_database[OLD_DATABASE_BYTES];
@@ -1917,6 +1979,9 @@ int main(void)
         NEW_DATABASE_BYTES);
     build_journal(journal, old_database, new_database);
     result = test_service_request_claim();
+    if (result == 0) {
+        result = test_verification_holds_the_expected_inode(new_database, new_authority, journal);
+    }
     if (result == 0) {
         result = test_prepared_file_ownership();
     }
