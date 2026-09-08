@@ -152,6 +152,12 @@ defers backing-state/snapshot destruction when an active operation still uses
 it. Snapshot reads and seek also reserve this guard without opening storage
 unless SEEK_END needs a checked inode refresh. Production backend host tests
 exercise these reentrant close and deferred-release paths.
+An additional host contention test keeps sixteen backend handles open on one
+inode while writers compete for that volume guard. It checks 8,000 distinct
+append records, BUSY refusals with zero bytes, per-handle cursors, final shared
+EOF and balanced storage leases. Its coordinator/storage are controlled host
+substitutes; it establishes exclusion with stable handles, not disk durability
+or concurrent registry publication and close.
 
 VFS file/directory slots and ext4 handle slots retain atomic ownership claims
 from reservation through retirement. VFS vnode hash buckets, references,
