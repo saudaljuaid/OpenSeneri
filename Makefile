@@ -2683,6 +2683,14 @@ qemu-test-ext4-journal-wrap: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_journal_wrap_t
 		$(if $(GRUB_MODULE_DIR),--grub-module-dir '$(GRUB_MODULE_DIR)') \
 		--accel '$(QEMU_ACCEL)'
 
+qemu-test-ext4-storage-refusals: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_unlink_powercut_test.py
+	@operations="$$($(PYTHON) -c 'import sys; sys.path.insert(0, "tools"); from ext4_unlink_powercut_test import STORAGE_CONTROLS; print(" ".join(STORAGE_CONTROLS))')" || exit 1; \
+	result=0; \
+	for operation in $$operations; do \
+		$(MAKE) "qemu-test-ext4-$$operation-errors-powercuts" || result=1; \
+	done; \
+	exit $$result
+
 qemu-test-ext4-admission-refusals: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_admission_test.py tools/ext4_image.py tools/ext4_unlink_powercut_test.py tools/ext4_powercut_test.py tools/ext4_kernel_read.py
 	$(PYTHON) tools/ext4_admission_test.py --kernel '$(KERNEL)' --fixture '$(EXT4_FIXTURE)' \
 		--output '$(TEST_BUILD_DIR)/ext4-unlink-powercuts/$(shell git rev-parse --short HEAD)/admission-refusals' \

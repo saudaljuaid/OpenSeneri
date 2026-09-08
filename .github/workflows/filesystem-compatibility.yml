@@ -21,7 +21,7 @@ on:
                 description: Focused VFS or power-cut diagnostic (requires ext4_boot_probe; all preserves the complete probe)
                 type: choice
                 default: all
-                options: [all, vfs, journal-wrap, dense-file, geometry, admission-refusals, unlink, replace, rename, rename-errors, rename-device, rename-cross, rename-cross-errors, rename-cross-device, rename-wrap-device, truncate, truncate-errors, truncate-device, grow, grow-errors, grow-device, append, append-errors, append-device, overwrite, overwrite-errors, chmod, chmod-errors, times, times-errors, create, create-errors, create-device, mkdir, mkdir-errors, rmdir, rmdir-errors, xattr, xattr-errors, xattr-remove, xattr-remove-errors, link, link-errors, symlink, symlink-errors, symlink-long, symlink-long-errors]
+                options: [all, vfs, journal-wrap, dense-file, geometry, admission-refusals, storage-refusals, unlink, replace, rename, rename-errors, rename-device, rename-cross, rename-cross-errors, rename-cross-device, rename-wrap-device, truncate, truncate-errors, truncate-device, grow, grow-errors, grow-device, append, append-errors, append-device, overwrite, overwrite-errors, chmod, chmod-errors, times, times-errors, create, create-errors, create-device, mkdir, mkdir-errors, rmdir, rmdir-errors, xattr, xattr-errors, xattr-remove, xattr-remove-errors, link, link-errors, symlink, symlink-errors, symlink-long, symlink-long-errors]
 
 permissions:
     contents: read
@@ -103,7 +103,7 @@ jobs:
                       exit 1
                   fi
                   case "$PHIPIA_EXT4_CUT_OPERATION" in
-                      all|vfs|journal-wrap|dense-file|geometry|admission-refusals|unlink|replace|rename|rename-errors|rename-device|rename-cross|rename-cross-errors|rename-cross-device|rename-wrap-device|truncate|truncate-errors|truncate-device|grow|grow-errors|grow-device|append|append-errors|append-device|overwrite|overwrite-errors|chmod|chmod-errors|times|times-errors|create|create-errors|create-device|mkdir|mkdir-errors|rmdir|rmdir-errors|xattr|xattr-errors|xattr-remove|xattr-remove-errors|link|link-errors|symlink|symlink-errors|symlink-long|symlink-long-errors) ;;
+                      all|vfs|journal-wrap|dense-file|geometry|admission-refusals|storage-refusals|unlink|replace|rename|rename-errors|rename-device|rename-cross|rename-cross-errors|rename-cross-device|rename-wrap-device|truncate|truncate-errors|truncate-device|grow|grow-errors|grow-device|append|append-errors|append-device|overwrite|overwrite-errors|chmod|chmod-errors|times|times-errors|create|create-errors|create-device|mkdir|mkdir-errors|rmdir|rmdir-errors|xattr|xattr-errors|xattr-remove|xattr-remove-errors|link|link-errors|symlink|symlink-errors|symlink-long|symlink-long-errors) ;;
                       *) echo 'Unsupported cut diagnostic.'; exit 1 ;;
                   esac
                   printf '%s\n' 'Targeted ext4 diagnostic only; all milestone gates remain required.' \
@@ -190,7 +190,7 @@ jobs:
                       if [[ "$PHIPIA_EXT4_CUT_OPERATION" != 'all' ]]; then
                           if [[ "$PHIPIA_EXT4_CUT_OPERATION" == 'vfs' ]]; then
                               targets=(qemu-test-ext4-recovery)
-                          elif [[ "$PHIPIA_EXT4_CUT_OPERATION" == 'journal-wrap' || "$PHIPIA_EXT4_CUT_OPERATION" == 'dense-file' || "$PHIPIA_EXT4_CUT_OPERATION" == 'geometry' || "$PHIPIA_EXT4_CUT_OPERATION" == 'admission-refusals' ]]; then
+                          elif [[ "$PHIPIA_EXT4_CUT_OPERATION" == 'journal-wrap' || "$PHIPIA_EXT4_CUT_OPERATION" == 'dense-file' || "$PHIPIA_EXT4_CUT_OPERATION" == 'geometry' || "$PHIPIA_EXT4_CUT_OPERATION" == 'admission-refusals' || "$PHIPIA_EXT4_CUT_OPERATION" == 'storage-refusals' ]]; then
                               targets=("qemu-test-ext4-${PHIPIA_EXT4_CUT_OPERATION}")
                           else
                               targets=("qemu-test-ext4-${PHIPIA_EXT4_CUT_OPERATION}-powercuts")
