@@ -4995,6 +4995,67 @@ static void ext4_vfs_semantics(void)
     ext4_vfs_directory_semantics();
 }
 
+static _Noreturn void ext4_vfs_low_space(void)
+{
+    static uint8_t payload[64U * 4096U];
+    uint8_t block[4096];
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/ENOSPC.TMP";
+    const uint64_t initial_free = phipfs_drive(volume).free_bytes;
+    phipfs_handle file;
+    struct phipfs_stat metadata;
+    uint64_t position;
+    size_t count;
+    if (initial_free <= 32U * 4096U || initial_free >= 64U * 4096U)
+        kernel_test_fail("ext4 VFS low-space fixture reserve is wrong");
+    for (size_t index = 0U; index < sizeof(payload); ++index) payload[index] = 0x52U;
+    ext4_vfs_require(phipfs_open_options(volume, name, PHIPFS_ACCESS_READ_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0600U, &file), "low-space create");
+    ext4_vfs_require(phipfs_write(file, payload, sizeof(payload), &count), "low-space short write");
+    if (count != 32U * 4096U) kernel_test_fail("ext4 VFS low-space durable prefix changed");
+    const uint64_t free_after_prefix = phipfs_drive(volume).free_bytes;
+    if (free_after_prefix == 0U || free_after_prefix >= 32U * 4096U)
+        kernel_test_fail("ext4 VFS low-space prefix did not consume reserve");
+    for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+        count = 99U;
+        if (phipfs_write(file, payload, 32U * 4096U, &count) != PHIPFS_STATUS_FULL || count != 0U)
+            kernel_test_fail("ext4 VFS low-space refusal returned an invalid count");
+        ext4_vfs_require(phipfs_fsync(file), "low-space refusal sync");
+        ext4_vfs_require(phipfs_seek(file, 0, PHIPFS_SEEK_CURRENT, &position), "low-space cursor");
+        ext4_vfs_require(phipfs_fstat(file, &metadata), "low-space metadata");
+        if (position != 32U * 4096U || metadata.size != position ||
+            phipfs_drive(volume).free_bytes != free_after_prefix)
+            kernel_test_fail("ext4 VFS ENOSPC leaked allocations or moved EOF/cursor");
+    }
+    for (uint64_t offset = 0U; offset < 32U * 4096U; offset += sizeof(block)) {
+        ext4_vfs_require(phipfs_pread(file, block, sizeof(block), offset, &count), "low-space prefix read");
+        if (count != sizeof(block)) kernel_test_fail("ext4 VFS low-space prefix was short");
+        for (size_t index = 0U; index < sizeof(block); ++index)
+            if (block[index] != 0x52U) kernel_test_fail("ext4 VFS low-space prefix changed bytes");
+    }
+    ext4_vfs_require(phipfs_pread(file, block, 1U, 32U * 4096U, &count), "low-space EOF");
+    if (count != 0U) kernel_test_fail("ext4 VFS low-space rollback exposed a tail");
+    ext4_vfs_require(phipfs_write(file, (const uint8_t *)"fits", 4U, &count), "low-space reuse");
+    if (count != 4U) kernel_test_fail("ext4 VFS low-space reuse was short");
+    ext4_vfs_require(phipfs_fsync(file), "low-space reuse sync");
+    ext4_vfs_require(phipfs_pread(file, block, 4U, 32U * 4096U, &count), "low-space reuse read");
+    if (count != 4U || block[0] != 'f' || block[1] != 'i' || block[2] != 't' || block[3] != 's')
+        kernel_test_fail("ext4 VFS low-space reuse changed bytes");
+    ext4_vfs_require(phipfs_close(file), "low-space close");
+    ext4_vfs_require(phipfs_unlink(volume, name), "low-space cleanup");
+    ext4_vfs_require(phipfs_sync(volume), "low-space cleanup sync");
+    if (phipfs_drive(volume).free_bytes != initial_free ||
+        phipfs_stat_path(volume, name, &metadata) != PHIPFS_STATUS_NOT_FOUND)
+        kernel_test_fail("ext4 VFS low-space cleanup leaked allocations or namespace");
+    ext4_vfs_require(phipfs_unmount(volume), "low-space unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 VFS low-space resource census failed");
+    console_write("ST EXT4 VFS ENOSPC durable short prefix rollback cursor reuse cleanup census exact\n");
+    kernel_test_pass();
+}
+
 _Noreturn void kernel_test_complete_ext4_recovery(void)
 {
     static const uint8_t expected[] =
@@ -5067,6 +5128,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
     if (drive.free_bytes == 0U || drive.free_bytes >= drive.total_bytes) {
         kernel_test_fail("ext4 allocator capacity was not exported");
     }
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/LOWSPACE.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_low_space();
     if (!ext4_backend_recovery_report(PHIPFS_VOLUME_SYSTEM, &recovery)) {
         kernel_test_fail("ext4 recovery report is unavailable");
     }

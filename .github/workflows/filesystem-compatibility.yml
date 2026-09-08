@@ -70,6 +70,12 @@ jobs:
                   set -o pipefail
                   make qemu-test-fat32-data qemu-test-ext4-applications QEMU_ACCEL=tcg \
                       2>&1 | tee evidence/ext4/applications.log
+            - name: Exercise ordinary ext4 VFS ENOSPC rollback
+              if: ${{ !cancelled() }}
+              shell: bash
+              run: |
+                  set -o pipefail
+                  make qemu-test-ext4-space QEMU_ACCEL=tcg 2>&1 | tee evidence/ext4/space.log
             - name: Exercise ext4 package repair removal and SDL reboot persistence
               if: ${{ !cancelled() }}
               shell: bash
@@ -87,6 +93,7 @@ jobs:
                       build/tests/ext4-recovery
                       build/tests/ext4-powercuts
                       build/tests/ext4-applications
+                      build/tests/ext4-space
                       build/tests/fat32-data/serial.log
                       build/tests/native-phip
                       build/*.e2fsck.txt
