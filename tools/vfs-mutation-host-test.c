@@ -392,6 +392,13 @@ int main(void)
     bool present;
     stat_succeeds = false; /* The old name can disappear without affecting iteration. */
     assert(phipfs_directory_read(directory, &entry, &present) == PHIPFS_STATUS_OK && !present);
+    ++mounts[PHIPFS_VOLUME_DATA].generation;
+    present = true;
+    memset(&entry, 0x55, sizeof(entry));
+    assert(phipfs_directory_read(directory, &entry, &present) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(!present && entry.object_id == 0U && entry.name[0] == '\0');
+    --mounts[PHIPFS_VOLUME_DATA].generation;
+    assert(phipfs_directory_read(directory, &entry, &present) == PHIPFS_STATUS_OK && !present);
     closing_frontend = directory;
     closing_directory = true;
     assert(phipfs_directory_close(directory) == PHIPFS_STATUS_OK && live_backend_handles == 0U);
@@ -489,6 +496,11 @@ int main(void)
     assert(phipfs_unlink_held_file(opened, expected_path) == PHIPFS_STATUS_OK);
     assert(held_unlink_calls == 2U && stats == before_file_stat);
     ++mounts[PHIPFS_VOLUME_DATA].generation;
+    stale_io_counts(opened);
+    uint64_t stale_position = 123U;
+    assert(phipfs_seek(opened, 0, PHIPFS_SEEK_START, &stale_position) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(phipfs_set_append(opened, true) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(phipfs_ftruncate(opened, 0U) == PHIPFS_STATUS_STALE_HANDLE);
     assert(phipfs_unlink_held_file(opened, expected_path) == PHIPFS_STATUS_STALE_HANDLE);
     assert(held_unlink_calls == 2U);
     assert(phipfs_fsync(opened) == PHIPFS_STATUS_STALE_HANDLE && file_sync_calls == 2U);
@@ -497,6 +509,13 @@ int main(void)
     assert(phipfs_publish_file(opened, expected_path, "other/target") == PHIPFS_STATUS_STALE_HANDLE);
     assert(publication_calls == 2U);
     --mounts[PHIPFS_VOLUME_DATA].generation;
+    mounts[PHIPFS_VOLUME_DATA].active = false;
+    stale_io_counts(opened);
+    mounts[PHIPFS_VOLUME_DATA].active = true;
+    const size_t held_vnode = open_files[(opened & 0xffU) - 1U].vnode_index;
+    ++vnodes[held_vnode].generation;
+    stale_io_counts(opened);
+    --vnodes[held_vnode].generation;
     backend.write = partial_write;
     size_t partial_bytes = 99U;
     assert(phipfs_write(opened, (const uint8_t *)"four", 4U, &partial_bytes) == PHIPFS_STATUS_IO);

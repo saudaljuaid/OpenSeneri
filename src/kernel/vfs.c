@@ -595,6 +595,18 @@ static enum phipfs_status open_file_state(
     return PHIPFS_STATUS_OK;
 }
 
+static enum phipfs_status checked_open_file_state(phipfs_handle handle,
+    struct vfs_open_file_state **state)
+{
+    const enum phipfs_status status = open_file_state(handle, state);
+    if (status != PHIPFS_STATUS_OK) return status;
+    const struct vfs_vnode_state *vnode = &vnodes[(*state)->vnode_index];
+    if (!vnode->active || vnode->generation != (*state)->vnode_generation ||
+        !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
+        return PHIPFS_STATUS_STALE_HANDLE;
+    return PHIPFS_STATUS_OK;
+}
+
 static enum phipfs_status directory_state(
     phipfs_directory_handle handle,
     struct vfs_directory_state **state
@@ -959,7 +971,7 @@ enum phipfs_status phipfs_read(
 {
     if (read_bytes != NULL) *read_bytes = 0U;
     struct vfs_open_file_state *state;
-    enum phipfs_status status = open_file_state(handle, &state);
+    enum phipfs_status status = checked_open_file_state(handle, &state);
 
     return status == PHIPFS_STATUS_OK ? state->backend->read(
         state->backend_handle, destination, capacity, read_bytes) : status;
@@ -975,7 +987,7 @@ enum phipfs_status phipfs_pread(
 {
     if (read_bytes != NULL) *read_bytes = 0U;
     struct vfs_open_file_state *state;
-    enum phipfs_status status = open_file_state(handle, &state);
+    enum phipfs_status status = checked_open_file_state(handle, &state);
 
     return status == PHIPFS_STATUS_OK ? state->backend->pread(
         state->backend_handle, destination, capacity, offset, read_bytes) :
@@ -991,7 +1003,7 @@ enum phipfs_status phipfs_write(
 {
     if (written_bytes != NULL) *written_bytes = 0U;
     struct vfs_open_file_state *state;
-    enum phipfs_status status = open_file_state(handle, &state);
+    enum phipfs_status status = checked_open_file_state(handle, &state);
 
     if (status == PHIPFS_STATUS_OK && state->append) {
         if (written_bytes == NULL || (source_bytes != 0U && source == NULL)) {
@@ -1012,7 +1024,7 @@ enum phipfs_status phipfs_write(
 enum phipfs_status phipfs_set_append(phipfs_handle handle, bool append)
 {
     struct vfs_open_file_state *state;
-    enum phipfs_status status = open_file_state(handle, &state);
+    enum phipfs_status status = checked_open_file_state(handle, &state);
 
     if (status == PHIPFS_STATUS_OK) state->append = append;
     return status;
@@ -1026,7 +1038,7 @@ enum phipfs_status phipfs_seek(
 )
 {
     struct vfs_open_file_state *state;
-    enum phipfs_status status = open_file_state(handle, &state);
+    enum phipfs_status status = checked_open_file_state(handle, &state);
 
     return status == PHIPFS_STATUS_OK ? state->backend->seek(
         state->backend_handle, offset, origin, position) : status;
@@ -1192,6 +1204,10 @@ enum phipfs_status phipfs_directory_read(
     if (status != PHIPFS_STATUS_OK) {
         return status;
     }
+    const struct vfs_vnode_state *vnode = &vnodes[state->vnode_index];
+    if (!vnode->active || vnode->generation != state->vnode_generation ||
+        !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
+        return PHIPFS_STATUS_STALE_HANDLE;
     if (state->streaming) {
         return state->backend->directory_read(state->backend_handle, entry,
             present);
@@ -1253,7 +1269,7 @@ enum phipfs_status phipfs_create_mode(enum phipfs_volume volume,
 enum phipfs_status phipfs_ftruncate(phipfs_handle handle, uint64_t size)
 {
     struct vfs_open_file_state *state;
-    enum phipfs_status status = open_file_state(handle, &state);
+    enum phipfs_status status = checked_open_file_state(handle, &state);
     if (status != PHIPFS_STATUS_OK) return status;
     if (state->backend->ftruncate != NULL) return state->backend->ftruncate(state->backend_handle, size);
     struct vfs_vnode_state *vnode = &vnodes[state->vnode_index];
