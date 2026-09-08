@@ -47,6 +47,6 @@ pub mod wallpaper;
 /// an unanticipated metadata-parser defect into a kernel stop rather than
 /// silent corruption.
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    abi::panic()
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    abi::panic(format_args!("{info}"))
 }

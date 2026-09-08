@@ -69,8 +69,9 @@ unsafe impl GlobalAlloc for KernelAllocator {
 
         // SAFETY: `GlobalAlloc` requires the caller to pass a live pointer
         // returned by this allocator. Treat allocator corruption as fatal.
-        if unsafe { heap_free(pointer.cast()) } != HEAP_STATUS_OK {
-            panic();
+        let status = unsafe { heap_free(pointer.cast()) };
+        if status != HEAP_STATUS_OK {
+            panic(format_args!("Rust heap_free failed with status {status}"));
         }
     }
 }
@@ -249,12 +250,35 @@ const _: () = {
     assert!(core::mem::offset_of!(elf64_dynamic::Image, bind_now) == 2216);
 };
 
-/// Stop in C's console panic path if a compiler-inserted check ever fires.
-pub(crate) fn panic() -> ! {
+/// Print bounded, allocation-free diagnostics before stopping in C's panic path.
+pub(crate) fn panic(details: core::fmt::Arguments<'_>) -> ! {
+    struct PanicWriter {
+        remaining: usize,
+    }
+
+    impl core::fmt::Write for PanicWriter {
+        fn write_str(&mut self, message: &str) -> core::fmt::Result {
+            unsafe extern "C" {
+                fn console_write_n(message: *const u8, length: usize);
+            }
+            let length = message.len().min(self.remaining);
+            // SAFETY: the console consumes exactly this many bytes during the
+            // call. No allocation or temporary NUL-terminated string is needed.
+            unsafe { console_write_n(message.as_ptr(), length) };
+            self.remaining -= length;
+            if length < message.len() { Err(core::fmt::Error) } else { Ok(()) }
+        }
+    }
+
+    let mut writer = PanicWriter { remaining: 1024 };
+    let _ = core::fmt::write(&mut writer, details);
     unsafe extern "C" {
+        fn console_write_n(message: *const u8, length: usize);
         fn console_panic(message: *const u8) -> !;
     }
 
+    // SAFETY: this static byte remains live for the complete console call.
+    unsafe { console_write_n(b"\n".as_ptr(), 1) };
     // SAFETY: this is a static NUL-terminated string and the C function never
     // returns. Keeping this declaration here preserves the one unsafe module.
     unsafe { console_panic(c"Rust panicked".as_ptr() as *const u8) }
