@@ -929,7 +929,7 @@ int main(void)
     assert(live_mounts == 1U && !ext4_mounts[PHIPFS_VOLUME_DATA].detaching);
     assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);
     assert(ext4_backend_close(first) == PHIPFS_STATUS_OK);
-    for (unsigned kind = 0U; kind < 4U; ++kind) {
+    for (unsigned kind = 0U; kind < 5U; ++kind) {
         assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);
         assert(ext4_backend_seek(first, 3, PHIPFS_SEEK_START, &position) == PHIPFS_STATUS_OK);
         close_reports_failure = true;
@@ -940,7 +940,12 @@ int main(void)
         case 0U: read_status = ext4_backend_read(first, bytes, 1U, &count); break;
         case 1U: read_status = ext4_backend_pread(first, bytes, 1U, 7U, &count); break;
         case 2U: read_status = ext4_backend_readlink(PHIPFS_VOLUME_DATA, "file", bytes, sizeof(bytes), &count); break;
-        default: read_status = ext4_backend_get_xattr(PHIPFS_VOLUME_DATA, "file", "user.note", bytes, sizeof(bytes), &count); break;
+        case 3U: read_status = ext4_backend_get_xattr(PHIPFS_VOLUME_DATA, "file", "user.note", bytes, sizeof(bytes), &count); break;
+        default:
+            position = 99U;
+            read_status = ext4_backend_seek(first, 0, PHIPFS_SEEK_END, &position);
+            count = (size_t)position;
+            break;
         }
         assert(read_status == PHIPFS_STATUS_IO);
         assert(count == 0U);

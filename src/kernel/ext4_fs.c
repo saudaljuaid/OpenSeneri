@@ -494,11 +494,11 @@ static enum phipfs_status begin_operation(struct ext4_mount_state *mount, bool w
     return PHIPFS_STATUS_OK;
 }
 
-static enum phipfs_status end_operation_with_read_cursor(
+static enum phipfs_status end_operation_with_cursor(
     struct ext4_mount_state *mount,
     struct phipia_ext4_mount_diagnostic *diagnostic,
-    struct ext4_handle_state *read_handle,
-    uint64_t read_offset
+    struct ext4_handle_state *cursor_handle,
+    uint64_t cursor_offset
 )
 {
     enum nvme_status status;
@@ -531,11 +531,11 @@ static enum phipfs_status end_operation_with_read_cursor(
     }
     zero_bytes(&mount->session, sizeof(mount->session));
     mount->close_failed = false;
-    // A failed read must not advance its cursor. Publish only after storage
+    // A failed read or seek must not advance its cursor. Publish after storage
     // teardown succeeds, still under the lease and before deferred closes can
     // retire/reuse this descriptor. A reentrant close has already hidden it.
-    if (read_handle != NULL && read_handle->active && !read_handle->closing)
-        read_handle->offset = read_offset;
+    if (cursor_handle != NULL && cursor_handle->active && !cursor_handle->closing)
+        cursor_handle->offset = cursor_offset;
     ++mount->completion_count;
     release_operation(mount);
     return PHIPFS_STATUS_OK;
@@ -544,7 +544,7 @@ static enum phipfs_status end_operation_with_read_cursor(
 static enum phipfs_status end_operation(struct ext4_mount_state *mount,
     struct phipia_ext4_mount_diagnostic *diagnostic)
 {
-    return end_operation_with_read_cursor(mount, diagnostic, NULL, 0U);
+    return end_operation_with_cursor(mount, diagnostic, NULL, 0U);
 }
 
 /* Rust may access storage only through the lease installed by begin_operation(). */
@@ -1396,7 +1396,7 @@ static enum phipfs_status read_handle(phipfs_handle handle,
             status = PHIPFS_STATUS_CORRUPT;
         }
     }
-    close_status = end_operation_with_read_cursor(mount, NULL,
+    close_status = end_operation_with_cursor(mount, NULL,
         status == PHIPFS_STATUS_OK && advance ? state : NULL,
         status == PHIPFS_STATUS_OK ? offset + *read_bytes : 0U);
     if (status == PHIPFS_STATUS_OK) status = close_status;
@@ -1748,7 +1748,7 @@ enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
     struct ext4_mount_state *mount = NULL;
     bool storage_lease = false;
     uint64_t base;
-    uint64_t target;
+    uint64_t target = 0U;
     enum phipfs_status status;
 
     if (position == NULL) {
@@ -1806,15 +1806,16 @@ enum phipfs_status ext4_backend_seek(phipfs_handle handle, int64_t offset,
         }
         target = base + (uint64_t)offset;
     }
-    state->offset = target;
-    *position = target;
+    if (!storage_lease) state->offset = target;
 done:
     if (mount != NULL) {
         if (storage_lease) {
-            const enum phipfs_status close_status = end_operation(mount, NULL);
+            const enum phipfs_status close_status = end_operation_with_cursor(mount, NULL,
+                status == PHIPFS_STATUS_OK ? state : NULL, target);
             if (status == PHIPFS_STATUS_OK) status = close_status;
         } else { release_operation(mount); }
     }
+    if (status == PHIPFS_STATUS_OK) *position = target;
     return status;
 }
 
