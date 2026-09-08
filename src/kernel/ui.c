@@ -7470,6 +7470,11 @@ static enum ui_status render_region(struct ui_rect damage, bool full)
 {
     enum ui_status status;
 
+    // Invalidation unions may contain an offscreen animation origin. Every
+    // renderer in this pass receives only drawable destination coordinates.
+    damage = rect_intersection(damage, state.layout.surface);
+    if (damage.width == 0U || damage.height == 0U) return UI_STATUS_OK;
+
     if (panel_anim_pending != UI_ANIM_PENDING_NONE) {
         status = panel_anim_start();
         if (status != UI_STATUS_OK) {
@@ -7505,8 +7510,12 @@ static enum ui_status render_region(struct ui_rect damage, bool full)
         status = draw_launcher(damage);
     }
     if (status == UI_STATUS_OK && phipia_shell_ready) {
-        if (taskbar_capture_backdrop() != TASKBAR_STATUS_OK ||
-                taskbar_draw(damage) != TASKBAR_STATUS_OK) {
+        enum taskbar_status bar_status = taskbar_capture_backdrop();
+        if (bar_status == TASKBAR_STATUS_OK) bar_status = taskbar_draw(damage);
+        if (bar_status != TASKBAR_STATUS_OK) {
+            console_serial_write("Phipia: taskbar render failed: ");
+            console_serial_write(taskbar_status_string(bar_status));
+            console_serial_write("\n");
             status = UI_STATUS_SURFACE_FAILURE;
         }
     }
