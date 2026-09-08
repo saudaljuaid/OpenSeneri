@@ -202,7 +202,8 @@ def run(args):
     growing = args.operation == "grow"
     appending = args.operation == "append"
     overwriting = args.operation == "overwrite"
-    control_name = "APPFAIL.BIN" if appending else "OVERFAIL.BIN"
+    control_name = {"append": "APPFAIL.BIN", "overwrite": "OVERFAIL.BIN",
+        "truncate": "TRUNCFAIL.BIN", "grow": "GROWFAIL.BIN"}.get(args.operation)
     storage_marker = f"ST EXT4 {args.operation.upper()} storage"
     metadata_change = args.operation in ("chmod", "times")
     creating = args.operation in ("create", "mkdir")
@@ -415,7 +416,7 @@ def run(args):
             verify_exit(status, trace, pass_marker)
             refused = re.findall(rf"^{re.escape(storage_marker)} refused (\d+) (write|flush)$", trace, re.MULTILINE)
             if len(refused) != 1 or int(refused[0][0]) != ordinal or trace.count(f"{state_marker} old\n") != 1:
-                raise RuntimeError("VFS write did not exercise the exact storage refusal and identical retry")
+                raise RuntimeError("VFS mutation did not exercise the exact storage refusal and identical retry")
             kinds.add(refused[0][1])
             after_retry = inspect(image, tools, output / f"refusal-{ordinal:03d}", expected_blocks,
                 expected_inodes, replacement_inode, args.operation, expected_parent_links)
@@ -528,8 +529,8 @@ def main():
     parser.add_argument("--timeout", type=int, default=90)
     parser.add_argument("--storage-failures", action="store_true")
     args = parser.parse_args()
-    if args.storage_failures and args.operation not in ("overwrite", "append"):
-        parser.error("--storage-failures currently requires --operation overwrite or append")
+    if args.storage_failures and args.operation not in ("overwrite", "append", "truncate", "grow"):
+        parser.error("--storage-failures requires --operation overwrite, append, truncate or grow")
     run(args)
 
 

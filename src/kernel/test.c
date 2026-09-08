@@ -5490,6 +5490,11 @@ static _Noreturn void ext4_vfs_create_powercut(void)
     kernel_test_pass();
 }
 
+static bool ext4_vfs_storage_probe_control(enum phipfs_volume volume,
+    const char *path, uint32_t *ordinal);
+static void ext4_vfs_storage_probe_truncate(phipfs_handle file, uint64_t size,
+    bool probe, uint32_t ordinal, const char *label);
+
 static _Noreturn void ext4_vfs_truncate_powercut(bool growing)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5501,6 +5506,9 @@ static _Noreturn void ext4_vfs_truncate_powercut(bool growing)
     const uint64_t old_size = growing ? 1700U : 4500U;
     const uint64_t new_size = growing ? 12345U : 1700U;
     const uint64_t initial_free = phipfs_drive(volume).free_bytes;
+    uint32_t failure_ordinal = 0U;
+    const bool storage_probe = ext4_vfs_storage_probe_control(volume,
+        growing ? "data/user/GROWFAIL.BIN" : "data/user/TRUNCFAIL.BIN", &failure_ordinal);
     ext4_vfs_require(phipfs_stat_path(volume, name, &metadata), "truncate cut initial stat");
     if (metadata.directory || metadata.links != 1U ||
         (metadata.size != old_size && metadata.size != new_size))
@@ -5512,8 +5520,16 @@ static _Noreturn void ext4_vfs_truncate_powercut(bool growing)
     // Before the commit, all old bytes must survive, including the part of
     // the retained physical block that the shrink will zero in the journal.
     ext4_vfs_cut_contents(reader, growing ? old_size : metadata.size, 't');
+    uint64_t position;
+    ext4_vfs_require(phipfs_seek(file, 7777, PHIPFS_SEEK_START, &position), "truncate writer cursor setup");
+    ext4_vfs_require(phipfs_seek(reader, 123, PHIPFS_SEEK_START, &position), "truncate reader cursor setup");
     if (metadata.size == old_size)
-        ext4_vfs_require(phipfs_ftruncate(file, new_size), "truncate cut resize");
+        ext4_vfs_storage_probe_truncate(file, new_size, storage_probe, failure_ordinal,
+            growing ? "ST EXT4 GROW" : "ST EXT4 TRUNCATE");
+    ext4_vfs_require(phipfs_seek(file, 0, PHIPFS_SEEK_CURRENT, &position), "truncate writer cursor retained");
+    if (position != 7777U) kernel_test_fail("ext4 truncate changed writer cursor");
+    ext4_vfs_require(phipfs_seek(reader, 0, PHIPFS_SEEK_CURRENT, &position), "truncate reader cursor retained");
+    if (position != 123U) kernel_test_fail("ext4 truncate changed reader cursor");
     ext4_vfs_require(phipfs_fstat(reader, &held), "truncate cut shared EOF");
     if (held.object_id != metadata.object_id || held.links != 1U || held.size != new_size)
         kernel_test_fail("ext4 truncate cut changed inode or retained stale reader EOF");
@@ -5592,6 +5608,41 @@ static bool ext4_vfs_storage_probe_control(enum phipfs_volume volume,
         kernel_test_fail("ext4 storage refusal control magic or bound");
     *ordinal = value & UINT32_C(0xffff);
     return true;
+}
+
+static void ext4_vfs_storage_probe_truncate(phipfs_handle file, uint64_t size,
+    bool probe, uint32_t ordinal, const char *label)
+{
+    if (probe && !ext4_backend_test_fail_storage_once(ordinal == 0U ? UINT32_MAX : ordinal))
+        kernel_test_fail("ext4 could not arm truncate storage refusal");
+    enum phipfs_status status = phipfs_ftruncate(file, size);
+    if (probe) {
+        uint32_t attempts;
+        enum phipia_ext4_test_storage_kind kind;
+        if (!ext4_backend_test_finish_storage_probe(&attempts, &kind) || attempts == 0U)
+            kernel_test_fail("ext4 truncate storage probe was not exercised");
+        if (ordinal == 0U) {
+            if (status != PHIPFS_STATUS_OK || kind != PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
+                kernel_test_fail("ext4 truncate storage baseline failed");
+            console_write(label);
+            console_write(" storage attempts ");
+            console_write_u64(attempts);
+            console_putc('\n');
+        } else {
+            if (status != PHIPFS_STATUS_IO || attempts != ordinal ||
+                kind >= PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
+                kernel_test_fail("ext4 truncate storage refusal was not exact");
+            uint64_t position;
+            ext4_vfs_require(phipfs_seek(file, 0, PHIPFS_SEEK_CURRENT, &position), "truncate refused cursor");
+            if (position != 7777U) kernel_test_fail("ext4 refused truncate changed cursor");
+            console_write(label);
+            console_write(" storage refused ");
+            console_write_u64(attempts);
+            console_write(kind == PHIPIA_EXT4_TEST_STORAGE_WRITE ? " write\n" : " flush\n");
+            status = phipfs_ftruncate(file, size);
+        }
+    }
+    ext4_vfs_require(status, "truncate identical size retry");
 }
 
 static size_t ext4_vfs_storage_probe_write(phipfs_handle writer, const uint8_t *bytes,
