@@ -26,6 +26,8 @@ jobs:
         name: filesystem-compatibility-evidence
         runs-on: ubuntu-24.04
         timeout-minutes: 360
+        env:
+            PHIPIA_EXT4_KERNEL_INTEROP: "1"
         steps:
             - name: Check out source
               uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5

@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -22,6 +23,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ext4_image as ext4  # noqa: E402
+import ext4_kernel_read as kernel_read  # noqa: E402
 
 
 def image_difference_summary(left: Path, right: Path) -> str:
@@ -296,6 +298,60 @@ class E2fsprogsIntegrationTests(unittest.TestCase):
                     with self.assertRaises(ext4.Ext4ImageError):
                         ext4.inspect_image(malformed)
                     malformed.unlink()
+
+
+class KernelReadTests(unittest.TestCase):
+    def test_manifest_checks_exact_contents_and_confines_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            file = root / "result with spaces"
+            file.write_bytes(b"guest data")
+            expected = {file.name: {"bytes": 10, "sha256": kernel_read.digest(file)}}
+            self.assertEqual(kernel_read.mounted_read(root, expected), expected)
+            for name, metadata in (("../escape", expected[file.name]),
+                    (file.name, {"bytes": 10, "sha256": "0" * 64}),
+                    (file.name, {"bytes": 11, "sha256": expected[file.name]["sha256"]})):
+                with self.assertRaises(RuntimeError):
+                    kernel_read.mounted_read(root, {name: metadata})
+
+    def test_failed_read_or_evidence_write_still_unmounts(self):
+        for failure in ("read", "evidence"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                image = root / "guest.raw"
+                image.write_bytes(fake_profile_image())
+                commands = []
+                write_text = Path.write_text
+                def run(command, **kwargs):
+                    commands.append(command[2])
+                    status = 1 if command[2] == "python3" else 0
+                    return subprocess.CompletedProcess(command, status, "{}", "read failed" if status else "")
+                def record(path, text, *args, **kwargs):
+                    if failure == "evidence" and path.name == "commands.json" and commands == ["mount"]:
+                        raise OSError("evidence write failed")
+                    return write_text(path, text, *args, **kwargs)
+                with mock.patch.dict(os.environ, {"PHIPIA_EXT4_KERNEL_INTEROP": "1"}), \
+                        mock.patch.object(kernel_read.platform, "system", return_value="Linux"), \
+                        mock.patch.object(kernel_read.subprocess, "run", side_effect=run), \
+                        mock.patch.object(Path, "write_text", record):
+                    with self.assertRaises((RuntimeError, OSError)):
+                        kernel_read.verify_files(image, root / "evidence", {})
+                self.assertEqual(commands, ["mount", "python3", "umount"] if failure == "read" else ["mount", "umount"])
+                self.assertFalse((root / "evidence" / "report.json").exists())
+
+    def test_dirty_image_refuses_before_mount(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "dirty.raw"
+            data = fake_profile_image()
+            data[1024 + 0x60] |= 4
+            image.write_bytes(data)
+            with mock.patch.dict(os.environ, {"PHIPIA_EXT4_KERNEL_INTEROP": "1"}), \
+                    mock.patch.object(kernel_read.platform, "system", return_value="Linux"), \
+                    mock.patch.object(kernel_read.subprocess, "run") as command:
+                with self.assertRaisesRegex(RuntimeError, "cleanly unmounted"):
+                    kernel_read.verify_files(image, root / "evidence", {})
+                command.assert_not_called()
 
 
 if __name__ == "__main__":

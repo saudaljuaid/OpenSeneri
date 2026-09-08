@@ -3100,7 +3100,9 @@ qemu-test-%: $(TEST_BUILD_DIR)/%/phipia.iso
 		ext4-recovery) \
 			grep -Fxq 'ST EXT4 RECOVERY marker cleared transaction committed appended exact truncate revoke rearm create mode hardlink unlink journal clean transactions 0 replay 0 slots 0 VFS writable remount clean resources exact' "$$log" && \
 			$(PYTHON) tools/ext4_image.py inspect '$(EXT4_RECOVERY_FIXTURE)' \
-				--report '$(EXT4_RECOVERY_FIXTURE).after.json' || diagnostics_ok=false ;; \
+				--report '$(EXT4_RECOVERY_FIXTURE).after.json' && \
+			$(PYTHON) tools/ext4_kernel_read.py '$(EXT4_RECOVERY_FIXTURE)' \
+				'$(TEST_BUILD_DIR)/ext4-recovery/linux-kernel' || diagnostics_ok=false ;; \
 		thread-guard) \
 			grep -Fq 'ST THREAD guard 0x0000000800005000' "$$log" && \
 			grep -Fq '  vector=14 name=page fault' "$$log" && \

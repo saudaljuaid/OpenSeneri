@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ext4_kernel_read
 import importlib.util
 import json
 from pathlib import Path
@@ -69,6 +70,7 @@ def inspect_results(image, output, label):
     if files["PHIPIA.BMP"] != files["PHIPIA - Copy.BMP"]:
         raise RuntimeError("Files copy changed the source bitmap bytes")
     report["application_files"] = files
+    report["linux_kernel_read"] = ext4_kernel_read.verify_files(image, target / "linux-kernel", files)
     report["image_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
     (target / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     for command, name in (([tools["e2fsck"], "-f", "-n", str(image)], "e2fsck.txt"),
