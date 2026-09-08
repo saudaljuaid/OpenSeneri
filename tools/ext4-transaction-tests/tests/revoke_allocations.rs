@@ -157,3 +157,51 @@ fn recovery_allocation_refusals_return_errors_and_preserve_identical_retry() {
     }
     println!("recovery allocation refusals: {parse_calls} parser points, {copy_calls} projected-view points; unchanged input and exact retry");
 }
+
+#[test]
+#[ignore = "requires the Linux-created PHIPIA_EXT4_RUST_FIXTURE; required by Linux CI"]
+fn recovery_checkpoint_allocation_refusals_preserve_marker_and_retry() {
+    use ext4plus::{Ext4, JournalFlush, load_journal_inode_map};
+    let path = std::env::var("PHIPIA_EXT4_RUST_FIXTURE").expect("real ext4 fixture is required");
+    let filesystem = Ext4::load(Box::new(std::fs::read(path).unwrap())).unwrap();
+    let map = load_journal_inode_map(&filesystem).unwrap();
+    let marker = map.filesystem_superblock().with_recovery_state(true);
+    let marker_before = marker.clone();
+    let mut transaction = JournalTransaction::new(17, [0x5a; 16], 100_000).unwrap();
+    // Include the real primary superblock so marker cleanup also exercises
+    // validation of a checkpointed successor, not only the mount-time image.
+    let mut home = [0; JOURNAL_BLOCK_BYTES];
+    home[1024..2048].copy_from_slice(marker.bytes());
+    transaction.stage_metadata(0, &home).unwrap();
+    transaction.stage_metadata(100, &[0x33; JOURNAL_BLOCK_BYTES]).unwrap();
+    let slots: Vec<_> = (1000..1000 + transaction.required_journal_slots().unwrap() as u64).collect();
+    let mut journal: Vec<_> = transaction.commit_plan(&slots).unwrap().into_iter().filter_map(|operation| {
+        if let JournalCommitOperation::WriteJournal { bytes, .. } = operation { Some(bytes) } else { None }
+    }).collect();
+    let superblock = JournalSuperblockImage::new_clean(17, [0x5a; 16], (journal.len() + 2) as u32)
+        .unwrap().with_state(17, 1).unwrap();
+    journal.push(vec![0; JOURNAL_BLOCK_BYTES]);
+    let references: Vec<_> = journal.iter().map(Vec::as_slice).collect();
+    let recovered = recover_committed_ring(&superblock, true, 100_000, &references).unwrap();
+    let original = recovered.clone();
+    let (plan, calls) = measured(|| recovered.checkpoint_plan(999, &marker).unwrap());
+    assert_eq!(calls, 4, "operation vector, two home images, and journal superblock");
+    assert!(matches!(&plan[0], JournalCommitOperation::WriteHomeMetadata(image) if image.block_index() == 0));
+    assert!(matches!(&plan[1], JournalCommitOperation::WriteHomeMetadata(image) if image.block_index() == 100));
+    assert_eq!(plan[2], JournalCommitOperation::Flush(JournalFlush::Checkpoint));
+    assert!(matches!(&plan[3], JournalCommitOperation::WriteJournalSuperblock { image, .. } if image.start_block() == 0));
+    assert_eq!(plan[4], JournalCommitOperation::Flush(JournalFlush::JournalState));
+    assert!(matches!(&plan[5], JournalCommitOperation::WriteFilesystemSuperblock { image, .. } if !image.needs_recovery()));
+    assert_eq!(plan[6], JournalCommitOperation::Flush(JournalFlush::FilesystemState));
+    for ordinal in 1..=calls {
+        FAIL_AT.with(|at| at.set(ordinal));
+        let (result, _) = measured(|| recovered.checkpoint_plan(999, &marker));
+        FAIL_AT.with(|at| at.set(0));
+        assert!(result.is_err(), "checkpoint allocation {ordinal} must refuse before execution");
+        assert_eq!(LIVE_DELTA.with(Cell::get), 0, "checkpoint refusal leaked buffers");
+        assert_eq!(marker, marker_before);
+        assert_eq!(recovered, original);
+        assert_eq!(recovered.checkpoint_plan(999, &marker).unwrap(), plan);
+    }
+    println!("recovery checkpoint: all {calls} allocation refusals preserve marker, release buffers, and retry identically");
+}

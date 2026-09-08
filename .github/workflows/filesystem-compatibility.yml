@@ -142,17 +142,17 @@ jobs:
                   make package-upload-tests 2>&1 | tee evidence/ext4/package-upload-host.log
                   make package-service-tests 2>&1 | tee evidence/ext4/package-service-host.log
                   make package-control-tests 2>&1 | tee evidence/ext4/package-control-host.log
+                  make build/tests/ext4/phipia-ext4.raw
+                  export PHIPIA_EXT4_RUST_FIXTURE="$PWD/build/tests/ext4/phipia-ext4.raw"
                   CARGO_TARGET_DIR="$PWD/build/ext4-transaction-target" \
                       cargo test --manifest-path tools/ext4-transaction-tests/Cargo.toml \
-                          --locked --offline --test revoke_allocations -- --nocapture \
+                          --locked --offline --test revoke_allocations -- --include-ignored --nocapture \
                           2>&1 | tee evidence/ext4/revoke-allocation-host.log
                   if [[ '${{ inputs.ext4_application_probe }}' == 'true' ]]; then
                       printf '%s\n' 'Application probe: full host, recovery and release suites remain required.' \
                           >evidence/ext4/APPLICATION-PROBE.txt
                       exit 0
                   fi
-                  make build/tests/ext4/phipia-ext4.raw
-                  export PHIPIA_EXT4_RUST_FIXTURE="$PWD/build/tests/ext4/phipia-ext4.raw"
                   export CARGO_TARGET_DIR="$PWD/build/ext4-transaction-target"
                   if [[ "$PHIPIA_EXT4_CUT_OPERATION" == 'storage-refusals' ]]; then
                       cargo test --manifest-path tools/ext4-transaction-tests/Cargo.toml \

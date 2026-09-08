@@ -1391,7 +1391,7 @@ ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesys
 		CARGO_TARGET_DIR='$(CURDIR)/$(BUILD_DIR)/ext4-transaction-target' \
 		$(CARGO) test \
 		--manifest-path tools/ext4-transaction-tests/Cargo.toml \
-		--locked --offline -- --nocapture; \
+		--locked --offline -- --include-ignored --nocapture; \
 	else \
 		$(CARGO_TEST_ENV) CARGO_TARGET_DIR='$(CURDIR)/$(BUILD_DIR)/ext4-transaction-target' \
 		$(CARGO) test \
