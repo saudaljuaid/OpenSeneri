@@ -18,6 +18,8 @@ static unsigned open_attempt_base;
 static unsigned writes;
 static unsigned syncs;
 static unsigned publications;
+static unsigned handle_syncs;
+static unsigned handle_publications;
 static unsigned closes;
 static unsigned live_handles;
 static uint64_t target_inode;
@@ -152,6 +154,8 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     if (fault == CREATE_FAIL) return PHIPFS_STATUS_IO;
     if (fault == CREATE_FULL) return PHIPFS_STATUS_FULL;
     scratch_inode = 20U;
+    scratch_length = 0U;
+    handle_syncs = handle_publications = 0U;
     if (fault == CREATE_LOST) return PHIPFS_STATUS_IO;
     *handle = 77U;
     live_handles = 1U;
@@ -180,7 +184,7 @@ enum phipfs_status phipfs_write(phipfs_handle handle, const uint8_t *bytes,
     size_t length, size_t *written)
 {
     assert_handle(handle);
-    assert(syncs == 0U && publications == 0U && scratch_length + length <= expected_length);
+    assert(handle_syncs == 0U && handle_publications == 0U && scratch_length + length <= expected_length);
     ++writes;
     if (fault == WRITE_FAIL || writes == fail_write_at) return PHIPFS_STATUS_IO;
     *written = fault == SHORT_WRITE || writes == short_write_at ? length / 2U : length;
@@ -202,13 +206,14 @@ enum phipfs_status phipfs_fsync(phipfs_handle handle)
 {
     assert_handle(handle);
     ++syncs;
+    ++handle_syncs;
     if (cleanup_sync_fails) return PHIPFS_STATUS_IO;
     if (pending_cleanup) { scratch_inode = 0U; pending_cleanup = false; }
-    if (syncs == 1U) {
-        assert(publications == 0U && target_inode != 20U);
+    if (handle_syncs == 1U) {
+        assert(handle_publications == 0U && target_inode != 20U);
         if (fault == FIRST_SYNC_FAIL) return PHIPFS_STATUS_IO;
-    } else if (publications != 0U) {
-        if (syncs == 2U && fault == SECOND_SYNC_FAIL) return PHIPFS_STATUS_IO;
+    } else if (handle_publications != 0U) {
+        if (handle_syncs == 2U && fault == SECOND_SYNC_FAIL) return PHIPFS_STATUS_IO;
         if (pending_publication) finish_publication();
     }
     return PHIPFS_STATUS_OK;
@@ -233,9 +238,10 @@ enum phipfs_status phipfs_publish_file(phipfs_handle handle, const char *source,
 {
     assert_handle(handle);
     assert(strcmp(source, scratch_name) == 0 && strcmp(destination, expected_destination) == 0);
-    assert(syncs == 1U && scratch_length == expected_length);
+    assert(handle_syncs == 1U && scratch_length == expected_length);
     assert(memcmp(scratch_bytes, expected_bytes, expected_length) == 0);
     ++publications;
+    ++handle_publications;
     if (fault == PUBLISH_FAIL) return PHIPFS_STATUS_IO;
     if (fault == SOURCE_REPLACED) {
         scratch_inode = 30U;
@@ -350,6 +356,7 @@ static void reset_save(enum save_fault next_fault)
     fault = next_fault;
     occupied_names = opens = writes = syncs = publications = closes = 0U;
     open_attempt_base = 0U;
+    handle_syncs = handle_publications = 0U;
     target_inode = 10U;
     target_length = 3U;
     scratch_inode = 0U;
