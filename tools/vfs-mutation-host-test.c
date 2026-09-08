@@ -340,6 +340,84 @@ static void nested_open_reservations(void)
     }
 }
 
+static phipfs_handle callback_old;
+static phipfs_handle callback_new;
+static phipfs_handle callback_token;
+static unsigned callback_writes;
+
+static enum phipfs_status callback_open(enum phipfs_volume volume, const char *path,
+    enum phipfs_access access, uint8_t flags, uint16_t mode,
+    phipfs_handle *handle, struct phipfs_stat *result)
+{
+    (void)volume; (void)path; (void)access; (void)flags; (void)mode;
+    assert(cpu_interrupts_enabled());
+    *handle = ++callback_token;
+    *result = (struct phipfs_stat){ .object_id = *handle };
+    return PHIPFS_STATUS_OK;
+}
+
+static enum phipfs_status callback_close(phipfs_handle handle)
+{
+    assert(handle == callback_token && cpu_interrupts_enabled());
+    assert(phipfs_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_BUSY);
+    for (size_t index = 0U; index < VFS_MAX_VNODES; ++index)
+        assert(!vnodes[index].active);
+    return PHIPFS_STATUS_OK;
+}
+
+static enum phipfs_status callback_seek(phipfs_handle handle, int64_t offset,
+    enum phipfs_seek_origin origin, uint64_t *position)
+{
+    assert(handle == callback_token && offset == 0 && origin == PHIPFS_SEEK_END);
+    assert(cpu_interrupts_enabled());
+    assert(phipfs_close(callback_old) == PHIPFS_STATUS_OK);
+    assert(phipfs_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_BUSY);
+    assert(phipfs_open(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_WRITE, &callback_new) == PHIPFS_STATUS_OK);
+    assert((callback_old & 0xffU) == (callback_new & 0xffU) && callback_old != callback_new);
+    *position = 0U;
+    return PHIPFS_STATUS_OK;
+}
+
+static enum phipfs_status callback_write(phipfs_handle handle, const uint8_t *source,
+    size_t bytes, size_t *written)
+{
+    assert(source != NULL && bytes == 1U && *written == 0U && cpu_interrupts_enabled());
+    ++callback_writes;
+    /* The fallback append must retain the closed token, never the replacement. */
+    assert(handle + 1U == callback_token);
+    return PHIPFS_STATUS_STALE_HANDLE;
+}
+
+static void callback_slot_reuse(void)
+{
+    static const struct vfs_backend_ops backend = {
+        .open_options = callback_open, .close = callback_close,
+        .seek = callback_seek, .write = callback_write, .unmount = unexpected_unmount,
+        .case_sensitive = true, .validates_mutation_paths = true,
+    };
+    mounts[PHIPFS_VOLUME_DATA].backend = &backend;
+    callback_token = 900U;
+    assert(phipfs_open(PHIPFS_VOLUME_DATA, expected_path, PHIPFS_ACCESS_WRITE, &callback_old) == PHIPFS_STATUS_OK);
+    assert(phipfs_set_append(callback_old, true) == PHIPFS_STATUS_OK);
+    const uint8_t byte = 1U;
+    size_t written = 99U;
+    assert(phipfs_write(callback_old, NULL, 1U, &written) == PHIPFS_STATUS_INVALID_ARGUMENT && written == 0U);
+    assert(phipfs_write(callback_old, &byte, 1U, NULL) == PHIPFS_STATUS_INVALID_ARGUMENT);
+    assert(phipfs_write(callback_old, NULL, 0U, &written) == PHIPFS_STATUS_OK && written == 0U);
+    assert(mounts[PHIPFS_VOLUME_DATA].references == 1U);
+    mounts[PHIPFS_VOLUME_DATA].references = SIZE_MAX;
+    assert(phipfs_write(callback_old, &byte, 1U, &written) == PHIPFS_STATUS_BUSY && written == 0U);
+    assert(phipfs_close(callback_old) == PHIPFS_STATUS_BUSY);
+    assert(mounts[PHIPFS_VOLUME_DATA].references == SIZE_MAX && callback_writes == 0U);
+    mounts[PHIPFS_VOLUME_DATA].references = 1U;
+    assert(phipfs_write(callback_old, &byte, 1U, &written) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(written == 0U && callback_writes == 1U && mounts[PHIPFS_VOLUME_DATA].references == 1U);
+    assert(phipfs_set_append(callback_old, false) == PHIPFS_STATUS_STALE_HANDLE);
+    assert(phipfs_close(callback_new) == PHIPFS_STATUS_OK);
+    assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
+    puts("VFS callback close/reopen preserves the original token and mount without writing the replacement: PASS");
+}
+
 int main(void)
 {
     for (size_t index = 0U; index < VFS_VNODE_BUCKETS; ++index) vnode_buckets[index] = VFS_NO_INDEX;
@@ -624,6 +702,7 @@ int main(void)
         &attribute_bytes) == PHIPFS_STATUS_INVALID_ARGUMENT);
     assert(attribute_bytes == 0U);
     nested_open_reservations();
+    callback_slot_reuse();
     assert(!phipfs_resources_released());
     mounts[PHIPFS_VOLUME_DATA].active = false;
     assert(phipfs_resources_released());

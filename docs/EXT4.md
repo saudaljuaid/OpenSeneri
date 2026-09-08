@@ -164,8 +164,15 @@ Mount transitions reserve their state under the same metadata lock before
 backend calls. File/directory opens, path lookups and mutations, and filesystem
 sync pin their mount until completion, including error returns, preventing
 teardown between validation and backend access or vnode binding.
+Published VFS file descriptions, append flags and retirement use the same
+short metadata lock. File operations copy the backend token and vnode identity
+and pin the mount through the callback; they never retain a mutable slot pointer
+over backend execution. Reentrant close/reopen cannot redirect a fallback append
+to the replacement slot. Close retires the old vnode before backend cleanup,
+while retaining a separate mount pin until cleanup returns. Host tests cover
+that reuse, invalid/empty writes, pin overflow and exact reference cleanup.
 These protections do not establish complete SMP filesystem support: published
-handle-state access and cross-volume backend registry scans still need their
+directory state and cross-volume backend registry scans still need their
 own lifecycle synchronization. The admitted execution model remains one
 core, with backend operations serialized by the volume guard.
 

@@ -715,17 +715,41 @@ static enum phipfs_status open_file_state(
     return PHIPFS_STATUS_OK;
 }
 
+/* Caller owns vnode_metadata_owned. Never export this pointer over a callback. */
 static enum phipfs_status checked_open_file_state(phipfs_handle handle,
     struct vfs_open_file_state **state)
 {
     const enum phipfs_status status = open_file_state(handle, state);
     if (status != PHIPFS_STATUS_OK) return status;
-    const struct vfs_vnode_state snapshot = vnode_snapshot((*state)->vnode_index);
-    const struct vfs_vnode_state *vnode = &snapshot;
+    if ((*state)->vnode_index >= VFS_MAX_VNODES) return PHIPFS_STATUS_STALE_HANDLE;
+    const struct vfs_vnode_state *vnode = &vnodes[(*state)->vnode_index];
     if (!vnode->active || vnode->generation != (*state)->vnode_generation ||
         !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
         return PHIPFS_STATUS_STALE_HANDLE;
     return PHIPFS_STATUS_OK;
+}
+
+struct vfs_file_snapshot {
+    struct vfs_open_file_state file;
+    struct vfs_vnode_state vnode;
+};
+
+static enum phipfs_status file_snapshot_pin(phipfs_handle handle,
+    struct vfs_file_snapshot *snapshot)
+{
+    const bool restore_interrupts = vnode_metadata_acquire();
+    struct vfs_open_file_state *state;
+    enum phipfs_status status = checked_open_file_state(handle, &state);
+    if (status == PHIPFS_STATUS_OK) {
+        const struct vfs_vnode_state *vnode = &vnodes[state->vnode_index];
+        if (!mount_retain(vnode->volume)) status = PHIPFS_STATUS_BUSY;
+        else {
+            snapshot->file = *state;
+            snapshot->vnode = *vnode;
+        }
+    }
+    vnode_metadata_release(restore_interrupts);
+    return status;
 }
 
 static enum phipfs_status directory_state(
@@ -989,17 +1013,19 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
             goto failed;
         }
     }
+    const bool restore_interrupts = vnode_metadata_acquire();
     zero_bytes(&open_files[slot], sizeof(open_files[slot]));
     open_files[slot].generation = next_generation(
         &next_open_generation, UINT64_MAX >> 8U);
     open_files[slot].backend = mounts[volume].backend;
-    open_files[slot].vnode_generation = vnode_snapshot(vnode_index).generation;
+    open_files[slot].vnode_generation = vnodes[vnode_index].generation;
     open_files[slot].backend_handle = backend_handle;
     open_files[slot].vnode_index = (uint16_t)vnode_index;
     open_files[slot].active = true;
+    *handle = encode_handle(slot, open_files[slot].generation);
+    vnode_metadata_release(restore_interrupts);
     vnode_unreserve(reserved_vnode);
     mount_release(volume);
-    *handle = encode_handle(slot, open_files[slot].generation);
     if (backend->open_options == NULL && (flags & PHIPFS_OPEN_TRUNCATE) != 0U) {
         status = phipfs_ftruncate(*handle, 0U);
         if (status != PHIPFS_STATUS_OK) {
@@ -1020,6 +1046,7 @@ failed:
 
 enum phipfs_status phipfs_close(phipfs_handle handle)
 {
+    const bool restore_interrupts = vnode_metadata_acquire();
     struct vfs_open_file_state *state;
     phipfs_handle backend_handle;
     const struct vfs_backend_ops *backend;
@@ -1028,83 +1055,91 @@ enum phipfs_status phipfs_close(phipfs_handle handle)
     enum phipfs_status status = open_file_state(handle, &state);
 
     if (status != PHIPFS_STATUS_OK) {
+        vnode_metadata_release(restore_interrupts);
         return status;
     }
     backend_handle = state->backend_handle;
     backend = state->backend;
     vnode_generation = state->vnode_generation;
     vnode_index = state->vnode_index;
+    const enum phipfs_volume volume = vnodes[vnode_index].volume;
+    const bool pin = vnodes[vnode_index].active &&
+        vnodes[vnode_index].generation == vnode_generation && mounts[volume].active &&
+        vnodes[vnode_index].mount_generation == mounts[volume].generation;
+    if (pin && !mount_retain(volume)) {
+        vnode_metadata_release(restore_interrupts);
+        return PHIPFS_STATUS_BUSY;
+    }
     state->active = false;
     state->backend_handle = 0U;
     // Retire the VFS identity before final-close cleanup can free and reuse
     // the backend inode number during a subsequent namespace operation.
-    vnode_release(vnode_index, vnode_generation);
+    vnode_release_locked(vnode_index, vnode_generation);
     phipia_slot_release(open_file_claims, (size_t)(state - open_files));
-    return backend->close(backend_handle);
+    vnode_metadata_release(restore_interrupts);
+    status = backend->close(backend_handle);
+    if (pin) mount_release(volume);
+    return status;
 }
 
 enum phipfs_status phipfs_fstat(phipfs_handle handle, struct phipfs_stat *stat)
 {
-    struct vfs_open_file_state *state;
+    struct vfs_file_snapshot snapshot;
     if (stat == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
     zero_bytes(stat, sizeof(*stat));
-    const enum phipfs_status status = open_file_state(handle, &state);
+    enum phipfs_status status = file_snapshot_pin(handle, &snapshot);
     if (status != PHIPFS_STATUS_OK) return status;
-    const struct vfs_vnode_state snapshot = vnode_snapshot(state->vnode_index);
-    const struct vfs_vnode_state *vnode = &snapshot;
-    if (!vnode->active || vnode->generation != state->vnode_generation ||
-        !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
-        return PHIPFS_STATUS_STALE_HANDLE;
-    return state->backend->fstat != NULL ? state->backend->fstat(state->backend_handle, stat) :
+    const struct vfs_open_file_state *state = &snapshot.file;
+    const struct vfs_vnode_state *vnode = &snapshot.vnode;
+    status = state->backend->fstat != NULL ? state->backend->fstat(state->backend_handle, stat) :
         state->backend->stat_path(vnode->volume, vnode->path, stat);
+    mount_release(vnode->volume);
+    return status;
 }
 
 enum phipfs_status phipfs_publish_file(phipfs_handle handle, const char *source, const char *destination)
 {
-    struct vfs_open_file_state *state;
+    struct vfs_file_snapshot snapshot;
     char from[PHIPFS_MAX_PATH];
     char to[PHIPFS_MAX_PATH];
-    enum phipfs_status status = open_file_state(handle, &state);
+    enum phipfs_status status = file_snapshot_pin(handle, &snapshot);
     if (status != PHIPFS_STATUS_OK) return status;
-    const struct vfs_vnode_state snapshot = vnode_snapshot(state->vnode_index);
-    const struct vfs_vnode_state *vnode = &snapshot;
-    if (!vnode->active || vnode->generation != state->vnode_generation ||
-        !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
-        return PHIPFS_STATUS_STALE_HANDLE;
-    if (state->backend->publish_file == NULL) return PHIPFS_STATUS_ACCESS;
-    status = resolve_metadata_path(vnode->volume, source, from);
+    const struct vfs_open_file_state *state = &snapshot.file;
+    const struct vfs_vnode_state *vnode = &snapshot.vnode;
+    status = state->backend->publish_file == NULL ? PHIPFS_STATUS_ACCESS :
+        resolve_metadata_path(vnode->volume, source, from);
     if (status == PHIPFS_STATUS_OK) status = resolve_metadata_path(vnode->volume, destination, to);
-    return status == PHIPFS_STATUS_OK ? state->backend->publish_file(state->backend_handle, from, to) : status;
+    if (status == PHIPFS_STATUS_OK) status = state->backend->publish_file(state->backend_handle, from, to);
+    mount_release(vnode->volume);
+    return status;
 }
 
 enum phipfs_status phipfs_unlink_held_file(phipfs_handle handle, const char *path)
 {
-    struct vfs_open_file_state *state;
+    struct vfs_file_snapshot snapshot;
     char canonical[PHIPFS_MAX_PATH];
-    enum phipfs_status status = open_file_state(handle, &state);
+    enum phipfs_status status = file_snapshot_pin(handle, &snapshot);
     if (status != PHIPFS_STATUS_OK) return status;
-    const struct vfs_vnode_state snapshot = vnode_snapshot(state->vnode_index);
-    const struct vfs_vnode_state *vnode = &snapshot;
-    if (!vnode->active || vnode->generation != state->vnode_generation ||
-        !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
-        return PHIPFS_STATUS_STALE_HANDLE;
-    if (state->backend->unlink_held_file == NULL) return PHIPFS_STATUS_ACCESS;
-    status = resolve_metadata_path(vnode->volume, path, canonical);
-    return status == PHIPFS_STATUS_OK ? state->backend->unlink_held_file(state->backend_handle, canonical) : status;
+    const struct vfs_open_file_state *state = &snapshot.file;
+    const struct vfs_vnode_state *vnode = &snapshot.vnode;
+    status = state->backend->unlink_held_file == NULL ? PHIPFS_STATUS_ACCESS :
+        resolve_metadata_path(vnode->volume, path, canonical);
+    if (status == PHIPFS_STATUS_OK) status = state->backend->unlink_held_file(state->backend_handle, canonical);
+    mount_release(vnode->volume);
+    return status;
 }
 
 enum phipfs_status phipfs_fsync(phipfs_handle handle)
 {
-    struct vfs_open_file_state *state;
-    enum phipfs_status status = open_file_state(handle, &state);
+    struct vfs_file_snapshot snapshot;
+    enum phipfs_status status = file_snapshot_pin(handle, &snapshot);
     if (status != PHIPFS_STATUS_OK) return status;
-    const struct vfs_vnode_state snapshot = vnode_snapshot(state->vnode_index);
-    const struct vfs_vnode_state *vnode = &snapshot;
-    if (!vnode->active || vnode->generation != state->vnode_generation ||
-        !mounts[vnode->volume].active || vnode->mount_generation != mounts[vnode->volume].generation)
-        return PHIPFS_STATUS_STALE_HANDLE;
-    return state->backend->fsync != NULL ? state->backend->fsync(state->backend_handle) :
+    const struct vfs_open_file_state *state = &snapshot.file;
+    const struct vfs_vnode_state *vnode = &snapshot.vnode;
+    status = state->backend->fsync != NULL ? state->backend->fsync(state->backend_handle) :
         phipfs_sync(vnode->volume);
+    mount_release(vnode->volume);
+    return status;
 }
 
 enum phipfs_status phipfs_read(
@@ -1115,11 +1150,12 @@ enum phipfs_status phipfs_read(
 )
 {
     if (read_bytes != NULL) *read_bytes = 0U;
-    struct vfs_open_file_state *state;
-    enum phipfs_status status = checked_open_file_state(handle, &state);
-
-    return status == PHIPFS_STATUS_OK ? state->backend->read(
-        state->backend_handle, destination, capacity, read_bytes) : status;
+    struct vfs_file_snapshot snapshot;
+    enum phipfs_status status = file_snapshot_pin(handle, &snapshot);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = snapshot.file.backend->read(snapshot.file.backend_handle, destination, capacity, read_bytes);
+    mount_release(snapshot.vnode.volume);
+    return status;
 }
 
 enum phipfs_status phipfs_pread(
@@ -1131,12 +1167,12 @@ enum phipfs_status phipfs_pread(
 )
 {
     if (read_bytes != NULL) *read_bytes = 0U;
-    struct vfs_open_file_state *state;
-    enum phipfs_status status = checked_open_file_state(handle, &state);
-
-    return status == PHIPFS_STATUS_OK ? state->backend->pread(
-        state->backend_handle, destination, capacity, offset, read_bytes) :
-        status;
+    struct vfs_file_snapshot snapshot;
+    enum phipfs_status status = file_snapshot_pin(handle, &snapshot);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = snapshot.file.backend->pread(snapshot.file.backend_handle, destination, capacity, offset, read_bytes);
+    mount_release(snapshot.vnode.volume);
+    return status;
 }
 
 enum phipfs_status phipfs_write(
@@ -1147,31 +1183,40 @@ enum phipfs_status phipfs_write(
 )
 {
     if (written_bytes != NULL) *written_bytes = 0U;
-    struct vfs_open_file_state *state;
-    enum phipfs_status status = checked_open_file_state(handle, &state);
+    struct vfs_file_snapshot snapshot;
+    enum phipfs_status status = file_snapshot_pin(handle, &snapshot);
+    if (status != PHIPFS_STATUS_OK) return status;
+    const struct vfs_open_file_state *state = &snapshot.file;
 
     if (status == PHIPFS_STATUS_OK && state->append) {
         if (written_bytes == NULL || (source_bytes != 0U && source == NULL)) {
-            return PHIPFS_STATUS_INVALID_ARGUMENT;
+            status = PHIPFS_STATUS_INVALID_ARGUMENT;
+            goto finished;
         }
         *written_bytes = 0U;
-        if (source_bytes == 0U) return PHIPFS_STATUS_OK;
+        if (source_bytes == 0U) goto finished;
         if (state->backend->append != NULL) {
-            return state->backend->append(state->backend_handle, source, source_bytes, written_bytes);
+            status = state->backend->append(state->backend_handle, source, source_bytes, written_bytes);
+            goto finished;
         }
         uint64_t position;
         status = state->backend->seek(state->backend_handle, 0, PHIPFS_SEEK_END, &position);
     }
-    return status == PHIPFS_STATUS_OK ? state->backend->write(
-        state->backend_handle, source, source_bytes, written_bytes) : status;
+    if (status == PHIPFS_STATUS_OK) status = state->backend->write(
+        state->backend_handle, source, source_bytes, written_bytes);
+finished:
+    mount_release(snapshot.vnode.volume);
+    return status;
 }
 
 enum phipfs_status phipfs_set_append(phipfs_handle handle, bool append)
 {
+    const bool restore_interrupts = vnode_metadata_acquire();
     struct vfs_open_file_state *state;
     enum phipfs_status status = checked_open_file_state(handle, &state);
 
     if (status == PHIPFS_STATUS_OK) state->append = append;
+    vnode_metadata_release(restore_interrupts);
     return status;
 }
 
@@ -1182,11 +1227,12 @@ enum phipfs_status phipfs_seek(
     uint64_t *position
 )
 {
-    struct vfs_open_file_state *state;
-    enum phipfs_status status = checked_open_file_state(handle, &state);
-
-    return status == PHIPFS_STATUS_OK ? state->backend->seek(
-        state->backend_handle, offset, origin, position) : status;
+    struct vfs_file_snapshot snapshot;
+    enum phipfs_status status = file_snapshot_pin(handle, &snapshot);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = snapshot.file.backend->seek(snapshot.file.backend_handle, offset, origin, position);
+    mount_release(snapshot.vnode.volume);
+    return status;
 }
 
 enum phipfs_status phipfs_stat_path(
@@ -1412,13 +1458,15 @@ static enum phipfs_status vfs_create_mode_pinned(enum phipfs_volume volume,
 
 enum phipfs_status phipfs_ftruncate(phipfs_handle handle, uint64_t size)
 {
-    struct vfs_open_file_state *state;
-    enum phipfs_status status = checked_open_file_state(handle, &state);
+    struct vfs_file_snapshot snapshot;
+    enum phipfs_status status = file_snapshot_pin(handle, &snapshot);
     if (status != PHIPFS_STATUS_OK) return status;
-    if (state->backend->ftruncate != NULL) return state->backend->ftruncate(state->backend_handle, size);
-    const struct vfs_vnode_state snapshot = vnode_snapshot(state->vnode_index);
-    const struct vfs_vnode_state *vnode = &snapshot;
-    return state->backend->truncate(vnode->volume, vnode->path, size);
+    const struct vfs_open_file_state *state = &snapshot.file;
+    const struct vfs_vnode_state *vnode = &snapshot.vnode;
+    status = state->backend->ftruncate != NULL ? state->backend->ftruncate(state->backend_handle, size) :
+        state->backend->truncate(vnode->volume, vnode->path, size);
+    mount_release(vnode->volume);
+    return status;
 }
 
 static enum phipfs_status vfs_truncate_pinned(
