@@ -22,7 +22,7 @@ PASS = "ST EXT4 VFS held-unlink old-or-new cleanup census exact"
 LONG_SYMLINK_TARGET = "link-source-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz"
 PHYSICAL_OPERATIONS = ("rename", "rename-cross", "rename-wrap", "append", "truncate", "grow", "create",
     "chmod", "times", "xattr", "xattr-remove", "unlink", "replace", "mkdir", "rmdir",
-    "link", "symlink", "symlink-long")
+    "link", "symlink", "symlink-long", "overwrite")
 STORAGE_CONTROLS = {"append": "APPFAIL.BIN", "overwrite": "OVERFAIL.BIN",
     "truncate": "TRUNCFAIL.BIN", "grow": "GROWFAIL.BIN",
     "rename": "RENFAIL.BIN", "rename-cross": "RENFAIL.BIN",
@@ -203,6 +203,34 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
     return report
 
 
+def verify_overwrite_device_image(image, blocks, commands):
+    """Check the complete allocated blocks against completed writes, including EOF slack.
+
+    This command-completion model does not discard a device's volatile cache or
+    split one command. It must not be used to claim whole-overwrite atomicity.
+    """
+    if len(blocks) != 2 or len(set(blocks)) != 2 or any(block <= 0 for block in blocks):
+        raise RuntimeError("overwrite fixture needs two distinct allocated blocks")
+    mask = 0
+    for _, kind, detail in commands:
+        if kind == "write" and int(detail) in blocks:
+            bit = 1 << blocks.index(int(detail))
+            if mask & bit:
+                raise RuntimeError("overwrite data block was written more than once")
+            mask |= bit
+    expected = bytearray((b"t" * 4500).ljust(8192, b"\0"))
+    if mask & 1:
+        expected[123:4096] = b"s" * (4096 - 123)
+    if mask & 2:
+        expected[4096:4220] = b"s" * 124
+    with image.open("rb") as disk:
+        for index, block in enumerate(blocks):
+            disk.seek(block * 4096)
+            if disk.read(4096) != expected[index * 4096:(index + 1) * 4096]:
+                raise RuntimeError("overwrite bytes do not match the exact completed data commands")
+    return mask
+
+
 def run(args):
     replacement = args.operation == "replace"
     renaming = args.operation in ("rename", "rename-cross", "rename-wrap")
@@ -318,6 +346,8 @@ def run(args):
         if overwriting:
             source.write_bytes(b"t" * 4500)
             files = [(source, "overwrite-target"), (empty, "CUTOVER.TST")]
+            if args.physical_cuts:
+                files.append((empty, "OVERDEVICE.TST"))
         if metadata_change:
             source.write_bytes(b"t" * 1700)
             files = [(source, "metadata-target"), (empty, "CUTMODE.TST" if args.operation == "chmod" else "CUTTIMES.TST")]
@@ -414,6 +444,17 @@ def run(args):
             raise RuntimeError("device-command trace is not a bounded contiguous sequence")
         if {item[1] for item in boundaries} != {"write", "flush"}:
             raise RuntimeError("device-command matrix omitted writes or flushes")
+        overwrite_blocks = []
+        if overwriting:
+            for logical in range(2):
+                mapping = ext4_image._debugfs(tools, initial, f"bmap /data/user/overwrite-target {logical}")
+                matches = re.findall(r"^([0-9]+)$", mapping, re.MULTILINE)
+                if len(matches) != 1:
+                    raise RuntimeError("overwrite fixture data mapping is ambiguous")
+                overwrite_blocks.append(int(matches[0]))
+            if verify_overwrite_device_image(initial, overwrite_blocks, []) != 0 or \
+                    verify_overwrite_device_image(baseline, overwrite_blocks, boundaries) != 3:
+                raise RuntimeError("overwrite baseline did not write both data blocks")
         wrapped_slots = []
         if wrapped_rename:
             physical = ext4_image.journal_inode_map(baseline, tools, output, "wrapped")
@@ -452,16 +493,30 @@ def run(args):
                 raise RuntimeError("wrapped rename cut escaped its prepared transaction window")
             if trace.count(f"ST EXT4 STORAGE {ordinal} {kind} {detail}\n") != 1:
                 raise RuntimeError("device-command cut changed its baseline command identity")
+            completed_commands = re.findall(r"^ST EXT4 STORAGE (\d+) (write|flush) (\d+)$", trace, re.MULTILINE)
+            if completed_commands != boundaries[:ordinal]:
+                raise RuntimeError("device-command cut changed its complete baseline prefix")
             committed = bool(re.search(r"^ST EXT4 DURABLE \d+ commit$", trace, re.MULTILINE))
             crashed = output / f"{prefix}-crashed.raw"
             shutil.copyfile(image, crashed)
+            overwrite_mask = verify_overwrite_device_image(crashed, overwrite_blocks, completed_commands) if overwriting else None
             status, reboot = recovery._run_qemu(args.qemu, args.accel, iso, image,
                 output / f"{prefix}-reboot.log", args.timeout)
             verify_exit(status, reboot, pass_marker)
-            states = re.findall(rf"^{re.escape(state_marker)} (old|new)$", reboot, re.MULTILINE)
+            states = re.findall(rf"^{re.escape(state_marker)} (old|new|mixed)$", reboot, re.MULTILINE)
             if len(states) != 1 or (committed and states[0] != "new"):
                 raise RuntimeError("device-command cut violated old-or-new state or lost a durable commit")
+            if overwriting:
+                expected_state = "old" if overwrite_mask == 0 else "new" if overwrite_mask == 3 else "mixed"
+                masks = re.findall(r"^ST EXT4 OVERWRITE block mask ([0-3])$", reboot, re.MULTILINE)
+                if masks != [str(overwrite_mask)] or states != [expected_state]:
+                    raise RuntimeError("recovered overwrite VFS bytes differ from completed commands")
+                if re.search(r"^ST EXT4 DURABLE \d+ ordered-data$", trace, re.MULTILINE) and overwrite_mask != 3:
+                    raise RuntimeError("overwrite lost data after its ordered-data flush")
+            elif states[0] == "mixed":
+                raise RuntimeError("metadata transaction recovered a mixed state")
             reports.append({"cut": ordinal, "kind": kind, "detail": int(detail), "commit_durable": committed,
+                "overwrite_block_mask": overwrite_mask,
                 "recovered_state": states[0], "result": inspect_recovered(image, prefix),
                 "crashed_sha256": hashlib.sha256(crashed.read_bytes()).hexdigest()})
             # At the first durable commit, replay still has physical home writes

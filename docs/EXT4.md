@@ -344,6 +344,17 @@ allocation checks, resource census, clean unmount, Linux readback and read-only
 fsck. These tests do not model torn sectors inside one device command or loss
 of an emulated volatile write cache; they do not establish all Stage 5 gates.
 
+`qemu-test-ext4-overwrite-device-powercuts` uses a separate command-cut fixture
+for an unaligned in-place overwrite spanning two existing blocks. The host
+requires the complete command prefix to match the baseline and checks both
+allocated blocks, including unchanged bytes and EOF slack, against exactly
+those completed data writes. Before retrying, the rebooted ordinary VFS reader
+must report the same changed-block mask. Both blocks must be new after the
+ordered-data flush and after commit. The original flush-boundary fixture still
+refuses mixed blocks. This models partial in-place overwrite visibility, not
+whole-write atomicity; successful retry, recovery cuts, Linux readback, clean
+fsck and resource checks remain required.
+
 `qemu-test-ext4-journal-wrap` issues 513 mode changes through ordinary VFS
 calls while retaining a reader. Its host inspector maps every journal logical
 block with debugfs and verifies that the recorded physical writes consume and

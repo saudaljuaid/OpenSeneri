@@ -5982,15 +5982,17 @@ static _Noreturn void ext4_vfs_append_powercut(void)
     kernel_test_pass();
 }
 
-static bool ext4_vfs_overwrite_cut_contents(phipfs_handle file)
+static unsigned ext4_vfs_overwrite_cut_contents(phipfs_handle file, bool command_cut)
 {
     uint8_t bytes[4500];
     size_t count;
     ext4_vfs_require(phipfs_pread(file, bytes, sizeof(bytes), 0U, &count), "overwrite cut held contents");
     if (count != sizeof(bytes)) kernel_test_fail("ext4 overwrite cut changed size");
-    const bool changed = bytes[123] == 's';
+    const unsigned changed = (bytes[123] == 's' ? 1U : 0U) | (bytes[4096] == 's' ? 2U : 0U);
+    if (!command_cut && changed != 0U && changed != 3U)
+        kernel_test_fail("ext4 overwrite cut mixed blocks at a flush boundary");
     for (size_t index = 0U; index < sizeof(bytes); ++index) {
-        const uint8_t expected = changed && index >= 123U && index < 4220U ? 's' : 't';
+        const uint8_t expected = (changed & (index < 4096U ? 1U : 2U)) && index >= 123U && index < 4220U ? 's' : 't';
         if (bytes[index] != expected) kernel_test_fail("ext4 overwrite cut mixed bytes at a flush boundary");
     }
     return changed;
@@ -6007,14 +6009,27 @@ static _Noreturn void ext4_vfs_overwrite_powercut(void)
     uint8_t changed[4097];
     uint32_t failure_ordinal = 0U;
     const bool storage_probe = ext4_vfs_storage_probe_control(volume, "data/user/OVERFAIL.BIN", &failure_ordinal);
+    struct phipfs_stat control;
+    const enum phipfs_status control_status = phipfs_stat_path(volume, "data/user/OVERDEVICE.TST", &control);
+    if (control_status != PHIPFS_STATUS_OK && control_status != PHIPFS_STATUS_NOT_FOUND)
+        kernel_test_fail("ext4 overwrite command-cut control unavailable");
+    const bool command_cut = control_status == PHIPFS_STATUS_OK;
+    if (command_cut && (control.directory || control.size != 0U || storage_probe))
+        kernel_test_fail("ext4 overwrite command-cut control conflicts with refusal probe");
     ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ_WRITE, &writer), "overwrite cut writer");
     ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &reader), "overwrite cut reader");
     ext4_vfs_require(phipfs_fstat(writer, &original), "overwrite cut original inode");
     if (original.directory || original.size != 4500U || original.links != 1U || original.mode != 0100644U)
         kernel_test_fail("ext4 overwrite cut unexpected original inode");
     const uint64_t free_bytes = phipfs_drive(volume).free_bytes;
-    if (!ext4_vfs_overwrite_cut_contents(reader)) {
-        console_write("ST EXT4 OVERWRITE initial old\n");
+    const unsigned initial = ext4_vfs_overwrite_cut_contents(reader, command_cut);
+    if (command_cut) {
+        console_write("ST EXT4 OVERWRITE block mask ");
+        console_write_u64(initial);
+        console_write("\n");
+    }
+    if (initial != 3U) {
+        console_write(initial == 0U ? "ST EXT4 OVERWRITE initial old\n" : "ST EXT4 OVERWRITE initial mixed\n");
         for (size_t index = 0U; index < sizeof(changed); ++index) changed[index] = 's';
         ext4_vfs_require(phipfs_seek(writer, 123, PHIPFS_SEEK_START, &position), "overwrite cut unaligned seek");
         if (position != 123U) kernel_test_fail("ext4 overwrite cut wrong start");
@@ -6024,7 +6039,7 @@ static _Noreturn void ext4_vfs_overwrite_powercut(void)
         ext4_vfs_require(phipfs_seek(writer, 0, PHIPFS_SEEK_CURRENT, &position), "overwrite cut final cursor");
         if (position != 4220U) kernel_test_fail("ext4 overwrite cut wrong final cursor");
     } else console_write("ST EXT4 OVERWRITE initial new\n");
-    if (!ext4_vfs_overwrite_cut_contents(reader) || !ext4_vfs_overwrite_cut_contents(writer))
+    if (ext4_vfs_overwrite_cut_contents(reader, false) != 3U || ext4_vfs_overwrite_cut_contents(writer, false) != 3U)
         kernel_test_fail("ext4 overwrite cut did not publish both partial blocks");
     ext4_vfs_require(phipfs_fstat(reader, &after), "overwrite cut held inode");
     if (after.object_id != original.object_id || after.size != original.size || after.links != original.links ||
