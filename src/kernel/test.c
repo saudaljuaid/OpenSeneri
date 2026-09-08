@@ -4917,6 +4917,34 @@ static void ext4_vfs_semantics(void)
     if (count != sizeof(block) || block[0] != payload[1]) kernel_test_fail("ext4 VFS retained prefix changed");
     for (size_t index = 1U; index < count; ++index)
         if (block[index] != 0U) kernel_test_fail("ext4 VFS truncate exposed discarded bytes");
+    // Force the inline extent root to grow an external node, then fill a hole
+    // between mapped extents without changing either neighboring byte.
+    for (unsigned extent = 0U; extent < 12U; ++extent) {
+        const uint64_t offset = (4U + 2U * extent) * UINT64_C(4096) + 13U;
+        const uint8_t value = (uint8_t)(extent + 1U);
+        ext4_vfs_require(phipfs_seek(file, (int64_t)offset, PHIPFS_SEEK_START, &position), "fragment seek");
+        ext4_vfs_require(phipfs_write(file, &value, 1U, &count), "fragment extent");
+        if (count != 1U) kernel_test_fail("ext4 VFS fragment write was short");
+    }
+    ext4_vfs_require(phipfs_seek(file, 5 * 4096 + 7, PHIPFS_SEEK_START, &position), "hole fill seek");
+    ext4_vfs_require(phipfs_write(file, (const uint8_t *)"fill", 4U, &count), "hole fill");
+    if (count != 4U) kernel_test_fail("ext4 VFS hole fill was short");
+    for (unsigned extent = 0U; extent < 12U; ++extent) {
+        const uint64_t offset = (4U + 2U * extent) * UINT64_C(4096) + 12U;
+        ext4_vfs_require(phipfs_pread(appended, block, 3U, offset, &count), "fragment read");
+        if (count != 3U || block[0] != 0U || block[1] != extent + 1U || block[2] != 0U)
+            kernel_test_fail("ext4 VFS fragmented extent contents changed");
+    }
+    ext4_vfs_require(phipfs_ftruncate(file, 8192U), "fragment reclaim");
+    ext4_vfs_require(phipfs_seek(file, 8191, PHIPFS_SEEK_START, &position), "failed write seek");
+    if (!ext4_backend_test_fail_storage_once(3U) ||
+        phipfs_write(file, (const uint8_t *)"R", 1U, &count) != PHIPFS_STATUS_IO)
+        kernel_test_fail("ext4 VFS storage refusal was not exercised");
+    ext4_vfs_require(phipfs_fsync(file), "failed write fsync retry");
+    ext4_vfs_require(phipfs_seek(file, 0, PHIPFS_SEEK_CURRENT, &position), "failed write cursor");
+    ext4_vfs_require(phipfs_pread(appended, block, 1U, 8191U, &count), "resumed write readback");
+    if (position != 8191U || count != 1U || block[0] != 'R')
+        kernel_test_fail("ext4 VFS fsync lost retained write or advanced failed cursor");
     ext4_vfs_require(phipfs_chmod(volume, name, 0600U), "chmod");
     const struct phipfs_times times = { .atime_seconds = 2200000000U, .mtime_seconds = 2300000000U,
         .atime_nanos = 123U, .mtime_nanos = 456U };
