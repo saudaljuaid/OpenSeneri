@@ -24,14 +24,14 @@ def click(pointer, x, y):
 
 
 def dump_document(image, tools, destination, name):
-    ext4_image._debugfs(tools, image, f'dump /{name} "{destination.as_posix()}"')
+    ext4_image._debugfs(tools, image, f'dump "/{name}" "{destination.as_posix()}"')
     return destination.read_bytes()
 
 
 def boot(args, image, output, work, number, original, before):
-    name = "NOTES.TXT" if args.notes else ("EXPORT.BMP" if args.media_export else "PAINT.BMP")
-    app = "Notes" if args.notes else ("Media Editor" if args.media_export else "Paint")
-    dock = capture.DOCK_NOTES if args.notes else (capture.DOCK_MEDIA_EDITOR if args.media_export else capture.DOCK_CANVAS)
+    name = "AAA - Copy.BMP" if args.files_copy else "NOTES.TXT" if args.notes else ("EXPORT.BMP" if args.media_export else "PAINT.BMP")
+    app = "Files" if args.files_copy else "Notes" if args.notes else ("Media Editor" if args.media_export else "Paint")
+    dock = capture.DOCK_FILES if args.files_copy else capture.DOCK_NOTES if args.notes else (capture.DOCK_MEDIA_EDITOR if args.media_export else capture.DOCK_CANVAS)
     length = len(NOTES_CONTENT) if args.notes else PAINT_BYTES
     serial = output / f"boot-{number}.log"
     port = capture.free_port()
@@ -52,13 +52,20 @@ def boot(args, image, output, work, number, original, before):
                 offset = serial.stat().st_size
                 pointer.rehome()
                 click(pointer, capture.dock_item_center(dock), capture.DOCK_POINTER_Y)
-                if not args.notes and not args.media_export:
+                if not args.notes and not args.media_export and not args.files_copy:
                     capture.wait_serial_after(serial, offset, b"Phipia: Paint opened")
                 pointer.settle_guest(0.5)
                 # First application window is the home frame (82,40 860x602).
                 click(pointer, 873, 56)
                 pointer.settle_guest(0.4)
-                if args.media_export:
+                if args.files_copy:
+                    click(pointer, 900, 90)
+                    capture.send_text(qmp, "AAA.BMP", 0.025)
+                    qmp.hmp("sendkey ret")
+                    pointer.settle_guest(0.35)
+                    click(pointer, 300, 145)
+                    click(pointer, 158, 53)
+                elif args.media_export:
                     qmp.hmp("sendkey ctrl-n")
                     pointer.settle_guest(0.35)
                     qmp.hmp("sendkey ctrl-o")
@@ -83,13 +90,15 @@ def boot(args, image, output, work, number, original, before):
                     pointer.settle_guest(0.4)
                     pointer.drag_to(60, 200, 250, 290)
                 offset = serial.stat().st_size
-                if args.media_export:
+                if args.files_copy:
+                    click(pointer, 198, 53)
+                elif args.media_export:
                     qmp.hmp("sendkey ctrl-e")
                 elif args.notes:
                     qmp.hmp("sendkey ctrl-s")
                 else:
                     click(pointer, 42, 16)
-                failure_prefix = b"Phipia: Export failed: " if args.media_export else b"Phipia: Save failed: "
+                failure_prefix = b"Phipia: Files copy failed: " if args.files_copy else b"Phipia: Export failed: " if args.media_export else b"Phipia: Save failed: "
                 capture.wait_serial_after(serial, offset, failure_prefix, timeout=90.0)
                 failure_trace = serial.read_bytes()[offset:]
                 if failure_prefix + b"volume has no free cluster\n" not in failure_trace:
@@ -98,8 +107,14 @@ def boot(args, image, output, work, number, original, before):
                     raise RuntimeError("storage refusal disabled the desktop")
                 capture.capture_png(qmp, work, output, f"{app.lower()}-full-refused")
                 tools = ext4_image.require_tools()
-                if dump_document(image, tools, output / f"refused-{name}", name) != original:
+                original_name = "AAA.BMP" if args.files_copy else name
+                if dump_document(image, tools, output / f"refused-{original_name}", original_name) != original:
                     raise RuntimeError(f"failed {app} publication changed the original document")
+                if args.files_copy:
+                    names = ext4_image._debugfs(tools, image, "ls -p /")
+                    (output / "refused-namespace.txt").write_text(names)
+                    if f"/{name}/" in names or "/CPTMP" in names:
+                        raise RuntimeError("failed Files copy published a destination or leaked scratch")
                 refused = ext4_image.parse_superblock(image.read_bytes())
                 if any(refused[field] != before[field] for field in ("free_blocks", "free_inodes")):
                     raise RuntimeError("failed Paint save leaked blocks or an inode")
@@ -122,20 +137,25 @@ def boot(args, image, output, work, number, original, before):
                 click(pointer, capture.dock_item_center(dock), capture.DOCK_POINTER_Y)
                 pointer.settle_guest(0.5)
                 offset = serial.stat().st_size
-                if args.media_export:
+                if args.files_copy:
+                    click(pointer, 198, 53)
+                elif args.media_export:
                     qmp.hmp("sendkey ctrl-e")
                 elif args.notes:
                     qmp.hmp("sendkey ctrl-s")
                 else:
                     click(pointer, 42, 16)
-                success = b"Phipia: Media exported EXPORT.BMP" if args.media_export else f"Phipia: {app} saved {name}".encode()
+                success = f"Phipia: Files copied {name}".encode() if args.files_copy else b"Phipia: Media exported EXPORT.BMP" if args.media_export else f"Phipia: {app} saved {name}".encode()
                 capture.wait_serial_after(serial, offset, success, timeout=90.0)
                 capture.wait_for_named_file(image, name, length, filesystem="ext4")
                 capture.capture_png(qmp, work, output, f"{app.lower()}-space-reclaimed-retry")
                 applications.terminal(qmp, pointer)
             else:
                 applications.terminal(qmp, pointer)
-                applications.command(qmp, serial, f"stat {name}", f"{length} bytes".encode())
+                if args.files_copy:
+                    applications.command(qmp, serial, "ls", name.encode())
+                else:
+                    applications.command(qmp, serial, f"stat {name}", f"{length} bytes".encode())
                 capture.capture_png(qmp, work, output, f"{app.lower()}-low-space-cold-boot")
             applications.command(qmp, serial, "sync", b"data synchronized")
             applications.command(qmp, serial, "reboot", applications.REBOOT)
@@ -166,28 +186,29 @@ def boot(args, image, output, work, number, original, before):
 def inspect(image, output, label, before, released_blocks, original, expected=None):
     notes = before.get("application") == "Notes"
     media = before.get("application") == "Media Editor"
-    name = "NOTES.TXT" if notes else ("EXPORT.BMP" if media else "PAINT.BMP")
+    copying = before.get("application") == "Files"
+    name = "AAA - Copy.BMP" if copying else "NOTES.TXT" if notes else ("EXPORT.BMP" if media else "PAINT.BMP")
     tools = ext4_image.require_tools()
     target = output / label
     target.mkdir()
     report = ext4_image.inspect_image(image, tools=tools)
-    if report["needs_recovery"] or report["free_blocks"] != before["free_blocks"] + released_blocks or \
-            report["free_inodes"] != before["free_inodes"] + 1:
+    if report["needs_recovery"] or report["free_blocks"] != before["free_blocks"] + released_blocks - (43 if copying else 0) or \
+            report["free_inodes"] != before["free_inodes"] + (0 if copying else 1):
         raise RuntimeError("Paint retry or reclamation changed allocation accounting")
     content = dump_document(image, tools, target / name, name)
-    if len(content) != (len(NOTES_CONTENT) if notes else PAINT_BYTES) or content == original or \
+    if len(content) != (len(NOTES_CONTENT) if notes else PAINT_BYTES) or (content != original if copying else content == original) or \
             (expected is not None and content != expected) or (notes and content != NOTES_CONTENT):
         raise RuntimeError("application retry did not preserve its exact edited document across reboot")
     names = ext4_image._debugfs(tools, image, "ls -p /")
     (target / "namespace.txt").write_text(names)
-    if any(any(f"/{prefix}" in line for prefix in ("PNTMP", "SNTMP", "MEXTP")) for line in names.splitlines()):
+    if any(any(f"/{prefix}" in line for prefix in ("PNTMP", "SNTMP", "MEXTP", "CPTMP")) for line in names.splitlines()):
         raise RuntimeError("application retry leaked an owned scratch file")
     manifest = {name: {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()},
         "system/release": None}
-    if media:
+    if media or copying:
         source = dump_document(image, tools, target / "AAA.BMP", "AAA.BMP")
         if hashlib.sha256(source).hexdigest() != before["import_sha256"] or len(source) != PAINT_BYTES or \
-                source[54:] != content[54:]:
+                (source != content if copying else source[54:] != content[54:]):
             raise RuntimeError("Media export changed the unmodified imported pixels or its source file")
         manifest["AAA.BMP"] = {"bytes": len(source), "sha256": before["import_sha256"]}
     if "inode_fill_count" in before:
@@ -219,6 +240,7 @@ def main():
     application = parser.add_mutually_exclusive_group()
     application.add_argument("--notes", action="store_true")
     application.add_argument("--media-export", action="store_true")
+    application.add_argument("--files-copy", action="store_true")
     args = parser.parse_args()
     if args.notes and not args.inodes:
         parser.error("--notes currently requires --inodes")
@@ -230,7 +252,7 @@ def main():
     (output / "head.txt").write_text(subprocess.check_output(["git", "rev-parse", "HEAD"], text=True))
     with tempfile.TemporaryDirectory(prefix="paint-space-", dir=output) as raw:
         work = Path(raw)
-        name = "NOTES.TXT" if args.notes else ("EXPORT.BMP" if args.media_export else "PAINT.BMP")
+        name = "AAA.BMP" if args.files_copy else "NOTES.TXT" if args.notes else ("EXPORT.BMP" if args.media_export else "PAINT.BMP")
         bitmap = work / name
         if args.notes:
             bitmap.write_bytes(b"Original note.")
@@ -249,6 +271,8 @@ def main():
             previous[54] ^= 0xff  # Valid prior BMP with a different first pixel.
             bitmap.write_bytes(previous)
         original = bitmap.read_bytes()
+        if args.files_copy:
+            imported = original
         ext4_image._run([tools["debugfs"], "-w", "-R", f'write "{bitmap.as_posix()}" /{name}', image])
         available = ext4_image.parse_superblock(image.read_bytes())["free_blocks"]
         if available <= 128:
@@ -278,7 +302,7 @@ def main():
             (output / "fixture-debugfs.txt").write_text(result.stdout)
             (output / "inode-namespace-before.txt").write_text(ext4_image._debugfs(tools, image, "ls -p /inode-full"))
         before = ext4_image.inspect_image(image, tools=tools)
-        before["application"] = "Notes" if args.notes else ("Media Editor" if args.media_export else "Paint")
+        before["application"] = "Files" if args.files_copy else "Notes" if args.notes else ("Media Editor" if args.media_export else "Paint")
         if imported is not None:
             before["import_sha256"] = hashlib.sha256(imported).hexdigest()
         if args.inodes:

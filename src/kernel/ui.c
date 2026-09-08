@@ -2373,6 +2373,11 @@ static void phipia_apply_explorer_action(void)
     // Refresh the namespace after partial failures, then retain the operation
     // error. A successful listing must not disguise a failed mutation or sync.
     if (status != PHIPFS_STATUS_OK) set_app_status("file command", status);
+    if (action.kind == EXPLORER_ACTION_COPY) {
+        console_write(status == PHIPFS_STATUS_OK ? "Phipia: Files copied " : "Phipia: Files copy failed: ");
+        console_write(status == PHIPFS_STATUS_OK ? destination : phipfs_status_string(status));
+        console_write("\n");
+    }
 }
 
 static void phipia_note_from_buffer(void)
