@@ -56,7 +56,9 @@ struct ext4_handle_state {
 
 static struct ext4_mount_state ext4_mounts[PHIPFS_VOLUME_COUNT];
 static struct ext4_handle_state ext4_handles[EXT4_MAX_HANDLES];
-static bool ext4_handle_reservations[EXT4_MAX_HANDLES];
+/* A claim covers reservation, publication and deferred close. Only final
+ * retirement releases it, so independent volume leases cannot share a slot. */
+static bool ext4_handle_claims[EXT4_MAX_HANDLES];
 static enum phipfs_status ext4_last_mount_status[PHIPFS_VOLUME_COUNT];
 static struct phipia_ext4_mount_diagnostic
     ext4_mount_diagnostics[PHIPFS_VOLUME_COUNT];
@@ -352,14 +354,13 @@ static bool valid_volume(enum phipfs_volume volume)
 
 static uint64_t generation(uint64_t *next)
 {
-    uint64_t value = *next;
-
-    ++*next;
-    if (value == 0U || value > (UINT64_MAX >> 8U)) {
-        value = 1U;
-        *next = 2U;
+    uint64_t observed = __atomic_load_n(next, __ATOMIC_RELAXED);
+    for (;;) {
+        const uint64_t value = observed == 0U || observed > (UINT64_MAX >> 8U) ? 1U : observed;
+        const uint64_t following = value + 1U;
+        if (__atomic_compare_exchange_n(next, &observed, following, false,
+                __ATOMIC_RELAXED, __ATOMIC_RELAXED)) return value;
     }
-    return value;
 }
 
 static enum phipfs_status map_status(int32_t status)
@@ -411,6 +412,12 @@ static enum phipfs_status map_status(int32_t status)
 static enum phipfs_status end_operation(struct ext4_mount_state *mount,
     struct phipia_ext4_mount_diagnostic *diagnostic);
 
+static void retire_handle_slot(size_t slot)
+{
+    zero_bytes(&ext4_handles[slot], sizeof(ext4_handles[slot]));
+    __atomic_store_n(&ext4_handle_claims[slot], false, __ATOMIC_RELEASE);
+}
+
 static void release_operation(struct ext4_mount_state *mount)
 {
     /* A close that reenters an operation retires the public handle at once,
@@ -422,7 +429,7 @@ static void release_operation(struct ext4_mount_state *mount)
             if (state->active && state->closing && valid_volume(state->volume) &&
                 &ext4_mounts[state->volume] == mount) {
                 if (state->directory_snapshot != 0U) phipia_ext4_snapshot_free(state->directory_snapshot);
-                zero_bytes(state, sizeof(*state));
+                retire_handle_slot(index);
             }
         }
         __atomic_store_n(&mount->operation_active, false, __ATOMIC_RELEASE);
@@ -782,10 +789,9 @@ static enum phipfs_status leased_handle_state(phipfs_handle handle,
 static size_t reserve_handle_slot(void)
 {
     for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
-        if (!ext4_handles[index].active && !ext4_handle_reservations[index]) {
-            ext4_handle_reservations[index] = true;
-            return index;
-        }
+        bool unclaimed = false;
+        if (__atomic_compare_exchange_n(&ext4_handle_claims[index], &unclaimed,
+                true, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return index;
     }
     return EXT4_MAX_HANDLES;
 }
@@ -807,7 +813,6 @@ static void initialize_reserved_handle(size_t slot, enum phipfs_volume volume,
     copy_bytes(ext4_handles[slot].path, path, length + 1U);
     ext4_handles[slot].active = true;
     *handle = ext4_handles[slot].generation << 8U | (uint64_t)(slot + 1U);
-    ext4_handle_reservations[slot] = false;
 }
 
 static enum phipfs_status allocate_handle(enum phipfs_volume volume,
@@ -864,7 +869,7 @@ static bool volume_has_open_handles(enum phipfs_volume volume)
 
 void ext4_backend_initialize(void)
 {
-    zero_bytes(ext4_handle_reservations, sizeof(ext4_handle_reservations));
+    zero_bytes(ext4_handle_claims, sizeof(ext4_handle_claims));
     zero_bytes(ext4_mounts, sizeof(ext4_mounts));
     zero_bytes(ext4_handles, sizeof(ext4_handles));
     ext4_test_durable_boundary = 0U;
@@ -1009,7 +1014,7 @@ bool ext4_backend_resources_released(void)
     for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
         const struct ext4_handle_state *handle = &ext4_handles[index];
         if (handle->active || handle->closing || handle->directory_snapshot != 0U ||
-            ext4_handle_reservations[index]) return false;
+            __atomic_load_n(&ext4_handle_claims[index], __ATOMIC_ACQUIRE)) return false;
     }
     return true;
 }
@@ -1314,7 +1319,7 @@ enum phipfs_status ext4_backend_open_options(enum phipfs_volume volume, const ch
         initialize_reserved_handle(slot, volume, path, metadata.inode, metadata.size,
             access, false, 0U, &opened);
     }
-    if (slot != EXT4_MAX_HANDLES) ext4_handle_reservations[slot] = false;
+    if (slot != EXT4_MAX_HANDLES && opened == 0U) retire_handle_slot(slot);
     const enum phipfs_status close_status = end_operation(mount, NULL);
     if (status == PHIPFS_STATUS_OK) status = close_status;
     if (status != PHIPFS_STATUS_OK && opened != 0U) {

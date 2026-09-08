@@ -63,6 +63,10 @@ static void close_from_callback(unsigned kind)
     assert(handle_state(callback_handle, &held) == PHIPFS_STATUS_STALE_HANDLE);
     assert(ext4_backend_close(callback_handle) == PHIPFS_STATUS_STALE_HANDLE);
     assert(ext4_handles[index].active && ext4_handles[index].closing);
+    assert(__atomic_load_n(&ext4_handle_claims[index], __ATOMIC_ACQUIRE));
+    const size_t other_slot = reserve_handle_slot();
+    assert(other_slot != index);
+    if (other_slot != EXT4_MAX_HANDLES) retire_handle_slot(other_slot);
     assert(ext4_handles[index].inode == 42U);
 }
 
@@ -751,7 +755,7 @@ int main(void)
         assert(ext4_backend_close(held[index]) == PHIPFS_STATUS_OK);
     file_type = PHIPIA_EXT4_FILE_DIRECTORY;
     for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index)
-        assert(!ext4_handle_reservations[index]);
+        assert(!ext4_handle_claims[index]);
     for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
         assert(allocate_handle(PHIPFS_VOLUME_DATA, "file", 42U, 0U,
             PHIPFS_ACCESS_READ, false, 0U, &held[index]) == PHIPFS_STATUS_OK);
@@ -1020,9 +1024,9 @@ int main(void)
     assert(ext4_backend_unmount(PHIPFS_VOLUME_DATA) == PHIPFS_STATUS_OK);
     assert(opens == closes && !ext4_mounts[PHIPFS_VOLUME_DATA].session.active);
     assert(ext4_backend_resources_released());
-    ext4_handle_reservations[0] = true;
+    ext4_handle_claims[0] = true;
     assert(!ext4_backend_resources_released());
-    ext4_handle_reservations[0] = false;
+    ext4_handle_claims[0] = false;
     ext4_handles[0].directory_snapshot = 1U;
     assert(!ext4_backend_resources_released());
     ext4_handles[0].directory_snapshot = 0U;
