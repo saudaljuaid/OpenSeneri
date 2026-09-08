@@ -24,6 +24,15 @@ static unsigned publication_calls;
 static unsigned held_unlink_calls;
 static bool consume_last_vnode;
 
+static enum phipfs_status read_attribute(enum phipfs_volume volume, const char *path,
+    const char *name, uint8_t *output, size_t capacity, size_t *length)
+{
+    assert(volume == PHIPFS_VOLUME_DATA && strcmp(path, "parent/file") == 0);
+    assert(strcmp(name, "user.test") == 0 && output != NULL && capacity == 4U);
+    *length = 3U;
+    return mutation_result;
+}
+
 static enum phipfs_status held_unlink(phipfs_handle handle, const char *path)
 {
     assert(handle == 77U && live_backend_handles == 1U && strcmp(path, expected_path) == 0);
@@ -497,6 +506,26 @@ int main(void)
     for (size_t index = 0U; index + 1U < VFS_MAX_VNODES; ++index)
         vnode_release(occupied[index], vnodes[occupied[index]].generation);
     assert(mounts[PHIPFS_VOLUME_DATA].references == 0U);
+    uint8_t attribute[4];
+    size_t attribute_bytes = 99U;
+    assert(phipfs_get_xattr(PHIPFS_VOLUME_DATA, "../invalid", "user.test",
+        attribute, sizeof(attribute), &attribute_bytes) == PHIPFS_STATUS_PATH);
+    assert(attribute_bytes == 0U);
+    attribute_bytes = 99U;
+    assert(phipfs_get_xattr(PHIPFS_VOLUME_DATA, "parent/file", "user.test",
+        attribute, sizeof(attribute), &attribute_bytes) == PHIPFS_STATUS_ACCESS);
+    assert(attribute_bytes == 0U);
+    backend.get_xattr = read_attribute;
+    for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+        mutation_result = attempt == 0U ? PHIPFS_STATUS_IO : PHIPFS_STATUS_OK;
+        assert(phipfs_get_xattr(PHIPFS_VOLUME_DATA, "parent/file", "user.test",
+            attribute, sizeof(attribute), &attribute_bytes) == mutation_result);
+        assert(attribute_bytes == (attempt == 0U ? 0U : 3U));
+    }
+    attribute_bytes = 99U;
+    assert(phipfs_readlink(PHIPFS_VOLUME_DATA, "parent/file", NULL, 4U,
+        &attribute_bytes) == PHIPFS_STATUS_INVALID_ARGUMENT);
+    assert(attribute_bytes == 0U);
     nested_open_reservations();
     assert(!phipfs_resources_released());
     mounts[PHIPFS_VOLUME_DATA].active = false;

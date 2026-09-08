@@ -1441,10 +1441,14 @@ enum phipfs_status phipfs_get_xattr(enum phipfs_volume volume, const char *path,
     const char *name, uint8_t *output, size_t capacity, size_t *length)
 {
     char canonical[PHIPFS_MAX_PATH];
+    if (length == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    *length = 0U;
     enum phipfs_status status = resolve_metadata_path(volume, path, canonical);
     if (status != PHIPFS_STATUS_OK) return status;
-    return mounts[volume].backend->get_xattr == NULL ? PHIPFS_STATUS_ACCESS :
+    status = mounts[volume].backend->get_xattr == NULL ? PHIPFS_STATUS_ACCESS :
         mounts[volume].backend->get_xattr(volume, canonical, name, output, capacity, length);
+    if (status != PHIPFS_STATUS_OK) *length = 0U;
+    return status;
 }
 
 enum phipfs_status phipfs_symlink(enum phipfs_volume volume,
@@ -1466,10 +1470,11 @@ enum phipfs_status phipfs_readlink(enum phipfs_volume volume,
     char canonical[PHIPFS_MAX_PATH];
     enum phipfs_status status;
 
-    if (read_bytes == NULL || output == NULL || capacity == 0U) {
+    if (read_bytes == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    *read_bytes = 0U;
+    if (output == NULL || capacity == 0U) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
-    *read_bytes = 0U;
     /* Resolve only the parent so dangling and looping final links are readable. */
     status = resolve_parent(volume, path, canonical);
     if (status != PHIPFS_STATUS_OK) {
