@@ -301,6 +301,22 @@ class E2fsprogsIntegrationTests(unittest.TestCase):
 
 
 class KernelReadTests(unittest.TestCase):
+    def test_kernel_metadata_requires_exact_mode_and_nanoseconds(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            file = root / "metadata-target"
+            file.write_bytes(b"retained")
+            metadata = SimpleNamespace(st_size=8, st_mode=0o100640,
+                st_atime_ns=2200000000123456789, st_mtime_ns=2300000000987654321)
+            expected = {"bytes": 8, "sha256": kernel_read.digest(file), "mode": 0o640,
+                "atime_ns": metadata.st_atime_ns, "mtime_ns": metadata.st_mtime_ns}
+            with mock.patch.object(Path, "stat", return_value=metadata):
+                self.assertEqual(kernel_read.mounted_read(root, {file.name: expected}), {file.name: expected})
+                for field in ("mode", "atime_ns", "mtime_ns"):
+                    with self.subTest(field=field), self.assertRaises(RuntimeError):
+                        kernel_read.mounted_read(root, {file.name: {**expected, field: expected[field] + 1}})
+
     def test_symlink_manifest_checks_literal_target_and_followed_contents(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

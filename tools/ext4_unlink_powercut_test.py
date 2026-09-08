@@ -41,11 +41,11 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
     removed = "owned-cut" if replacement_inode is None else "replace-source"
     if operation == "rmdir":
         removed = "removed-directory"
-    if operation not in ("truncate", "grow", "append", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") and f"/{removed}/" in namespace:
+    if operation not in ("truncate", "grow", "append", "chmod", "times", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") and f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
     (output / "namespace.txt").write_text(namespace)
-    expected_files = {} if operation in ("truncate", "grow", "append", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") else {f"data/user/{removed}": None}
+    expected_files = {} if operation in ("truncate", "grow", "append", "chmod", "times", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") else {f"data/user/{removed}": None}
     if operation in ("symlink", "symlink-long"):
         target_name = LONG_SYMLINK_TARGET if operation == "symlink-long" else "link-source"
         literal = ext4_image._debugfs(tools, image, "stat /data/user/symbolic-alias")
@@ -76,7 +76,9 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
             target_name, target_size = "link-alias", 4500
         if operation == "append":
             target_name, target_size = "append-target", 9000
-        expected_content = (b"t" if operation in ("truncate", "xattr", "xattr-remove") else b"s") * target_size
+        if operation in ("chmod", "times"):
+            target_name, target_size = "metadata-target", 1700
+        expected_content = (b"t" if operation in ("truncate", "chmod", "times", "xattr", "xattr-remove") else b"s") * target_size
         if operation == "grow":
             expected_content = b"t" * 1700 + bytes(target_size - 1700)
         if operation == "append":
@@ -113,6 +115,30 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
                 raise RuntimeError("held-replace changed the published file contents")
             expected_files[f"data/user/{target_name}"] = {
                 "bytes": target_size, "sha256": hashlib.sha256(expected_content).hexdigest()}
+            if operation in ("chmod", "times"):
+                mode = 0o640 if operation == "chmod" else 0o644
+                if int(target["mode"], 8) != mode or target["block_count_512"] != 8:
+                    raise RuntimeError("metadata mutation changed mode or block allocation")
+                offset = ext4_image._locate_inode(tools, image, f"/data/user/{target_name}")
+                with image.open("rb") as disk:
+                    disk.seek(offset)
+                    inode = disk.read(256)
+                if len(inode) != 256:
+                    raise RuntimeError("metadata inode evidence is truncated")
+                (output / "metadata-inode.bin").write_bytes(inode)
+                (output / "metadata-debugfs.txt").write_text(target_output)
+                expected_metadata = {"mode": mode}
+                for field, low_offset, extra_offset, seconds, nanos in (
+                        ("atime_ns", 8, 0x8c, 2200000000, 123456789),
+                        ("mtime_ns", 16, 0x88, 2300000000, 987654321)):
+                    if operation == "chmod":
+                        seconds, nanos = ext4_image.FIXED_EPOCH, 0
+                    low = int.from_bytes(inode[low_offset:low_offset + 4], "little", signed=True)
+                    extra = int.from_bytes(inode[extra_offset:extra_offset + 4], "little")
+                    if (low + ((extra & 3) << 32), extra >> 2) != (seconds, nanos):
+                        raise RuntimeError(f"metadata mutation changed exact {field} encoding")
+                    expected_metadata[field] = seconds * 1000000000 + nanos
+                expected_files[f"data/user/{target_name}"].update(expected_metadata)
             if operation in ("xattr", "xattr-remove"):
                 expected_files[f"data/user/{target_name}"]["xattrs"] = {
                     "user.cut": None if operation == "xattr-remove" else bytes(index % 251 for index in range(300)).hex()}
@@ -147,6 +173,7 @@ def run(args):
     truncating = args.operation in ("truncate", "grow")
     growing = args.operation == "grow"
     appending = args.operation == "append"
+    metadata_change = args.operation in ("chmod", "times")
     creating = args.operation in ("create", "mkdir")
     directory = args.operation == "mkdir"
     removing_directory = args.operation == "rmdir"
@@ -186,6 +213,9 @@ def run(args):
     if appending:
         pass_marker = "ST EXT4 VFS append old-or-new tail shared EOF allocation census exact"
         state_marker = "ST EXT4 APPEND initial"
+    if metadata_change:
+        pass_marker = "ST EXT4 VFS metadata old-or-new held inode fields contents allocation census exact"
+        state_marker = "ST EXT4 METADATA initial"
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     tools = ext4_image.require_tools()
@@ -226,6 +256,9 @@ def run(args):
         if appending:
             source.write_bytes(b"t" * 4500)
             files = [(source, "append-target"), (empty, "CUTAPPEND.TST")]
+        if metadata_change:
+            source.write_bytes(b"t" * 1700)
+            files = [(source, "metadata-target"), (empty, "CUTMODE.TST" if args.operation == "chmod" else "CUTTIMES.TST")]
         for file, name in files:
             ext4_image._run([tools["debugfs"], "-w", "-R",
                 f'write "{file.as_posix()}" /data/user/{name}', initial])
@@ -250,6 +283,8 @@ def run(args):
         removed = symlink_target
     if appending:
         removed = "append-target"
+    if metadata_change:
+        removed = "metadata-target"
     target = None if creating else ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
         f"stat /data/user/{removed}"), f"/data/user/{removed}")
     reclaimed = 0 if growing else (1 if replacement or truncating else 2)
@@ -267,16 +302,18 @@ def run(args):
         reclaimed = -1 if external_symlink else 0
     if appending:
         reclaimed = -1
+    if metadata_change:
+        reclaimed, initial_blocks, initial_size = 0, 1, 1700
     if not creating and (target["size"] != initial_size or target["block_count_512"] != initial_blocks * 8):
         raise RuntimeError("held-unlink input has unexpected allocation geometry")
-    replacement_inode = target["inode"] if truncating or attributing or linking or appending else None
+    replacement_inode = target["inode"] if truncating or attributing or linking or appending or metadata_change else None
     if replacement:
         source_stat = ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
             "stat /data/user/replace-source"), "/data/user/replace-source")
         if source_stat["size"] != 4500 or source_stat["block_count_512"] != 16:
             raise RuntimeError("held-replace source allocation geometry changed")
         replacement_inode = source_stat["inode"]
-    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating or attributing or linking or appending else 1)
+    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating or attributing or linking or appending or metadata_change else 1)
     if creating:
         expected_blocks, expected_inodes = before["free_blocks"] - (1 if directory else 0), before["free_inodes"] - 1
     if symlinking:
@@ -365,7 +402,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "append", "create", "mkdir", "rmdir", "xattr", "xattr-remove", "link", "symlink", "symlink-long"), default="unlink")
+    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "append", "chmod", "times", "create", "mkdir", "rmdir", "xattr", "xattr-remove", "link", "symlink", "symlink-long"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

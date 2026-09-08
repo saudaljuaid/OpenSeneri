@@ -5653,6 +5653,66 @@ static _Noreturn void ext4_vfs_symlink_powercut(bool external)
     kernel_test_pass();
 }
 
+static bool ext4_vfs_cut_times_match(const struct phipfs_stat *metadata, bool changed)
+{
+    return metadata->atime_seconds == (changed ? INT64_C(2200000000) : INT64_C(1704067200)) &&
+        metadata->mtime_seconds == (changed ? INT64_C(2300000000) : INT64_C(1704067200)) &&
+        metadata->atime_nanos == (changed ? 123456789U : 0U) &&
+        metadata->mtime_nanos == (changed ? 987654321U : 0U);
+}
+
+static _Noreturn void ext4_vfs_metadata_powercut(bool changing_times)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/metadata-target";
+    const struct phipfs_times times = { .atime_seconds = 2200000000U, .mtime_seconds = 2300000000U,
+        .atime_nanos = 123456789U, .mtime_nanos = 987654321U };
+    struct phipfs_stat metadata, after;
+    phipfs_handle file, reader;
+    ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &file), "metadata cut held file");
+    ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &reader), "metadata cut second reader");
+    ext4_vfs_require(phipfs_fstat(file, &metadata), "metadata cut initial inode");
+    if (metadata.directory || metadata.size != 1700U || metadata.links != 1U)
+        kernel_test_fail("ext4 metadata cut source changed");
+    const bool old = metadata.mode == 0100644U && ext4_vfs_cut_times_match(&metadata, false);
+    const bool changed = metadata.mode == (changing_times ? 0100644U : 0100640U) &&
+        ext4_vfs_cut_times_match(&metadata, changing_times);
+    if (!old && !changed) kernel_test_fail("ext4 metadata cut recovered mixed or unexpected fields");
+    const uint64_t initial_free = phipfs_drive(volume).free_bytes;
+    if (old) {
+        console_write("ST EXT4 METADATA initial old\n");
+        ext4_vfs_require(changing_times ? phipfs_set_times(volume, name, &times) :
+            phipfs_chmod(volume, name, 0640U), "metadata cut mutation");
+    } else console_write("ST EXT4 METADATA initial new\n");
+    struct phipfs_times invalid = times;
+    invalid.mtime_nanos = 1000000000U;
+    if (phipfs_set_times(volume, name, &invalid) != PHIPFS_STATUS_INVALID_ARGUMENT ||
+        phipfs_chmod(volume, name, 010000U) != PHIPFS_STATUS_INVALID_ARGUMENT)
+        kernel_test_fail("ext4 metadata cut invalid fields were admitted");
+    const phipfs_handle held[] = { file, reader };
+    for (size_t index = 0U; index < 2U; ++index) {
+        ext4_vfs_require(phipfs_fstat(held[index], &after), "metadata cut shared inode");
+        if (after.object_id != metadata.object_id || after.size != metadata.size || after.links != 1U ||
+            after.uid != metadata.uid || after.gid != metadata.gid ||
+            after.mode != (changing_times ? 0100644U : 0100640U) || !ext4_vfs_cut_times_match(&after, changing_times))
+            kernel_test_fail("ext4 metadata cut held inode fields changed");
+        ext4_vfs_cut_contents(held[index], 1700U, 't');
+    }
+    if (phipfs_drive(volume).free_bytes != initial_free)
+        kernel_test_fail("ext4 metadata cut changed allocation accounting");
+    ext4_vfs_require(phipfs_fsync(file), "metadata cut fsync");
+    ext4_vfs_require(phipfs_close(file), "metadata cut close");
+    ext4_vfs_require(phipfs_close(reader), "metadata cut reader close");
+    ext4_vfs_require(phipfs_sync(volume), "metadata cut final sync");
+    ext4_vfs_require(phipfs_unmount(volume), "metadata cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 metadata cut resource census failed");
+    console_write("ST EXT4 VFS metadata old-or-new held inode fields contents allocation census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_xattr_powercut(bool removing)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5920,6 +5980,10 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         ext4_vfs_link_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTAPPEND.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_append_powercut();
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTMODE.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_metadata_powercut(false);
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTTIMES.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_metadata_powercut(true);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTSYM.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_symlink_powercut(false);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTSYMLONG.TST", &stat) == PHIPFS_STATUS_OK)

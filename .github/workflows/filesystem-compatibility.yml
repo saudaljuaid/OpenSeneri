@@ -21,7 +21,7 @@ on:
                 description: Focused VFS or power-cut diagnostic (requires ext4_boot_probe; all preserves the complete probe)
                 type: choice
                 default: all
-                options: [all, vfs, unlink, replace, truncate, grow, append, create, mkdir, rmdir, xattr, xattr-remove, link, symlink, symlink-long]
+                options: [all, vfs, unlink, replace, truncate, grow, append, chmod, times, create, mkdir, rmdir, xattr, xattr-remove, link, symlink, symlink-long]
 
 permissions:
     contents: read
@@ -103,7 +103,7 @@ jobs:
                       exit 1
                   fi
                   case "$PHIPIA_EXT4_CUT_OPERATION" in
-                      all|vfs|unlink|replace|truncate|grow|append|create|mkdir|rmdir|xattr|xattr-remove|link|symlink|symlink-long) ;;
+                      all|vfs|unlink|replace|truncate|grow|append|chmod|times|create|mkdir|rmdir|xattr|xattr-remove|link|symlink|symlink-long) ;;
                       *) echo 'Unsupported cut diagnostic.'; exit 1 ;;
                   esac
                   printf '%s\n' 'Targeted ext4 diagnostic only; all milestone gates remain required.' \
@@ -155,6 +155,7 @@ jobs:
                   else
                       targets+=(qemu-test-ext4-replace-powercuts qemu-test-ext4-truncate-powercuts qemu-test-ext4-grow-powercuts qemu-test-ext4-create-powercuts qemu-test-ext4-mkdir-powercuts qemu-test-ext4-rmdir-powercuts qemu-test-ext4-xattr-powercuts qemu-test-ext4-xattr-remove-powercuts qemu-test-ext4-link-powercuts qemu-test-ext4-symlink-powercuts qemu-test-ext4-symlink-long-powercuts)
                       targets+=(qemu-test-ext4-append-powercuts)
+                      targets+=(qemu-test-ext4-chmod-powercuts qemu-test-ext4-times-powercuts)
                       if [[ "$PHIPIA_EXT4_CUT_OPERATION" != 'all' ]]; then
                           if [[ "$PHIPIA_EXT4_CUT_OPERATION" == 'vfs' ]]; then
                               targets=(qemu-test-ext4-recovery)
@@ -192,7 +193,7 @@ jobs:
               run: |
                   set -o pipefail
                   result=0
-                  for operation in unlink replace truncate grow append create mkdir rmdir xattr xattr-remove link symlink symlink-long; do
+                  for operation in unlink replace truncate grow append chmod times create mkdir rmdir xattr xattr-remove link symlink symlink-long; do
                       make "qemu-test-ext4-${operation}-powercuts" QEMU_ACCEL=tcg \
                           2>&1 | tee "evidence/ext4/${operation}-powercuts.log" || result=1
                   done

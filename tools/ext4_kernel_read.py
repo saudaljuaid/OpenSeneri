@@ -51,10 +51,16 @@ def mounted_read(root, expected):
             continue
         if not target.is_relative_to(root) or not target.is_file():
             raise RuntimeError(f"kernel read escaped mount or is not a regular file: {name!r}")
-        size = target.stat().st_size
+        metadata = target.stat()
+        size = metadata.st_size
         if size != wanted["bytes"]:
             raise RuntimeError(f"Linux file length differs for {name}: {size} != {wanted['bytes']}")
         actual = {"bytes": size, "sha256": digest(target)}
+        if "mode" in wanted:
+            actual["mode"] = metadata.st_mode & 0o7777
+        for field in ("atime_ns", "mtime_ns"):
+            if field in wanted:
+                actual[field] = getattr(metadata, f"st_{field}")
         if "symlink" in wanted:
             actual["symlink"] = os.readlink(literal)
         if "xattrs" in wanted:
