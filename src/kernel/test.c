@@ -4860,10 +4860,50 @@ static void ext4_vfs_directory_semantics(void)
     ext4_vfs_require(phipfs_directory_close(snapshot), "snapshot final close");
     if (phipfs_directory_read(snapshot, &entry, &present) != PHIPFS_STATUS_STALE_HANDLE)
         kernel_test_fail("ext4 VFS closed snapshot remained readable");
+    // Move a populated directory across parents over an empty directory whose
+    // snapshot remains open. Child file handles retain their inode identity.
+    ext4_vfs_require(phipfs_mkdir(volume, "data/user/VFS2.A"), "move first parent");
+    ext4_vfs_require(phipfs_mkdir(volume, "data/user/VFS2.B"), "move second parent");
+    ext4_vfs_require(phipfs_mkdir(volume, "data/user/VFS2.A/child"), "move source directory");
+    ext4_vfs_require(phipfs_mkdir(volume, "data/user/VFS2.B/target"), "move target directory");
+    phipfs_handle file;
+    size_t count;
+    uint8_t byte;
+    ext4_vfs_require(phipfs_open_options(volume, "data/user/VFS2.A/child/file", PHIPFS_ACCESS_READ_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0600U, &file), "move held child create");
+    ext4_vfs_require(phipfs_write(file, (const uint8_t *)"D", 1U, &count), "move held child write");
+    if (count != 1U) kernel_test_fail("ext4 VFS moved child write was short");
+    ext4_vfs_require(phipfs_fstat(file, &metadata), "move held identity");
+    const uint64_t child_identity = metadata.object_id;
+    ext4_vfs_require(phipfs_directory_open(volume, "data/user/VFS2.B/target", &snapshot), "move destination snapshot");
+    if (phipfs_rename(volume, "data/user/VFS2.A/child", "data/user/VFS2.B/target") != PHIPFS_STATUS_EXISTS)
+        kernel_test_fail("ext4 VFS directory no-replace changed target");
+    ext4_vfs_require(phipfs_rename_replace(volume, "data/user/VFS2.A/child", "data/user/VFS2.B/target"), "cross-parent directory replace");
+    if (phipfs_stat_path(volume, "data/user/VFS2.A/child", &metadata) != PHIPFS_STATUS_NOT_FOUND)
+        kernel_test_fail("ext4 VFS moved directory retained old name");
+    ext4_vfs_require(phipfs_stat_path(volume, "data/user/VFS2.A", &metadata), "old parent links");
+    if (metadata.links != 2U) kernel_test_fail("ext4 VFS move retained old parent link");
+    ext4_vfs_require(phipfs_stat_path(volume, "data/user/VFS2.B", &metadata), "new parent links");
+    if (metadata.links != 3U) kernel_test_fail("ext4 VFS replace changed new parent links");
+    ext4_vfs_require(phipfs_stat_path(volume, "data/user/VFS2.B/target/file", &metadata), "moved child identity");
+    if (metadata.object_id != child_identity) kernel_test_fail("ext4 VFS move replaced child identity");
+    ext4_vfs_require(phipfs_pread(file, &byte, 1U, 0U, &count), "moved held child read");
+    if (count != 1U || byte != 'D') kernel_test_fail("ext4 VFS move lost held child contents");
+    if (phipfs_rename(volume, "data/user/VFS2.B", "data/user/VFS2.B/target/cycle") != PHIPFS_STATUS_INVALID_ARGUMENT)
+        kernel_test_fail("ext4 VFS directory move accepted a parent cycle");
+    ext4_vfs_require(phipfs_directory_read(snapshot, &entry, &present), "replaced directory snapshot");
+    if (present) kernel_test_fail("ext4 VFS replaced empty snapshot followed new directory");
+    ext4_vfs_require(phipfs_directory_close(snapshot), "replaced snapshot final close");
+    ext4_vfs_require(phipfs_unlink(volume, "data/user/VFS2.B/target/file"), "moved held child unlink");
+    ext4_vfs_require(phipfs_close(file), "moved held child final close");
+    ext4_vfs_require(phipfs_rmdir(volume, "data/user/VFS2.B/target"), "moved directory cleanup");
+    ext4_vfs_require(phipfs_rmdir(volume, "data/user/VFS2.A"), "old parent cleanup");
+    ext4_vfs_require(phipfs_rmdir(volume, "data/user/VFS2.B"), "new parent cleanup");
     ext4_vfs_require(phipfs_sync(volume), "snapshot cleanup sync");
     if (phipfs_drive(volume).free_bytes != free_before)
         kernel_test_fail("ext4 VFS directory leaked allocations");
     console_write("ST EXT4 VFS directory growth shrink removed snapshot long names census exact\n");
+    console_write("ST EXT4 VFS cross-parent directory replace held child cycle links cleanup exact\n");
 }
 
 static void ext4_vfs_semantics(void)
