@@ -5352,7 +5352,7 @@ static _Noreturn void ext4_vfs_replace_powercut(void)
 static bool ext4_vfs_storage_probe_control(enum phipfs_volume volume,
     const char *path, uint32_t *ordinal);
 
-static _Noreturn void ext4_vfs_rename_powercut(bool cross_directory)
+static _Noreturn void ext4_vfs_rename_powercut(bool cross_directory, bool wrapped)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
     const char *source = "data/user/rename-source";
@@ -5381,6 +5381,18 @@ static _Noreturn void ext4_vfs_rename_powercut(bool cross_directory)
         console_write("ST EXT4 RENAME initial old\n");
         if (phipfs_rename(volume, source, collision) != PHIPFS_STATUS_EXISTS)
             kernel_test_fail("ext4 rename cut failed no-replace refusal");
+        if (wrapped) {
+            // The tested three-record chmod transactions advance the live
+            // ring to slot 1021. Only the following rename/recovery is cut.
+            if (!ext4_backend_test_pause_storage_trace(true))
+                kernel_test_fail("ext4 wrapped rename requires device-command tracing");
+            for (unsigned index = 0U; index < 340U; ++index)
+                ext4_vfs_require(phipfs_chmod(volume, source, index % 2U == 0U ? 0640U : 0644U),
+                    "wrapped rename journal preparation");
+            if (!ext4_backend_test_pause_storage_trace(false))
+                kernel_test_fail("ext4 wrapped rename could not restore device cuts");
+            console_write("ST EXT4 RENAME WRAP prepared 340\n");
+        }
         if (storage_probe && !ext4_backend_test_fail_storage_once(failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
             kernel_test_fail("ext4 could not arm rename storage refusal");
         enum phipfs_status status = phipfs_rename(volume, source, target);
@@ -6286,9 +6298,11 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTREPLACE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_replace_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTRENAME.TST", &stat) == PHIPFS_STATUS_OK)
-        ext4_vfs_rename_powercut(false);
+        ext4_vfs_rename_powercut(false, false);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTRENCROSS.TST", &stat) == PHIPFS_STATUS_OK)
-        ext4_vfs_rename_powercut(true);
+        ext4_vfs_rename_powercut(true, false);
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTRENWRAP.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_rename_powercut(false, true);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTTRUNC.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_truncate_powercut(false);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTGROW.TST", &stat) == PHIPFS_STATUS_OK)

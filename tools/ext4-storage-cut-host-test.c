@@ -85,6 +85,7 @@ int main(void)
     mount->session.logical_block_bytes = 4096U;
     memset(input, 'n', sizeof(input));
     configure("");
+    assert(!ext4_backend_test_pause_storage_trace(true));
     assert(phipia_ext4_block_write((uintptr_t)mount, 0U, input, sizeof(input)) == 0);
     assert(writes == 2U && ext4_test_storage_completed == 0U && transcript_length == 0U);
     configure("phipia.ext4-storage-cut=0");
@@ -94,6 +95,15 @@ int main(void)
     assert(writes == 3U && ext4_test_storage_completed == 3U);
     assert(disk[4094] == 'o' && disk[4095] == 'n' && disk[8192] == 'n' && disk[8193] == 'o');
     assert(strstr(transcript, "ST EXT4 STORAGE 3 write 2\n") != NULL);
+    assert(ext4_backend_test_pause_storage_trace(true));
+    assert(!ext4_backend_test_pause_storage_trace(true));
+    assert(phipia_ext4_block_write((uintptr_t)mount, 0U, input, sizeof(input)) == 0);
+    assert(phipia_ext4_block_flush((uintptr_t)mount, PHIPIA_EXT4_FLUSH_COMMIT) == 0);
+    assert(ext4_test_storage_completed == 3U && ext4_test_durable_boundary == 0U);
+    assert(ext4_backend_test_pause_storage_trace(false));
+    assert(!ext4_backend_test_pause_storage_trace(false));
+    assert(phipia_ext4_block_flush((uintptr_t)mount, PHIPIA_EXT4_FLUSH_COMMIT) == 0);
+    assert(ext4_test_storage_completed == 4U && ext4_test_durable_boundary == 1U);
     configure("phipia.ext4-storage-cut=0");
     refuse_write = 2U;
     assert(phipia_ext4_block_write((uintptr_t)mount, 0U, input, sizeof(input)) == -1);

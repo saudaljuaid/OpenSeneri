@@ -18,17 +18,6 @@ import ext4_unlink_powercut_test as cuts
 PASS = "ST EXT4 VFS journal wrap held metadata contents cursor allocation census exact"
 
 
-def journal_map(image, tools, output, label):
-    commands = output / f"{label}-journal-map.commands"
-    commands.write_text("".join(f"bmap <8> {index}\n" for index in range(1024)))
-    result = ext4_image._run([tools["debugfs"], "-f", commands, image])
-    (output / f"{label}-journal-map.txt").write_text(result.stdout)
-    blocks = [int(item) for item in re.findall(r"^([0-9]+)\s*$", result.stdout, re.MULTILINE)]
-    if len(blocks) != 1024 or len(set(blocks)) != 1024 or min(blocks) <= 0:
-        raise RuntimeError("journal inode map is not 1024 distinct nonzero physical blocks")
-    return blocks
-
-
 def run(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -48,7 +37,7 @@ def run(args):
     before = ext4_image.inspect_image(image, tools=tools)
     original = ext4_image._parse_stat(ext4_image._debugfs(tools, image,
         "stat /data/user/wrap-target"), "/data/user/wrap-target")
-    physical = journal_map(image, tools, output, "before")
+    physical = ext4_image.journal_inode_map(image, tools, output, "before")
     logical = {block: index for index, block in enumerate(physical)}
     iso = output / "wrap.iso"
     recovery._build_iso(args.kernel.resolve(), iso, args.grub_mkrescue,
@@ -95,7 +84,7 @@ def run(args):
         after["image_sha256"] = ext4_kernel_read.digest(image)
         (target / "report.json").write_text(json.dumps(after, indent=2, sort_keys=True) + "\n")
         reports.append(after)
-    if journal_map(image, tools, output, "after") != physical:
+    if ext4_image.journal_inode_map(image, tools, output, "after") != physical:
         raise RuntimeError("journal wrap changed its physical inode map")
     (output / "report.json").write_text(json.dumps({"before": before, "reports": reports,
         "physical_journal_map": physical, "journal_record_slots": journal_records,

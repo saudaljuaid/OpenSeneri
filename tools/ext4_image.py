@@ -349,6 +349,18 @@ def _journal_superblock_offset(tools: dict[str, str], image: Path) -> int:
     return int(numbers[-1]) * BLOCK_BYTES
 
 
+def journal_inode_map(image: Path, tools: dict[str, str], output: Path, label: str) -> list[int]:
+    """Record every logical-to-physical journal mapping without assuming contiguity."""
+    commands = output / f"{label}-journal-map.commands"
+    commands.write_text("".join(f"bmap <8> {index}\n" for index in range(JOURNAL_BLOCK_COUNT)))
+    result = _run([tools["debugfs"], "-f", commands, image])
+    (output / f"{label}-journal-map.txt").write_text(result.stdout)
+    blocks = [int(item) for item in re.findall(r"^([0-9]+)\s*$", result.stdout, re.MULTILINE)]
+    if len(blocks) != JOURNAL_BLOCK_COUNT or len(set(blocks)) != JOURNAL_BLOCK_COUNT or min(blocks) <= 0:
+        raise Ext4ImageError("journal inode map is not 1024 distinct nonzero physical blocks")
+    return blocks
+
+
 def _parse_journal_superblock(data: bytes | bytearray) -> dict[str, object]:
     """Validate the exact checksummed JBD2 profile required for writable work."""
     if len(data) != JOURNAL_SUPERBLOCK_BYTES:

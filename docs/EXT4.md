@@ -340,6 +340,15 @@ must retain the final mode without writing another journal record. Both boots
 require Linux readback, clean read-only fsck and the guest resource census.
 This is wrap during normal operation, not a crash-at-wrap guarantee.
 
+`qemu-test-ext4-rename-wrap-device-powercuts` prepares the same mounted ring
+with 340 ordinary VFS mode changes, then cuts the following rename after each
+completed device command. The preparation is explicitly outside the cut window;
+all real writes and barriers still execute. The host independently requires
+the rename's record map to start at logical slot 1021 and cross slot 1023 back
+to slot 1. The runner then applies the ordinary rename old-or-new checks and
+repeated mount-recovery cuts to that wrapped transaction. It records the
+preparation scope and exact wrapped slots in its report.
+
 The caller must supply a distinct physical journal block for the descriptor,
 each metadata image, and the commit. The resulting operation list has one legal
 order:

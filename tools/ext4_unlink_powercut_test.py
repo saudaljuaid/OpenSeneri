@@ -41,7 +41,7 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
     removed = "owned-cut" if replacement_inode is None else "replace-source"
     if operation == "rmdir":
         removed = "removed-directory"
-    if operation in ("rename", "rename-cross"):
+    if operation in ("rename", "rename-cross", "rename-wrap"):
         removed = "rename-source"
     if operation not in ("truncate", "grow", "append", "overwrite", "chmod", "times", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") and f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
@@ -82,7 +82,7 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
             target_name, target_size = "overwrite-target", 4500
         if operation in ("chmod", "times"):
             target_name, target_size = "metadata-target", 1700
-        if operation in ("rename", "rename-cross"):
+        if operation in ("rename", "rename-cross", "rename-wrap"):
             target_name = "rename-destination/moved-file" if operation == "rename-cross" else "rename-target"
         expected_content = (b"t" if operation in ("truncate", "chmod", "times", "xattr", "xattr-remove") else b"s") * target_size
         if operation == "grow":
@@ -110,7 +110,7 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
             raise RuntimeError("append allocated the wrong physical blocks")
         if operation == "overwrite" and (target["block_count_512"] != 16 or target["mode"] != "0644"):
             raise RuntimeError("in-place overwrite changed physical allocation or mode")
-        if operation in ("rename", "rename-cross"):
+        if operation in ("rename", "rename-cross", "rename-wrap"):
             collision_name = "rename-destination/occupied" if operation == "rename-cross" else "rename-existing"
             collision = ext4_image._parse_stat(ext4_image._debugfs(tools, image,
                 f"stat /data/user/{collision_name}"), f"/data/user/{collision_name}")
@@ -195,7 +195,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
 
 def run(args):
     replacement = args.operation == "replace"
-    renaming = args.operation in ("rename", "rename-cross")
+    renaming = args.operation in ("rename", "rename-cross", "rename-wrap")
+    wrapped_rename = args.operation == "rename-wrap"
     cross_rename = args.operation == "rename-cross"
     collision_name = "rename-destination/occupied" if cross_rename else "rename-existing"
     truncating = args.operation in ("truncate", "grow")
@@ -282,7 +283,7 @@ def run(args):
             if cross_rename:
                 ext4_image._run([tools["debugfs"], "-w", "-R", "mkdir /data/user/rename-destination", initial])
             files = [(source, "rename-source"), (collision, collision_name),
-                (empty, "CUTRENCROSS.TST" if cross_rename else "CUTRENAME.TST")]
+                (empty, "CUTRENWRAP.TST" if wrapped_rename else ("CUTRENCROSS.TST" if cross_rename else "CUTRENAME.TST"))]
         if truncating:
             source.write_bytes(b"t" * (1700 if growing else 4500))
             files = [(source, "truncate-target"), (empty, "CUTGROW.TST" if growing else "CUTTRUNC.TST")]
@@ -402,6 +403,16 @@ def run(args):
             raise RuntimeError("device-command trace is not a bounded contiguous sequence")
         if {item[1] for item in boundaries} != {"write", "flush"}:
             raise RuntimeError("device-command matrix omitted writes or flushes")
+        wrapped_slots = []
+        if wrapped_rename:
+            physical = ext4_image.journal_inode_map(baseline, tools, output, "wrapped")
+            logical = {block: index for index, block in enumerate(physical)}
+            wrapped_slots = [logical[int(detail)] for _, kind, detail in boundaries
+                if kind == "write" and int(detail) in logical and logical[int(detail)] != 0]
+            if transcript.count("ST EXT4 RENAME WRAP prepared 340\n") != 1 or not wrapped_slots or \
+                    wrapped_slots[0] != 1021 or len(wrapped_slots) <= 3 or wrapped_slots != [
+                        1 + (1020 + index) % 1023 for index in range(len(wrapped_slots))]:
+                raise RuntimeError("rename did not cross the verified physical journal end after its VFS preparation")
         reports, repeated_recovery = [], []
 
         def inspect_recovered(image, prefix):
@@ -423,6 +434,8 @@ def run(args):
             status, trace = recovery._run_qemu(args.qemu, args.accel, cut_iso, image,
                 output / f"{prefix}.log", args.timeout)
             require_cut(status, trace, ordinal)
+            if wrapped_rename and trace.count("ST EXT4 RENAME WRAP prepared 340\n") != 1:
+                raise RuntimeError("wrapped rename cut escaped its prepared transaction window")
             if trace.count(f"ST EXT4 STORAGE {ordinal} {kind} {detail}\n") != 1:
                 raise RuntimeError("device-command cut changed its baseline command identity")
             committed = bool(re.search(r"^ST EXT4 DURABLE \d+ commit$", trace, re.MULTILINE))
@@ -472,6 +485,8 @@ def run(args):
             raise RuntimeError("device-command matrix omitted repeated recovery")
         (output / "report.json").write_text(json.dumps({"operation": f"{args.operation}-device-cuts",
             "before": before, "reports": reports, "repeated_recovery": repeated_recovery,
+            "wrapped_journal_slots": wrapped_slots,
+            "preparation_scope": "340 uncut VFS chmod commits before each wrapped rename" if wrapped_rename else "none",
             "cut_scope": "after each completed NVMe block write and flush; no torn-sector or volatile-cache-loss model",
             "kernel_sha256": hashlib.sha256(args.kernel.read_bytes()).hexdigest(),
             "fixture_sha256": hashlib.sha256(args.fixture.read_bytes()).hexdigest()}, indent=2, sort_keys=True) + "\n")
@@ -601,7 +616,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--operation", choices=("unlink", "replace", "rename", "rename-cross", "truncate", "grow", "append", "overwrite", "chmod", "times", "create", "mkdir", "rmdir", "xattr", "xattr-remove", "link", "symlink", "symlink-long"), default="unlink")
+    parser.add_argument("--operation", choices=("unlink", "replace", "rename", "rename-cross", "rename-wrap", "truncate", "grow", "append", "overwrite", "chmod", "times", "create", "mkdir", "rmdir", "xattr", "xattr-remove", "link", "symlink", "symlink-long"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -615,8 +630,10 @@ def main():
     args = parser.parse_args()
     if args.storage_failures and args.operation not in ("overwrite", "append", "truncate", "grow", "rename", "rename-cross"):
         parser.error("--storage-failures requires --operation overwrite, append, truncate, grow, rename or rename-cross")
-    if args.physical_cuts and (args.storage_failures or args.operation not in ("rename", "rename-cross", "append", "truncate", "grow")):
-        parser.error("--physical-cuts requires rename, rename-cross, append, truncate or grow and excludes --storage-failures")
+    if args.physical_cuts and (args.storage_failures or args.operation not in ("rename", "rename-cross", "rename-wrap", "append", "truncate", "grow")):
+        parser.error("--physical-cuts requires rename, rename-cross, rename-wrap, append, truncate or grow and excludes --storage-failures")
+    if args.operation == "rename-wrap" and not args.physical_cuts:
+        parser.error("--operation rename-wrap requires --physical-cuts")
     run(args)
 
 

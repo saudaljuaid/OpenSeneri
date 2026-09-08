@@ -70,6 +70,7 @@ static bool ext4_test_configured;
 static uint32_t ext4_test_power_cut_boundary;
 static uint32_t ext4_test_durable_boundary;
 static bool ext4_test_storage_trace_enabled;
+static bool ext4_test_storage_trace_paused;
 static uint32_t ext4_test_storage_cut_target;
 static uint32_t ext4_test_storage_completed;
 static bool ext4_test_storage_failure_armed;
@@ -283,6 +284,7 @@ bool ext4_backend_test_configure_power_cut(const char *command_line,
     ext4_test_power_cut_boundary = storage_selected ? 0U : selected;
     ext4_test_durable_boundary = 0U;
     ext4_test_storage_trace_enabled = storage_selected;
+    ext4_test_storage_trace_paused = false;
     ext4_test_storage_cut_target = storage_selected ? selected : 0U;
     ext4_test_storage_completed = 0U;
     return true;
@@ -291,6 +293,15 @@ bool ext4_backend_test_configure_power_cut(const char *command_line,
 bool ext4_backend_test_power_cut_configured(void)
 {
     return ext4_test_configured && (ext4_test_power_cut_boundary != 0U || ext4_test_storage_trace_enabled);
+}
+
+bool ext4_backend_test_pause_storage_trace(bool paused)
+{
+    if (!ext4_test_configured || !ext4_test_storage_trace_enabled ||
+        ext4_test_power_cut_boundary != 0U || ext4_test_storage_failure_armed ||
+        ext4_test_storage_trace_paused == paused) return false;
+    ext4_test_storage_trace_paused = paused;
+    return true;
 }
 
 bool ext4_backend_test_fail_storage_once(uint32_t operation_ordinal)
@@ -369,7 +380,7 @@ static void report_durable_boundary(uint32_t boundary)
 {
     const char *name = flush_boundary_name(boundary);
 
-    if (!ext4_test_configured || name == NULL) {
+    if (!ext4_test_configured || ext4_test_storage_trace_paused || name == NULL) {
         return;
     }
     ++ext4_test_durable_boundary;
@@ -394,7 +405,7 @@ static void report_durable_boundary(uint32_t boundary)
  * sector within one command or claim that an unflushed write is durable. */
 static void report_storage_completion(const char *kind, uint64_t detail)
 {
-    if (!ext4_test_configured || !ext4_test_storage_trace_enabled) return;
+    if (!ext4_test_configured || !ext4_test_storage_trace_enabled || ext4_test_storage_trace_paused) return;
     ++ext4_test_storage_completed;
     console_write("ST EXT4 STORAGE ");
     console_write_u64(ext4_test_storage_completed);
