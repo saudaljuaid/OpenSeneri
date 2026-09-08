@@ -23,6 +23,7 @@ struct Device {
     accept_failed_write: bool,
     fail_superblock_read: bool,
     failed_reads: usize,
+    reads: usize,
     watched_read_block: Option<u64>,
     watched_reads: usize,
     fail_watched_read: Option<usize>,
@@ -45,6 +46,7 @@ mod abi {
     pub fn ext4_block_read(context: usize, start: u64, output: &mut [u8]) -> bool {
         assert_eq!(context, 1);
         DEVICE.with_borrow_mut(|device| {
+            device.reads += 1;
             if device.watched_read_block.is_some_and(|block| start / 4096 == block) {
                 device.watched_reads += 1;
                 if device.fail_watched_read == Some(device.watched_reads) { return false; }
@@ -2088,6 +2090,11 @@ fn real_inode_exhaustion_rolls_back_namespace_and_reuses_a_freed_inode() {
         .arg(&commands).arg(&image).output().unwrap();
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
     let mut mounted = mount_fixture(&image);
+    DEVICE.with_borrow(|device| {
+        let inodes = u32::from_le_bytes(device.bytes[1024..1028].try_into().unwrap()) as usize;
+        assert!(device.reads < inodes * 8,
+            "inode-full admission re-searched linear names: {} reads for {inodes} inodes", device.reads);
+    });
     fsck(&path, "coordinator-inode-full-input");
     let before = DEVICE.with_borrow(|device| device.bytes.clone());
     assert_eq!(u32::from_le_bytes(before[1040..1044].try_into().unwrap()), 0);

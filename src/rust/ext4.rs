@@ -658,6 +658,11 @@ fn validate_inode_storage(filesystem: &Ext4, path: &[u8],
     let path = Path::try_from(path).map_err(|_| Status::Invalid)?;
     let inode = filesystem.path_to_inode(path, FollowSymlinks::ExcludeFinalComponent)
         .map_err(map_error)?;
+    validate_inode_record(filesystem, inode, blocks)
+}
+
+fn validate_inode_record(filesystem: &Ext4, inode: Inode,
+    blocks: &mut ext4plus::BlockAllocationSnapshot<'_>) -> Result<Inode, Status> {
     blocks.validate_inode_extents(&inode).map_err(map_error)?;
     inode.unix_times().map_err(map_error)?;
     let xattrs = inode.list_xattrs(filesystem).map_err(map_error)?;
@@ -720,6 +725,8 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
     pending.push((root, root_index, root_index));
     let mut visited = 0usize;
     while let Some((path, index, parent)) = pending.pop() {
+        let indexed = Inode::read(filesystem, index).map_err(map_error)?
+            .flags().contains(InodeFlags::DIRECTORY_HTREE);
         let mut directory = filesystem.read_dir(path.as_slice()).map_err(map_error)?;
         // One allocation per name exhausts the kernel's bounded heap descriptor
         // table even for the ordinary 256-entry Linux fixture. Keep complete
@@ -758,13 +765,22 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
             names.try_reserve(1).map_err(|_| Status::Range)?;
             names.push(name_key);
             let entry_path = entry.path();
-            let metadata = entry.metadata().map_err(map_error)?;
+            // Linear iteration already binds this checked name to its inode.
+            // Re-searching that directory for every entry makes admission
+            // quadratic in directory size. Indexed directories additionally
+            // prove that their htree lookup resolves each leaf entry correctly.
+            let inode = if indexed {
+                validate_inode_storage(filesystem, entry_path.as_ref(), &mut blocks)?
+            } else {
+                let inode = Inode::read(filesystem, entry.inode).map_err(map_error)?;
+                validate_inode_record(filesystem, inode, &mut blocks)?
+            };
+            if inode.index != entry.inode { return Err(Status::Invalid); }
+            let metadata = inode.metadata();
             // A zero-link orphan must never remain reachable by a directory.
             if metadata.links_count == 0 || metadata.file_type() != entry.file_type().map_err(map_error)? {
                 return Err(Status::Invalid);
             }
-            let inode = validate_inode_storage(filesystem, entry_path.as_ref(), &mut blocks)?;
-            if inode.index != entry.inode { return Err(Status::Invalid); }
             let (links, seen, untracked) = namespace_reference(&mut references, entry.inode.get(),
                 metadata.links_count, untracked_directory_links(filesystem, &inode))?;
             if *links != metadata.links_count { return Err(Status::Invalid); }
@@ -792,7 +808,7 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
                     .read_link(entry_path.as_ref())
                     .map_err(map_error)?;
             } else if metadata.size_in_bytes != 0 {
-                let mut file = filesystem.open(entry_path.as_ref()).map_err(map_error)?;
+                let mut file = ext4plus::file::File::open_inode(filesystem, inode).map_err(map_error)?;
                 let mut byte = [0u8; 1];
                 let first = file.read_bytes_at(&mut byte, 0).map_err(map_error)?;
                 let last = file
