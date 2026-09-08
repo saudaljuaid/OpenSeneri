@@ -4995,6 +4995,61 @@ static void ext4_vfs_semantics(void)
     ext4_vfs_directory_semantics();
 }
 
+static _Noreturn void ext4_vfs_inode_exhaustion(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/INODE.TMP";
+    const char *recycled_name = "inode-full/entry-0";
+    const uint64_t initial_free = phipfs_drive(volume).free_bytes;
+    struct phipfs_stat recycled, metadata;
+    phipfs_handle file;
+    size_t count;
+    uint8_t bytes[6];
+    ext4_vfs_require(phipfs_stat_path(volume, recycled_name, &recycled), "inode-full source");
+    if (recycled.directory || recycled.size != 0U || recycled.links != 1U)
+        kernel_test_fail("ext4 VFS inode-full source is not an empty file");
+    for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+        file = 0U;
+        if (phipfs_open_options(volume, name, PHIPFS_ACCESS_READ_WRITE,
+                PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0600U, &file) != PHIPFS_STATUS_FULL || file != 0U ||
+            phipfs_mkdir(volume, name) != PHIPFS_STATUS_FULL ||
+            phipfs_symlink(volume, name, "missing") != PHIPFS_STATUS_FULL ||
+            phipfs_stat_path(volume, name, &metadata) != PHIPFS_STATUS_NOT_FOUND)
+            kernel_test_fail("ext4 VFS inode exhaustion changed namespace or returned a handle");
+        ext4_vfs_require(phipfs_sync(volume), "inode-full rollback sync");
+        if (phipfs_drive(volume).free_bytes != initial_free)
+            kernel_test_fail("ext4 VFS inode exhaustion leaked blocks");
+    }
+    ext4_vfs_require(phipfs_unlink(volume, recycled_name), "inode-full free");
+    ext4_vfs_require(phipfs_open_options(volume, name, PHIPFS_ACCESS_READ_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0600U, &file), "inode-full reuse");
+    ext4_vfs_require(phipfs_fstat(file, &metadata), "inode-full reused identity");
+    if (metadata.object_id != recycled.object_id) kernel_test_fail("ext4 VFS did not reuse the only free inode");
+    ext4_vfs_require(phipfs_write(file, (const uint8_t *)"reused", 6U, &count), "inode-full reused write");
+    if (count != 6U) kernel_test_fail("ext4 VFS reused inode write was short");
+    ext4_vfs_require(phipfs_fsync(file), "inode-full reused sync");
+    ext4_vfs_require(phipfs_pread(file, bytes, sizeof(bytes), 0U, &count), "inode-full reused read");
+    if (count != sizeof(bytes) || bytes[0] != 'r' || bytes[1] != 'e' || bytes[2] != 'u' ||
+        bytes[3] != 's' || bytes[4] != 'e' || bytes[5] != 'd')
+        kernel_test_fail("ext4 VFS reused inode changed contents");
+    ext4_vfs_require(phipfs_close(file), "inode-full reused close");
+    ext4_vfs_require(phipfs_unlink(volume, name), "inode-full reused cleanup");
+    ext4_vfs_require(phipfs_open_options(volume, recycled_name, PHIPFS_ACCESS_READ_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, recycled.mode & 0777U, &file), "inode-full restore");
+    ext4_vfs_require(phipfs_close(file), "inode-full restore close");
+    ext4_vfs_require(phipfs_sync(volume), "inode-full restore sync");
+    if (phipfs_drive(volume).free_bytes != initial_free ||
+        phipfs_stat_path(volume, name, &metadata) != PHIPFS_STATUS_NOT_FOUND)
+        kernel_test_fail("ext4 VFS inode-full cleanup leaked blocks or namespace");
+    ext4_vfs_require(phipfs_unmount(volume), "inode-full unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 VFS inode-full resource census failed");
+    console_write("ST EXT4 VFS inode exhaustion create mkdir symlink rollback reuse cleanup census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_low_space(void)
 {
     static uint8_t payload[64U * 4096U];
@@ -5130,6 +5185,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
     }
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/LOWSPACE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_low_space();
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/INOFULL.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_inode_exhaustion();
     if (!ext4_backend_recovery_report(PHIPFS_VOLUME_SYSTEM, &recovery)) {
         kernel_test_fail("ext4 recovery report is unavailable");
     }
