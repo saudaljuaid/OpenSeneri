@@ -25,7 +25,8 @@ STORAGE_CONTROLS = {"append": "APPFAIL.BIN", "overwrite": "OVERFAIL.BIN",
     "rename": "RENFAIL.BIN", "rename-cross": "RENFAIL.BIN",
     "create": "CREATEFAIL.BIN", "mkdir": "MKDIRFAIL.BIN", "rmdir": "RMDIRFAIL.BIN",
     "chmod": "MODEFAIL.BIN", "times": "TIMEFAIL.BIN",
-    "xattr": "XATTRFAIL.BIN", "xattr-remove": "XRMFAIL.BIN"}
+    "xattr": "XATTRFAIL.BIN", "xattr-remove": "XRMFAIL.BIN",
+    "link": "LINKFAIL.BIN", "symlink": "SYMFAIL.BIN", "symlink-long": "SYMFAIL.BIN"}
 
 
 def verify_exit(status, transcript, pass_marker=PASS):
@@ -211,7 +212,8 @@ def run(args):
     overwriting = args.operation == "overwrite"
     control_name = STORAGE_CONTROLS.get(args.operation)
     storage_label = {"chmod": "METADATA", "times": "METADATA", "xattr": "XATTR",
-        "xattr-remove": "XATTR"}.get(args.operation, "RENAME" if renaming else args.operation.upper())
+        "xattr-remove": "XATTR", "symlink-long": "SYMLINK"}.get(args.operation,
+            "RENAME" if renaming else args.operation.upper())
     storage_marker = f"ST EXT4 {storage_label} storage"
     metadata_change = args.operation in ("chmod", "times")
     creating = args.operation in ("create", "mkdir")

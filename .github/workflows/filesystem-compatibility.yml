@@ -21,7 +21,7 @@ on:
                 description: Focused VFS or power-cut diagnostic (requires ext4_boot_probe; all preserves the complete probe)
                 type: choice
                 default: all
-                options: [all, vfs, journal-wrap, dense-file, geometry, unlink, replace, rename, rename-errors, rename-device, rename-cross, rename-cross-errors, rename-cross-device, rename-wrap-device, truncate, truncate-errors, truncate-device, grow, grow-errors, grow-device, append, append-errors, append-device, overwrite, overwrite-errors, chmod, chmod-errors, times, times-errors, create, create-errors, create-device, mkdir, mkdir-errors, rmdir, rmdir-errors, xattr, xattr-errors, xattr-remove, xattr-remove-errors, link, symlink, symlink-long]
+                options: [all, vfs, journal-wrap, dense-file, geometry, unlink, replace, rename, rename-errors, rename-device, rename-cross, rename-cross-errors, rename-cross-device, rename-wrap-device, truncate, truncate-errors, truncate-device, grow, grow-errors, grow-device, append, append-errors, append-device, overwrite, overwrite-errors, chmod, chmod-errors, times, times-errors, create, create-errors, create-device, mkdir, mkdir-errors, rmdir, rmdir-errors, xattr, xattr-errors, xattr-remove, xattr-remove-errors, link, link-errors, symlink, symlink-errors, symlink-long, symlink-long-errors]
 
 permissions:
     contents: read
@@ -103,7 +103,7 @@ jobs:
                       exit 1
                   fi
                   case "$PHIPIA_EXT4_CUT_OPERATION" in
-                      all|vfs|journal-wrap|dense-file|geometry|unlink|replace|rename|rename-errors|rename-device|rename-cross|rename-cross-errors|rename-cross-device|rename-wrap-device|truncate|truncate-errors|truncate-device|grow|grow-errors|grow-device|append|append-errors|append-device|overwrite|overwrite-errors|chmod|chmod-errors|times|times-errors|create|create-errors|create-device|mkdir|mkdir-errors|rmdir|rmdir-errors|xattr|xattr-errors|xattr-remove|xattr-remove-errors|link|symlink|symlink-long) ;;
+                      all|vfs|journal-wrap|dense-file|geometry|unlink|replace|rename|rename-errors|rename-device|rename-cross|rename-cross-errors|rename-cross-device|rename-wrap-device|truncate|truncate-errors|truncate-device|grow|grow-errors|grow-device|append|append-errors|append-device|overwrite|overwrite-errors|chmod|chmod-errors|times|times-errors|create|create-errors|create-device|mkdir|mkdir-errors|rmdir|rmdir-errors|xattr|xattr-errors|xattr-remove|xattr-remove-errors|link|link-errors|symlink|symlink-errors|symlink-long|symlink-long-errors) ;;
                       *) echo 'Unsupported cut diagnostic.'; exit 1 ;;
                   esac
                   printf '%s\n' 'Targeted ext4 diagnostic only; all milestone gates remain required.' \
@@ -176,6 +176,7 @@ jobs:
                       targets+=(qemu-test-ext4-truncate-errors-powercuts qemu-test-ext4-grow-errors-powercuts)
                       targets+=(qemu-test-ext4-create-errors-powercuts qemu-test-ext4-create-device-powercuts)
                       targets+=(qemu-test-ext4-mkdir-errors-powercuts qemu-test-ext4-rmdir-errors-powercuts)
+                      targets+=(qemu-test-ext4-link-errors-powercuts qemu-test-ext4-symlink-errors-powercuts qemu-test-ext4-symlink-long-errors-powercuts)
                       targets+=(qemu-test-ext4-chmod-powercuts qemu-test-ext4-times-powercuts)
                       targets+=(qemu-test-ext4-chmod-errors-powercuts qemu-test-ext4-times-errors-powercuts)
                       targets+=(qemu-test-ext4-xattr-errors-powercuts qemu-test-ext4-xattr-remove-errors-powercuts)
@@ -231,7 +232,7 @@ jobs:
                       2>&1 | tee evidence/ext4/geometry.log || result=1
                   make qemu-test-ext4-dense-file QEMU_ACCEL=tcg \
                       2>&1 | tee evidence/ext4/dense-file.log || result=1
-                  for operation in unlink replace rename rename-errors rename-device rename-cross rename-cross-errors rename-cross-device rename-wrap-device truncate truncate-errors truncate-device grow grow-errors grow-device append append-errors append-device overwrite overwrite-errors chmod chmod-errors times times-errors create create-errors create-device mkdir mkdir-errors rmdir rmdir-errors xattr xattr-errors xattr-remove xattr-remove-errors link symlink symlink-long; do
+                  for operation in unlink replace rename rename-errors rename-device rename-cross rename-cross-errors rename-cross-device rename-wrap-device truncate truncate-errors truncate-device grow grow-errors grow-device append append-errors append-device overwrite overwrite-errors chmod chmod-errors times times-errors create create-errors create-device mkdir mkdir-errors rmdir rmdir-errors xattr xattr-errors xattr-remove xattr-remove-errors link link-errors symlink symlink-errors symlink-long symlink-long-errors; do
                       make "qemu-test-ext4-${operation}-powercuts" QEMU_ACCEL=tcg \
                           2>&1 | tee "evidence/ext4/${operation}-powercuts.log" || result=1
                   done

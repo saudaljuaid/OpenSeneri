@@ -6044,13 +6044,23 @@ static _Noreturn void ext4_vfs_link_powercut(void)
     const char *source = "data/user/link-source", *alias = "data/user/link-alias";
     struct phipfs_stat original, linked, held;
     phipfs_handle file, second;
+    uint32_t failure_ordinal = 0U;
+    const bool storage_probe = ext4_vfs_storage_probe_control(volume,
+        "data/user/LINKFAIL.BIN", &failure_ordinal);
     ext4_vfs_require(phipfs_open(volume, source, PHIPFS_ACCESS_READ, &file), "link cut held source");
     ext4_vfs_require(phipfs_fstat(file, &original), "link cut source identity");
     const uint64_t free_bytes = phipfs_drive(volume).free_bytes;
     const enum phipfs_status initial = phipfs_lstat_path(volume, alias, &linked);
     if (initial == PHIPFS_STATUS_NOT_FOUND && original.links == 1U) {
         console_write("ST EXT4 LINK initial old\n");
-        ext4_vfs_require(phipfs_link(volume, source, alias), "link cut publication");
+        if (storage_probe && !ext4_backend_test_fail_storage_once(
+                failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
+            kernel_test_fail("ext4 could not arm hard-link storage refusal");
+        enum phipfs_status status = phipfs_link(volume, source, alias);
+        if (storage_probe && ext4_vfs_finish_mutation_storage_probe(status,
+                failure_ordinal, "ST EXT4 LINK"))
+            status = phipfs_link(volume, source, alias);
+        ext4_vfs_require(status, "link cut identical source and alias retry");
     } else if (initial == PHIPFS_STATUS_OK && original.links == 2U && linked.links == 2U &&
             linked.object_id == original.object_id) {
         console_write("ST EXT4 LINK initial new\n");
@@ -6098,13 +6108,23 @@ static _Noreturn void ext4_vfs_symlink_powercut(bool external)
     phipfs_handle file, second;
     uint8_t bytes[128];
     size_t count;
+    uint32_t failure_ordinal = 0U;
+    const bool storage_probe = ext4_vfs_storage_probe_control(volume,
+        "data/user/SYMFAIL.BIN", &failure_ordinal);
     ext4_vfs_require(phipfs_open(volume, source, PHIPFS_ACCESS_READ, &file), "symlink cut held source");
     ext4_vfs_require(phipfs_fstat(file, &original), "symlink cut source inode");
     const uint64_t free_bytes = phipfs_drive(volume).free_bytes;
     const enum phipfs_status initial = phipfs_lstat_path(volume, alias, &symbolic);
     if (initial == PHIPFS_STATUS_NOT_FOUND) {
         console_write("ST EXT4 SYMLINK initial old\n");
-        ext4_vfs_require(phipfs_symlink(volume, alias, target), "symlink cut publication");
+        if (storage_probe && !ext4_backend_test_fail_storage_once(
+                failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
+            kernel_test_fail("ext4 could not arm symlink storage refusal");
+        enum phipfs_status status = phipfs_symlink(volume, alias, target);
+        if (storage_probe && ext4_vfs_finish_mutation_storage_probe(status,
+                failure_ordinal, "ST EXT4 SYMLINK"))
+            status = phipfs_symlink(volume, alias, target);
+        ext4_vfs_require(status, "symlink cut identical target and alias retry");
         if (phipfs_drive(volume).free_bytes != free_bytes - (external ? 4096U : 0U))
             kernel_test_fail("ext4 symlink cut allocation changed");
     } else if (initial == PHIPFS_STATUS_OK) console_write("ST EXT4 SYMLINK initial new\n");
