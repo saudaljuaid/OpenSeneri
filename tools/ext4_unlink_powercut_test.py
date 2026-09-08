@@ -38,25 +38,31 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
         if parent["links"] != expected_parent_links:
             raise RuntimeError("recovered directory parent link count changed")
     removed = "owned-cut" if replacement_inode is None else "replace-source"
-    if operation not in ("truncate", "create", "mkdir") and f"/{removed}/" in namespace:
+    if operation not in ("truncate", "grow", "create", "mkdir") and f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
     (output / "namespace.txt").write_text(namespace)
-    expected_files = {} if operation in ("truncate", "create", "mkdir") else {f"data/user/{removed}": None}
+    expected_files = {} if operation in ("truncate", "grow", "create", "mkdir") else {f"data/user/{removed}": None}
     if replacement_inode is not None:
-        target_name = "truncate-target" if operation == "truncate" else "replace-target"
+        target_name = "truncate-target" if operation in ("truncate", "grow") else "replace-target"
         target_size = 1700 if operation == "truncate" else 4500
+        if operation == "grow":
+            target_size = 12345
         if operation == "create":
             target_name, target_size = "created-target", 0
         if operation == "mkdir":
             target_name, target_size = "created-directory", 4096
         expected_content = (b"t" if operation == "truncate" else b"s") * target_size
+        if operation == "grow":
+            expected_content = b"t" * 1700 + bytes(target_size - 1700)
         target_output = ext4_image._debugfs(tools, image, f"stat /data/user/{target_name}")
         target = ext4_image._parse_stat(target_output, f"/data/user/{target_name}")
         if target["inode"] != replacement_inode or target["size"] != target_size or target["links"] != (2 if operation == "mkdir" else 1):
             raise RuntimeError("held-replace published the wrong inode or link count")
         if operation == "create" and (target["mode"] != "0640" or target["block_count_512"] != 0):
             raise RuntimeError("created inode mode or empty allocation changed")
+        if operation == "grow" and target["block_count_512"] != 8:
+            raise RuntimeError("sparse growth allocated physical hole blocks")
         if operation == "mkdir":
             if target["mode"] != "0750" or target["block_count_512"] != 8 or not re.search(r"Type:\s+directory\b", target_output):
                 raise RuntimeError("created directory mode type or allocation changed")
@@ -68,15 +74,15 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
                 raise RuntimeError("held-replace changed the published file contents")
             expected_files[f"data/user/{target_name}"] = {
                 "bytes": target_size, "sha256": hashlib.sha256(expected_content).hexdigest()}
-        if operation == "truncate":
+        if operation in ("truncate", "grow"):
             mapping = ext4_image._debugfs(tools, image, "bmap /data/user/truncate-target 0")
             blocks = re.findall(r"^([0-9]+)$", mapping, re.MULTILINE)
             if len(blocks) != 1 or int(blocks[0]) == 0:
                 raise RuntimeError("truncate retained block mapping is missing or ambiguous")
             physical = int(blocks[0])
             with image.open("rb") as disk:
-                disk.seek(physical * 4096 + target_size)
-                if disk.read(4096 - target_size) != bytes(4096 - target_size):
+                disk.seek(physical * 4096 + 1700)
+                if disk.read(4096 - 1700) != bytes(4096 - 1700):
                     raise RuntimeError("truncate recovery failed to zero the retained block tail")
     for executable, arguments, name in (
         (tools["e2fsck"], ["-f", "-n"], "e2fsck.txt"),
@@ -96,7 +102,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
 
 def run(args):
     replacement = args.operation == "replace"
-    truncating = args.operation == "truncate"
+    truncating = args.operation in ("truncate", "grow")
+    growing = args.operation == "grow"
     creating = args.operation in ("create", "mkdir")
     directory = args.operation == "mkdir"
     pass_marker = PASS if not replacement else "ST EXT4 VFS held-replace old-or-new cleanup census exact"
@@ -104,6 +111,8 @@ def run(args):
     if truncating:
         pass_marker = "ST EXT4 VFS truncate old-or-new tail shared EOF census exact"
         state_marker = "ST EXT4 TRUNCATE initial"
+        if growing:
+            pass_marker = "ST EXT4 VFS grow old-or-new holes shared EOF census exact"
     if creating:
         pass_marker = "ST EXT4 VFS create exclusive mode empty contents census exact"
         state_marker = "ST EXT4 CREATE initial"
@@ -131,8 +140,8 @@ def run(args):
             destination.write_bytes(b"t" * 3000)
             files = [(source, "replace-source"), (destination, "replace-target"), (empty, "CUTREPLACE.TST")]
         if truncating:
-            source.write_bytes(b"t" * 4500)
-            files = [(source, "truncate-target"), (empty, "CUTTRUNC.TST")]
+            source.write_bytes(b"t" * (1700 if growing else 4500))
+            files = [(source, "truncate-target"), (empty, "CUTGROW.TST" if growing else "CUTTRUNC.TST")]
         if creating:
             files = [(empty, "CUTMKDIR.TST" if directory else "CUTCREATE.TST")]
         for file, name in files:
@@ -146,9 +155,10 @@ def run(args):
     removed = "truncate-target" if truncating else ("replace-target" if replacement else "owned-cut")
     target = None if creating else ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
         f"stat /data/user/{removed}"), f"/data/user/{removed}")
-    reclaimed = 1 if replacement or truncating else 2
-    initial_blocks = 1 if replacement else 2
-    if not creating and (target["size"] != (3000 if replacement else 4500) or target["block_count_512"] != initial_blocks * 8):
+    reclaimed = 0 if growing else (1 if replacement or truncating else 2)
+    initial_blocks = 1 if replacement or growing else 2
+    initial_size = 1700 if growing else (3000 if replacement else 4500)
+    if not creating and (target["size"] != initial_size or target["block_count_512"] != initial_blocks * 8):
         raise RuntimeError("held-unlink input has unexpected allocation geometry")
     replacement_inode = target["inode"] if truncating else None
     if replacement:
@@ -244,7 +254,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "create", "mkdir"), default="unlink")
+    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "create", "mkdir"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

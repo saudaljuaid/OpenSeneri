@@ -2482,6 +2482,14 @@ qemu-test-ext4-truncate-powercuts: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_unlink_p
 		$(if $(GRUB_MODULE_DIR),--grub-module-dir '$(GRUB_MODULE_DIR)') \
 		--accel '$(QEMU_ACCEL)'
 
+qemu-test-ext4-grow-powercuts: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_unlink_powercut_test.py tools/ext4_powercut_test.py
+	$(PYTHON) tools/ext4_unlink_powercut_test.py --operation grow \
+		--kernel '$(KERNEL)' --fixture '$(EXT4_FIXTURE)' \
+		--output '$(TEST_BUILD_DIR)/ext4-unlink-powercuts/$(shell git rev-parse --short HEAD)/grow' \
+		--grub-mkrescue '$(GRUB_MKRESCUE)' \
+		$(if $(GRUB_MODULE_DIR),--grub-module-dir '$(GRUB_MODULE_DIR)') \
+		--accel '$(QEMU_ACCEL)'
+
 qemu-test-ext4-create-powercuts: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_unlink_powercut_test.py tools/ext4_powercut_test.py
 	$(PYTHON) tools/ext4_unlink_powercut_test.py --operation create \
 		--kernel '$(KERNEL)' --fixture '$(EXT4_FIXTURE)' \
