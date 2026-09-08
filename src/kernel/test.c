@@ -5296,6 +5296,44 @@ static _Noreturn void ext4_vfs_replace_powercut(void)
     kernel_test_pass();
 }
 
+static _Noreturn void ext4_vfs_mkdir_powercut(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/created-directory";
+    struct phipfs_stat metadata, parent, after;
+    phipfs_directory_handle directory;
+    struct phipfs_list_entry entry;
+    bool present = true;
+    ext4_vfs_require(phipfs_stat_path(volume, "data/user", &parent), "mkdir cut parent");
+    const enum phipfs_status initial = phipfs_lstat_path(volume, name, &metadata);
+    if (initial == PHIPFS_STATUS_NOT_FOUND) {
+        console_write("ST EXT4 MKDIR initial old\n");
+        ext4_vfs_require(phipfs_mkdir_mode(volume, name, 0750U), "mkdir cut create");
+        ext4_vfs_require(phipfs_stat_path(volume, "data/user", &after), "mkdir cut parent links");
+        if (after.object_id != parent.object_id || after.links != parent.links + 1U)
+            kernel_test_fail("ext4 mkdir cut did not update parent links exactly once");
+    } else if (initial == PHIPFS_STATUS_OK) console_write("ST EXT4 MKDIR initial new\n");
+    else kernel_test_fail("ext4 mkdir cut state is neither absent nor committed");
+    ext4_vfs_require(phipfs_lstat_path(volume, name, &metadata), "mkdir cut created identity");
+    if (!metadata.directory || metadata.links != 2U || metadata.size != 4096U ||
+        (metadata.mode & 0777U) != 0750U || phipfs_mkdir(volume, name) != PHIPFS_STATUS_EXISTS)
+        kernel_test_fail("ext4 mkdir cut changed mode type size links or collision status");
+    ext4_vfs_require(phipfs_directory_open(volume, name, &directory), "mkdir cut snapshot");
+    ext4_vfs_require(phipfs_directory_read(directory, &entry, &present), "mkdir cut empty read");
+    if (present) kernel_test_fail("ext4 mkdir cut exposed unexpected directory entries");
+    ext4_vfs_require(phipfs_directory_close(directory), "mkdir cut snapshot close");
+    if (phipfs_directory_read(directory, &entry, &present) != PHIPFS_STATUS_STALE_HANDLE)
+        kernel_test_fail("ext4 mkdir cut retained its closed snapshot");
+    ext4_vfs_require(phipfs_sync(volume), "mkdir cut final sync");
+    ext4_vfs_require(phipfs_unmount(volume), "mkdir cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 mkdir cut resource census failed");
+    console_write("ST EXT4 VFS mkdir mode parent links empty snapshot census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_create_powercut(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5582,6 +5620,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         ext4_vfs_truncate_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTCREATE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_create_powercut();
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTMKDIR.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_mkdir_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/LOWSPACE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_low_space();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/INOFULL.TST", &stat) == PHIPFS_STATUS_OK)

@@ -108,7 +108,7 @@ jobs:
                   if [[ '${{ inputs.ext4_boot_probe }}' != 'true' ]]; then
                       targets+=(qemu-test-ext4-powercuts)
                   else
-                      targets+=(qemu-test-ext4-replace-powercuts qemu-test-ext4-truncate-powercuts qemu-test-ext4-create-powercuts)
+                      targets+=(qemu-test-ext4-replace-powercuts qemu-test-ext4-truncate-powercuts qemu-test-ext4-create-powercuts qemu-test-ext4-mkdir-powercuts)
                   fi
                   make "${targets[@]}" QEMU_ACCEL=tcg \
                       2>&1 | tee evidence/ext4/qemu.log
@@ -137,7 +137,7 @@ jobs:
               run: |
                   set -o pipefail
                   result=0
-                  for operation in unlink replace truncate create; do
+                  for operation in unlink replace truncate create mkdir; do
                       make "qemu-test-ext4-${operation}-powercuts" QEMU_ACCEL=tcg \
                           2>&1 | tee "evidence/ext4/${operation}-powercuts.log" || result=1
                   done
