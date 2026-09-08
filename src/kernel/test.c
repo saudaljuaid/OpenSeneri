@@ -5106,6 +5106,73 @@ static _Noreturn void ext4_vfs_held_unlink_powercut(void)
     kernel_test_pass();
 }
 
+static void ext4_vfs_cut_contents(phipfs_handle file, uint64_t size, uint8_t value)
+{
+    uint8_t bytes[4096];
+    size_t count;
+    for (uint64_t offset = 0U; offset < size; offset += count) {
+        const size_t capacity = size - offset < sizeof(bytes) ? (size_t)(size - offset) : sizeof(bytes);
+        ext4_vfs_require(phipfs_pread(file, bytes, capacity, offset, &count), "replace cut retained read");
+        if (count != capacity) kernel_test_fail("ext4 replace cut shortened retained data");
+        for (size_t index = 0U; index < count; ++index)
+            if (bytes[index] != value) kernel_test_fail("ext4 replace cut changed retained data");
+    }
+}
+
+static _Noreturn void ext4_vfs_replace_powercut(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *source = "data/user/replace-source";
+    const char *target = "data/user/replace-target";
+    struct phipfs_stat source_stat, target_stat, held;
+    phipfs_handle source_file, target_file;
+    const enum phipfs_status initial = phipfs_lstat_path(volume, source, &source_stat);
+    ext4_vfs_require(phipfs_lstat_path(volume, target, &target_stat), "replace cut destination");
+    if (target_stat.directory || target_stat.links != 1U)
+        kernel_test_fail("ext4 replace cut destination identity changed");
+    if (initial == PHIPFS_STATUS_OK) {
+        if (source_stat.directory || source_stat.size != 4500U || source_stat.links != 1U ||
+            target_stat.size != 3000U || source_stat.object_id == target_stat.object_id)
+            kernel_test_fail("ext4 replace cut old namespace changed");
+        console_write("ST EXT4 HELD REPLACE initial old\n");
+        ext4_vfs_require(phipfs_open(volume, source, PHIPFS_ACCESS_READ_WRITE, &source_file), "replace cut source open");
+        ext4_vfs_require(phipfs_open(volume, target, PHIPFS_ACCESS_READ_WRITE, &target_file), "replace cut target open");
+        ext4_vfs_require(phipfs_rename_replace(volume, source, target), "replace cut publication");
+        if (phipfs_lstat_path(volume, source, &held) != PHIPFS_STATUS_NOT_FOUND)
+            kernel_test_fail("ext4 replace cut retained source name");
+        ext4_vfs_require(phipfs_lstat_path(volume, target, &held), "replace cut published identity");
+        if (held.object_id != source_stat.object_id || held.links != 1U || held.size != 4500U)
+            kernel_test_fail("ext4 replace cut published wrong inode");
+        ext4_vfs_require(phipfs_fstat(target_file, &held), "replace cut orphan identity");
+        if (held.object_id != target_stat.object_id || held.links != 0U || held.size != 3000U)
+            kernel_test_fail("ext4 replace cut lost held destination");
+        ext4_vfs_cut_contents(target_file, 3000U, 't');
+        ext4_vfs_cut_contents(source_file, 4500U, 's');
+        ext4_vfs_require(phipfs_fsync(target_file), "replace cut orphan sync");
+        ext4_vfs_require(phipfs_close(target_file), "replace cut orphan final close");
+        if (phipfs_fstat(target_file, &held) != PHIPFS_STATUS_STALE_HANDLE)
+            kernel_test_fail("ext4 replace cut left closed destination usable");
+        ext4_vfs_require(phipfs_fsync(source_file), "replace cut source sync");
+        ext4_vfs_require(phipfs_close(source_file), "replace cut source close");
+    } else if (initial == PHIPFS_STATUS_NOT_FOUND) {
+        if (target_stat.size != 4500U) kernel_test_fail("ext4 replace cut new destination size changed");
+        console_write("ST EXT4 HELD REPLACE initial new\n");
+    } else {
+        kernel_test_fail("ext4 replace cut namespace is neither old nor new");
+    }
+    ext4_vfs_require(phipfs_open(volume, target, PHIPFS_ACCESS_READ, &target_file), "replace cut final open");
+    ext4_vfs_cut_contents(target_file, 4500U, 's');
+    ext4_vfs_require(phipfs_close(target_file), "replace cut final read close");
+    ext4_vfs_require(phipfs_sync(volume), "replace cut final sync");
+    ext4_vfs_require(phipfs_unmount(volume), "replace cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 replace cut resource census failed");
+    console_write("ST EXT4 VFS held-replace old-or-new cleanup census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_inode_exhaustion(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5296,6 +5363,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
     }
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTUNLINK.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_held_unlink_powercut();
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTREPLACE.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_replace_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/LOWSPACE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_low_space();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/INOFULL.TST", &stat) == PHIPFS_STATUS_OK)

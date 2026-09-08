@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Power-cut ordinary held-file unlink, fsync, final close and orphan reclaim."""
+"""Power-cut ordinary held-file unlink/replace, fsync and orphan reclaim."""
 
 from __future__ import annotations
 
@@ -20,21 +20,31 @@ import ext4_powercut_test as recovery
 PASS = "ST EXT4 VFS held-unlink old-or-new cleanup census exact"
 
 
-def verify_exit(status, transcript):
-    if status != recovery.PASS_EXIT_STATUS or transcript.count(PASS) != 1 or \
+def verify_exit(status, transcript, pass_marker=PASS):
+    if status != recovery.PASS_EXIT_STATUS or transcript.count(pass_marker) != 1 or \
             transcript.count(recovery.PASS_MARKER) != 1 or "ST FAIL" in transcript or "Phipia PANIC" in transcript:
         raise RuntimeError(f"held-unlink reboot failed ({status}):\n" + recovery._transcript_tail(transcript))
 
 
-def inspect(image, tools, output, expected_blocks, expected_inodes):
+def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_inode=None):
     report = ext4_image.inspect_image(image, tools=tools)
     if report["needs_recovery"] or report["free_blocks"] != expected_blocks or report["free_inodes"] != expected_inodes:
         raise RuntimeError("held-unlink recovery leaked allocations or retained recovery state")
     namespace = ext4_image._debugfs(tools, image, "ls -p /data/user")
-    if "/owned-cut/" in namespace:
+    removed = "owned-cut" if replacement_inode is None else "replace-source"
+    if f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
     (output / "namespace.txt").write_text(namespace)
+    if replacement_inode is not None:
+        target = ext4_image._parse_stat(ext4_image._debugfs(tools, image,
+            "stat /data/user/replace-target"), "/data/user/replace-target")
+        if target["inode"] != replacement_inode or target["size"] != 4500 or target["links"] != 1:
+            raise RuntimeError("held-replace published the wrong inode or link count")
+        content = output / "replace-target.bin"
+        ext4_image._debugfs(tools, image, f'dump -p /data/user/replace-target "{content.as_posix()}"')
+        if content.read_bytes() != b"s" * 4500:
+            raise RuntimeError("held-replace changed the published file contents")
     for executable, arguments, name in (
         (tools["e2fsck"], ["-f", "-n"], "e2fsck.txt"),
         ("dumpe2fs", ["-h"], "dumpe2fs.txt"),
@@ -50,6 +60,9 @@ def inspect(image, tools, output, expected_blocks, expected_inodes):
 
 
 def run(args):
+    replacement = args.operation == "replace"
+    pass_marker = PASS if not replacement else "ST EXT4 VFS held-replace old-or-new cleanup census exact"
+    state_marker = "ST EXT4 HELD REPLACE initial" if replacement else "ST EXT4 HELD UNLINK initial"
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     tools = ext4_image.require_tools()
@@ -62,27 +75,42 @@ def run(args):
     with tempfile.TemporaryDirectory(prefix="unlink-input-", dir=output) as raw:
         work = Path(raw)
         source = work / "content"
-        source.write_bytes(b"c" * 4500)
+        source.write_bytes((b"s" if replacement else b"c") * 4500)
         empty = work / "empty"
         empty.write_bytes(b"")
-        for file, name in ((source, "owned-cut"), (empty, "CUTUNLINK.TST")):
+        files = [(source, "owned-cut"), (empty, "CUTUNLINK.TST")]
+        if replacement:
+            destination = work / "destination"
+            destination.write_bytes(b"t" * 3000)
+            files = [(source, "replace-source"), (destination, "replace-target"), (empty, "CUTREPLACE.TST")]
+        for file, name in files:
             ext4_image._run([tools["debugfs"], "-w", "-R",
                 f'write "{file.as_posix()}" /data/user/{name}', initial])
     before = ext4_image.inspect_image(initial, tools=tools)
-    # The non-sparse 4500-byte Linux file owns exactly two 4 KiB data blocks.
+    # Final close reclaims only the removed inode: two blocks for unlink, one
+    # for replace. The replacement source remains allocated and is read back.
+    removed = "replace-target" if replacement else "owned-cut"
     target = ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
-        "stat /data/user/owned-cut"), "/data/user/owned-cut")
-    if target["size"] != 4500 or target["block_count_512"] != 16:
+        f"stat /data/user/{removed}"), f"/data/user/{removed}")
+    reclaimed = 1 if replacement else 2
+    if target["size"] != (3000 if replacement else 4500) or target["block_count_512"] != reclaimed * 8:
         raise RuntimeError("held-unlink input has unexpected allocation geometry")
-    expected_blocks, expected_inodes = before["free_blocks"] + 2, before["free_inodes"] + 1
+    replacement_inode = None
+    if replacement:
+        source_stat = ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
+            "stat /data/user/replace-source"), "/data/user/replace-source")
+        if source_stat["size"] != 4500 or source_stat["block_count_512"] != 16:
+            raise RuntimeError("held-replace source allocation geometry changed")
+        replacement_inode = source_stat["inode"]
+    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + 1
     iso = output / "verify.iso"
     recovery._build_iso(args.kernel.resolve(), iso, args.grub_mkrescue, args.grub_module_dir, None)
     baseline = output / "complete.raw"
     shutil.copyfile(initial, baseline)
     status, transcript = recovery._run_qemu(args.qemu, args.accel, iso, baseline,
         output / "complete.log", args.timeout)
-    verify_exit(status, transcript)
-    inspect(baseline, tools, output / "complete", expected_blocks, expected_inodes)
+    verify_exit(status, transcript, pass_marker)
+    inspect(baseline, tools, output / "complete", expected_blocks, expected_inodes, replacement_inode)
     boundaries = re.findall(r"^ST EXT4 DURABLE (\d+) ([a-z-]+)$", transcript, re.MULTILINE)
     if not 1 <= len(boundaries) <= 64 or [int(number) for number, _ in boundaries] != list(range(1, len(boundaries) + 1)):
         raise RuntimeError("held-unlink trace is not a bounded contiguous boundary sequence")
@@ -99,23 +127,23 @@ def run(args):
             output / f"cut-{cut:02d}.log", args.timeout)
         marker = f"ST EXT4 POWER CUT {cut} {boundary}"
         if status != recovery.POWER_CUT_EXIT_STATUS or transcript.count(marker) != 1 or \
-                "ST FAIL" in transcript or PASS in transcript or "Phipia PANIC" in transcript:
+                "ST FAIL" in transcript or pass_marker in transcript or "Phipia PANIC" in transcript:
             raise RuntimeError(f"held-unlink boundary {cut} did not cut exactly:\n" + recovery._transcript_tail(transcript))
         crashed = output / f"cut-{cut:02d}-crashed.raw"
         shutil.copyfile(image, crashed)
         status, transcript = recovery._run_qemu(args.qemu, args.accel, iso, image,
             output / f"cut-{cut:02d}-reboot.log", args.timeout)
-        verify_exit(status, transcript)
+        verify_exit(status, transcript, pass_marker)
         expected_state = "new" if cut >= first_commit else "old"
-        if transcript.count(f"ST EXT4 HELD UNLINK initial {expected_state}\n") != 1:
+        if transcript.count(f"{state_marker} {expected_state}\n") != 1:
             raise RuntimeError(f"held-unlink boundary {cut} violated durable {expected_state} namespace")
-        report = inspect(image, tools, output / f"cut-{cut:02d}", expected_blocks, expected_inodes)
+        report = inspect(image, tools, output / f"cut-{cut:02d}", expected_blocks, expected_inodes, replacement_inode)
         reports.append({"cut": cut, "boundary": boundary, "recovered_state": expected_state, "result": report,
             "crashed_sha256": hashlib.sha256(crashed.read_bytes()).hexdigest()})
         if cut == first_commit:
             # Use only the flushes performed during mount recovery, before the
             # VFS test can start another operation. Cut each, then recover again.
-            mount_trace = transcript.split("ST EXT4 HELD UNLINK initial new\n", 1)[0]
+            mount_trace = transcript.split(f"{state_marker} new\n", 1)[0]
             recovery_boundaries = re.findall(r"^ST EXT4 DURABLE (\d+) ([a-z-]+)$", mount_trace, re.MULTILINE)
             if not recovery_boundaries or recovery_boundaries[0][1] != "checkpoint":
                 raise RuntimeError("committed held unlink omitted checkpoint replay during mount")
@@ -133,27 +161,28 @@ def run(args):
                     repeated_iso, repeated_image, output / f"{prefix}.log", args.timeout)
                 second_marker = f"ST EXT4 POWER CUT {second_cut} {recovery_boundary}"
                 if second_status != recovery.POWER_CUT_EXIT_STATUS or second_trace.count(second_marker) != 1 or \
-                        "ST EXT4 HELD UNLINK initial" in second_trace or "ST FAIL" in second_trace or "Phipia PANIC" in second_trace:
+                        state_marker in second_trace or "ST FAIL" in second_trace or "Phipia PANIC" in second_trace:
                     raise RuntimeError(f"held-unlink recovery boundary {second_cut} did not cut during mount")
                 second_crashed = output / f"{prefix}-crashed.raw"
                 shutil.copyfile(repeated_image, second_crashed)
                 final_status, final_trace = recovery._run_qemu(args.qemu, args.accel, iso,
                     repeated_image, output / f"{prefix}-reboot.log", args.timeout)
-                verify_exit(final_status, final_trace)
-                if final_trace.count("ST EXT4 HELD UNLINK initial new\n") != 1:
+                verify_exit(final_status, final_trace, pass_marker)
+                if final_trace.count(f"{state_marker} new\n") != 1:
                     raise RuntimeError("repeated recovery resurrected the committed removed name")
-                result = inspect(repeated_image, tools, output / prefix, expected_blocks, expected_inodes)
+                result = inspect(repeated_image, tools, output / prefix, expected_blocks, expected_inodes, replacement_inode)
                 repeated_recovery.append({"cut": second_cut, "boundary": recovery_boundary, "result": result,
                     "crashed_sha256": hashlib.sha256(second_crashed.read_bytes()).hexdigest()})
-    (output / "report.json").write_text(json.dumps({"before": before, "reports": reports,
+    (output / "report.json").write_text(json.dumps({"operation": args.operation, "before": before, "reports": reports,
         "repeated_recovery": repeated_recovery,
         "kernel_sha256": hashlib.sha256(args.kernel.read_bytes()).hexdigest(),
         "fixture_sha256": hashlib.sha256(args.fixture.read_bytes()).hexdigest()}, indent=2, sort_keys=True) + "\n")
-    print(f"ordinary VFS held unlink: {len(boundaries)} operation cuts, {len(repeated_recovery)} repeated recovery cuts, orphan reclamation, census and read-only fsck PASS")
+    print(f"ordinary VFS held {args.operation}: {len(boundaries)} operation cuts, {len(repeated_recovery)} repeated recovery cuts, orphan reclamation, census and read-only fsck PASS")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--operation", choices=("unlink", "replace"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

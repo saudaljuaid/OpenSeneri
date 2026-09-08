@@ -112,12 +112,17 @@ jobs:
               run: |
                   set -o pipefail
                   make qemu-test-ext4-inodes QEMU_ACCEL=tcg 2>&1 | tee evidence/ext4/inodes.log
-            - name: Exercise ordinary ext4 held-unlink power cuts
+            - name: Exercise ordinary ext4 held-file unlink and replace power cuts
               if: ${{ !cancelled() && !inputs.ext4_boot_probe }}
               shell: bash
               run: |
                   set -o pipefail
-                  make qemu-test-ext4-unlink-powercuts QEMU_ACCEL=tcg 2>&1 | tee evidence/ext4/unlink-powercuts.log
+                  result=0
+                  for operation in unlink replace; do
+                      make "qemu-test-ext4-${operation}-powercuts" QEMU_ACCEL=tcg \
+                          2>&1 | tee "evidence/ext4/${operation}-powercuts.log" || result=1
+                  done
+                  exit "$result"
             - name: Exercise ext4 package repair removal and SDL reboot persistence
               if: ${{ !cancelled() && !inputs.ext4_boot_probe }}
               shell: bash
