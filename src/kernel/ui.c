@@ -6351,9 +6351,15 @@ static enum ui_status phipia_draw_active_panel(
     case UI_PANEL_SETTINGS:
         return settings_draw(damage) == SETTINGS_STATUS_OK ?
             UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
-    case UI_PANEL_TASKMGR:
-        return taskmgr_draw(damage) == TASKMGR_STATUS_OK ?
-            UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
+    case UI_PANEL_TASKMGR: {
+        const enum taskmgr_status status = taskmgr_draw(damage);
+        if (status != TASKMGR_STATUS_OK) {
+            console_serial_write("Phipia: Task Manager draw failed: ");
+            console_serial_write(taskmgr_status_string(status));
+            console_serial_write("\n");
+        }
+        return status == TASKMGR_STATUS_OK ? UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
+    }
     default:
         return UI_STATUS_BAD_PANEL;
     }
@@ -7083,8 +7089,15 @@ static enum ui_status draw_animated_panel(struct ui_rect damage)
     if (clip.width == 0U || clip.height == 0U) {
         return UI_STATUS_OK;
     }
-    return ui_anim_draw(&panel_anim, canvas, clip) == UI_ANIM_STATUS_OK ?
-        UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
+    const enum ui_anim_status status = ui_anim_draw(&panel_anim, canvas, clip);
+    if (status != UI_ANIM_STATUS_OK) {
+        console_serial_write("Phipia: panel animation draw failed: ");
+        console_serial_write_u64((uint64_t)status);
+        console_serial_write(" panel ");
+        console_serial_write(ui_panel_name(panel_anim_panel));
+        console_serial_write("\n");
+    }
+    return status == UI_ANIM_STATUS_OK ? UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
 }
 
 static enum ui_status draw_panel(struct ui_rect damage)
