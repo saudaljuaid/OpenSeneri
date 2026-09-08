@@ -4806,6 +4806,88 @@ static void ext4_vfs_require(enum phipfs_status status, const char *operation)
     }
 }
 
+static void ext4_vfs_indexed_snapshot(phipfs_directory_handle snapshot)
+{
+    uint64_t seen[4] = { 0U };
+    static const char prefix[] = "entry-";
+    static const char suffix[] = "-phipia-fixture";
+    for (unsigned index = 0U; index < 256U; ++index) {
+        struct phipfs_list_entry entry;
+        bool present = false;
+        unsigned number = 0U;
+        ext4_vfs_require(phipfs_directory_read(snapshot, &entry, &present), "htree snapshot read");
+        if (!present || entry.directory || entry.size != 2U)
+            kernel_test_fail("ext4 htree snapshot changed type size or entry count");
+        for (size_t letter = 0U; letter < sizeof(prefix) - 1U; ++letter)
+            if (entry.name[letter] != prefix[letter]) kernel_test_fail("ext4 htree snapshot changed prefix");
+        for (size_t digit = 6U; digit < 10U; ++digit) {
+            if (entry.name[digit] < '0' || entry.name[digit] > '9') kernel_test_fail("ext4 htree snapshot changed number");
+            number = number * 10U + (unsigned)(entry.name[digit] - '0');
+        }
+        for (size_t letter = 0U; letter < sizeof(suffix); ++letter)
+            if (entry.name[10U + letter] != suffix[letter]) kernel_test_fail("ext4 htree snapshot changed suffix");
+        if (number >= 256U || (seen[number / 64U] & (UINT64_C(1) << (number % 64U))) != 0U)
+            kernel_test_fail("ext4 htree snapshot duplicated an entry");
+        seen[number / 64U] |= UINT64_C(1) << (number % 64U);
+    }
+    struct phipfs_list_entry entry;
+    bool present = true;
+    ext4_vfs_require(phipfs_directory_read(snapshot, &entry, &present), "htree snapshot EOF");
+    if (present) kernel_test_fail("ext4 htree snapshot exposed a later mutation");
+    ext4_vfs_require(phipfs_directory_close(snapshot), "htree snapshot close");
+}
+
+static void ext4_vfs_indexed_semantics(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *original = "indexed/entry-0128-phipia-fixture";
+    const char *moved = "data/user/VFS-INDEX.TMP";
+    const char *created = "indexed/VFS-INDEX.NEW";
+    const char *renamed = "indexed/VFS-INDEX.FINAL";
+    const char *linked = "indexed/VFS-INDEX.LINK";
+    const uint64_t initial_free = phipfs_drive(volume).free_bytes;
+    struct phipfs_stat before, after;
+    phipfs_handle held, file;
+    phipfs_directory_handle snapshot;
+    uint8_t bytes[5];
+    size_t count;
+    ext4_vfs_require(phipfs_open(volume, original, PHIPFS_ACCESS_READ, &held), "htree held open");
+    ext4_vfs_require(phipfs_fstat(held, &before), "htree held stat");
+    ext4_vfs_require(phipfs_directory_open(volume, "indexed", &snapshot), "htree snapshot open");
+    ext4_vfs_require(phipfs_rename(volume, original, moved), "htree cross-parent removal");
+    ext4_vfs_require(phipfs_open_options(volume, created, PHIPFS_ACCESS_READ_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0640U, &file), "htree insertion");
+    ext4_vfs_require(phipfs_write(file, (const uint8_t *)"htree", 5U, &count), "htree file write");
+    if (count != 5U) kernel_test_fail("ext4 htree write was short");
+    ext4_vfs_require(phipfs_link(volume, created, linked), "htree hard link");
+    ext4_vfs_require(phipfs_rename(volume, created, renamed), "htree same-parent rename");
+    ext4_vfs_require(phipfs_fsync(file), "htree file sync");
+    ext4_vfs_require(phipfs_pread(file, bytes, sizeof(bytes), 0U, &count), "htree held new read");
+    if (count != 5U || bytes[0] != 'h' || bytes[1] != 't' || bytes[2] != 'r' || bytes[3] != 'e' || bytes[4] != 'e')
+        kernel_test_fail("ext4 htree new file contents changed");
+    // The old htree snapshot must retain the removed original entry and omit
+    // both inserted names while the live directory contains those mutations.
+    ext4_vfs_indexed_snapshot(snapshot);
+    ext4_vfs_require(phipfs_unlink(volume, linked), "htree hard link cleanup");
+    ext4_vfs_require(phipfs_unlink(volume, renamed), "htree held new unlink");
+    ext4_vfs_require(phipfs_close(file), "htree final new close");
+    ext4_vfs_require(phipfs_rename(volume, moved, original), "htree cross-parent reinsertion");
+    ext4_vfs_require(phipfs_fstat(held, &after), "htree restored identity");
+    ext4_vfs_require(phipfs_pread(held, bytes, sizeof(bytes), 0U, &count), "htree restored contents");
+    if (after.object_id != before.object_id || after.links != 1U || after.size != 2U ||
+        count != 2U || bytes[0] != 'x' || bytes[1] != '\n')
+        kernel_test_fail("ext4 htree cross-parent rename changed held inode");
+    ext4_vfs_require(phipfs_close(held), "htree held close");
+    ext4_vfs_require(phipfs_directory_open(volume, "indexed", &snapshot), "htree final snapshot");
+    ext4_vfs_indexed_snapshot(snapshot);
+    ext4_vfs_require(phipfs_sync(volume), "htree final sync");
+    if (phipfs_drive(volume).free_bytes != initial_free ||
+        phipfs_stat_path(volume, moved, &after) != PHIPFS_STATUS_NOT_FOUND ||
+        phipfs_stat_path(volume, renamed, &after) != PHIPFS_STATUS_NOT_FOUND)
+        kernel_test_fail("ext4 htree namespace or allocation cleanup failed");
+    console_write("ST EXT4 VFS Linux htree mutations held rename stable iteration cleanup exact\n");
+}
+
 static void ext4_vfs_directory_semantics(void)
 {
     static const char prefix[] = "data/user/VFS2.DIR/";
@@ -5098,6 +5180,7 @@ static void ext4_vfs_semantics(void)
         kernel_test_fail("ext4 VFS semantics leaked block allocations");
     console_write("ST EXT4 VFS split unaligned sparse append truncate metadata links rename held cleanup exact\n");
     ext4_vfs_directory_semantics();
+    ext4_vfs_indexed_semantics();
 }
 
 static _Noreturn void ext4_vfs_held_unlink_powercut(void)
