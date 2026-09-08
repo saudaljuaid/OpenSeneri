@@ -2071,6 +2071,45 @@ fn lazy_group_bitmaps_initialize_in_the_allocation_transaction_and_roll_back() {
 }
 
 #[test]
+fn wide_nested_directory_census_preserves_paths_parents_and_mutation_reload() {
+    let Some(path) = fixture() else { return };
+    let image = path.with_extension("coordinator-wide-input.img");
+    std::fs::copy(&path, &image).unwrap();
+    let commands = path.with_extension("coordinator-wide.commands");
+    let mut script = String::from("mkdir /wide\n");
+    for index in 0..384 {
+        script.push_str(&format!("mkdir /wide/d-{index}\nmkdir /wide/d-{index}/{}\n",
+            "x".repeat(index % 32 + 1)));
+    }
+    std::fs::write(&commands, script).unwrap();
+    let result = std::process::Command::new("debugfs").args(["-w", "-f"])
+        .arg(&commands).arg(&image).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let mut mounted = mount_fixture(&image);
+    let free = ext4::free_bytes(&mounted).unwrap();
+    let free_inodes = DEVICE.with_borrow(|device| device.bytes[1040..1044].to_vec());
+    for index in 0..384 {
+        let name = format!("wide/d-{index}/{}", "x".repeat(index % 32 + 1));
+        assert_eq!(ext4::stat(&mounted, name.as_bytes()).unwrap().links, 2);
+    }
+    let source = b"wide/d-0/x/file";
+    let target = b"wide/d-383/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/file";
+    ext4::create_file_probe(&mut mounted, source, 0o600).unwrap();
+    ext4::transaction_probe(&mut mounted, source, 4093, b"wide-reload").unwrap();
+    ext4::rename_probe(&mut mounted, source, target).unwrap();
+    assert_eq!(ext4::stat(&mounted, source), Err(Status::NotFound));
+    let mut bytes = [0u8; 11];
+    assert_eq!(ext4::pread(&mounted, target, 4093, &mut bytes), Ok(11));
+    assert_eq!(&bytes, b"wide-reload");
+    ext4::unlink_file_probe(&mut mounted, target).unwrap();
+    assert_eq!(ext4::free_bytes(&mounted), Ok(free));
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    DEVICE.with_borrow(|device| assert_eq!(device.bytes[1040..1044], free_inodes));
+    fsck(&path, "coordinator-wide-clean");
+}
+
+#[test]
 fn real_inode_exhaustion_rolls_back_namespace_and_reuses_a_freed_inode() {
     let Some(path) = fixture() else { return };
     let original = std::fs::read(&path).unwrap();

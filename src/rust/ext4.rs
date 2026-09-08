@@ -4,7 +4,6 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::error::Error;
@@ -720,11 +719,19 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
     let root_index = root_inode.index;
     namespace_reference(&mut references, root_index.get(), root_inode.links_count(),
         untracked_directory_links(filesystem, &root_inode))?;
-    let mut directories = BTreeSet::new();
-    directories.insert(root_index);
-    pending.push((root, root_index, root_index));
+    let mut directories = Vec::new();
+    directories.try_reserve(1).map_err(|_| Status::Range)?;
+    directories.push(root_index);
+    // Paths share a LIFO byte arena: a wide directory must not retain one
+    // kernel heap allocation for every pending child directory.
+    let mut pending_paths = root;
+    pending.push((0usize, root_index, root_index));
     let mut visited = 0usize;
-    while let Some((path, index, parent)) = pending.pop() {
+    while let Some((path_start, index, parent)) = pending.pop() {
+        let mut path = Vec::new();
+        path.try_reserve_exact(pending_paths.len() - path_start).map_err(|_| Status::Range)?;
+        path.extend_from_slice(&pending_paths[path_start..]);
+        pending_paths.truncate(path_start);
         let indexed = Inode::read(filesystem, index).map_err(map_error)?
             .flags().contains(InodeFlags::DIRECTORY_HTREE);
         let mut directory = filesystem.read_dir(path.as_slice()).map_err(map_error)?;
@@ -790,19 +797,19 @@ fn validate_namespace(filesystem: &Ext4) -> Result<(), Status> {
             if kind == 2 {
                 // Directories have one namespace parent. Reject aliases and
                 // cycles before following another path to the same inode.
-                if !directories.insert(entry.inode) { return Err(Status::Invalid); }
+                let insertion = directories.binary_search(&entry.inode).err().ok_or(Status::Invalid)?;
+                directories.try_reserve(1).map_err(|_| Status::Range)?;
+                directories.insert(insertion, entry.inode);
                 if pending.len() >= MAX_PENDING_DIRECTORIES {
                     return Err(Status::Range);
                 }
                 pending.try_reserve(1).map_err(|_| Status::Range)?;
                 let path_bytes: &[u8] = entry_path.as_ref();
                 if path_bytes.len() >= 4096 { return Err(Status::Range); }
-                let mut owned_path = Vec::new();
-                owned_path
-                    .try_reserve_exact(path_bytes.len())
-                    .map_err(|_| Status::Range)?;
-                owned_path.extend_from_slice(path_bytes);
-                pending.push((owned_path, entry.inode, index));
+                pending_paths.try_reserve(path_bytes.len()).map_err(|_| Status::Range)?;
+                let path_start = pending_paths.len();
+                pending_paths.extend_from_slice(path_bytes);
+                pending.push((path_start, entry.inode, index));
             } else if kind == 3 {
                 let _target = filesystem
                     .read_link(entry_path.as_ref())
