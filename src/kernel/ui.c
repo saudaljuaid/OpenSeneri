@@ -2330,14 +2330,14 @@ static void phipia_apply_explorer_action(void)
     source[0] = '\0';
     destination[0] = '\0';
     if (action.source[0] != '\0' && !entry_path(action.source, source)) {
-        set_app_status("file command", PHIPFS_STATUS_PATH);
         (void)files_refresh();
+        set_app_status("file command", PHIPFS_STATUS_PATH);
         return;
     }
     if (action.destination[0] != '\0' &&
             !entry_path(action.destination, destination)) {
-        set_app_status("file command", PHIPFS_STATUS_PATH);
         (void)files_refresh();
+        set_app_status("file command", PHIPFS_STATUS_PATH);
         return;
     }
     switch (action.kind) {
@@ -2367,8 +2367,10 @@ static void phipia_apply_explorer_action(void)
     if (status == PHIPFS_STATUS_OK && action.kind != EXPLORER_ACTION_COPY) {
         status = phipfs_sync(PHIPFS_VOLUME_DATA);
     }
-    set_app_status("file command", status);
     (void)files_refresh();
+    // Refresh the namespace after partial failures, then retain the operation
+    // error. A successful listing must not disguise a failed mutation or sync.
+    if (status != PHIPFS_STATUS_OK) set_app_status("file command", status);
 }
 
 static void phipia_note_from_buffer(void)
