@@ -46,7 +46,10 @@ def _build_iso(
     grub_mkrescue: str,
     grub_module_dir: Path | None,
     cut: int | None,
+    storage_cut: int | None = None,
 ) -> None:
+    if cut is not None and storage_cut is not None:
+        raise PowerCutError("durability and device-command cuts are mutually exclusive")
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="phipia-ext4-cut-", dir=output.parent) as raw:
         root = Path(raw)
@@ -57,6 +60,8 @@ def _build_iso(
         command_line = "phipia.test=ext4-recovery"
         if cut is not None:
             command_line += f" phipia.ext4-cut={cut}"
+        if storage_cut is not None:
+            command_line += f" phipia.ext4-storage-cut={storage_cut}"
         (grub / "grub.cfg").write_text(
             "\n".join(
                 (

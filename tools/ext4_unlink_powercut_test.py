@@ -383,7 +383,8 @@ def run(args):
     if symlinking:
         expected_inodes = before["free_inodes"] - 1
     iso = output / "verify.iso"
-    recovery._build_iso(args.kernel.resolve(), iso, args.grub_mkrescue, args.grub_module_dir, None)
+    recovery._build_iso(args.kernel.resolve(), iso, args.grub_mkrescue, args.grub_module_dir, None,
+        storage_cut=0 if args.physical_cuts else None)
     baseline = output / "complete.raw"
     shutil.copyfile(initial, baseline)
     status, transcript = recovery._run_qemu(args.qemu, args.accel, iso, baseline,
@@ -395,6 +396,87 @@ def run(args):
             f"stat /data/user/{name}"), f"/data/user/{name}")
         replacement_inode = created["inode"]
     inspect(baseline, tools, output / "complete", expected_blocks, expected_inodes, replacement_inode, args.operation, expected_parent_links, expected_collision_inode)
+    if args.physical_cuts:
+        boundaries = re.findall(r"^ST EXT4 STORAGE (\d+) (write|flush) (\d+)$", transcript, re.MULTILINE)
+        if not 1 <= len(boundaries) <= 128 or [int(item[0]) for item in boundaries] != list(range(1, len(boundaries) + 1)):
+            raise RuntimeError("device-command trace is not a bounded contiguous sequence")
+        if {item[1] for item in boundaries} != {"write", "flush"}:
+            raise RuntimeError("device-command matrix omitted writes or flushes")
+        reports, repeated_recovery = [], []
+
+        def inspect_recovered(image, prefix):
+            return inspect(image, tools, output / prefix, expected_blocks, expected_inodes,
+                replacement_inode, args.operation, expected_parent_links, expected_collision_inode)
+
+        def require_cut(status, trace, ordinal):
+            if status != recovery.POWER_CUT_EXIT_STATUS or trace.count(f"ST EXT4 STORAGE CUT {ordinal}\n") != 1 or \
+                    pass_marker in trace or "ST FAIL" in trace or "Phipia PANIC" in trace:
+                raise RuntimeError(f"device-command cut {ordinal} did not terminate exactly:\n" + recovery._transcript_tail(trace))
+
+        for number, kind, detail in boundaries:
+            ordinal = int(number)
+            prefix = f"device-cut-{ordinal:03d}"
+            image, cut_iso = output / f"{prefix}.raw", output / f"{prefix}.iso"
+            shutil.copyfile(initial, image)
+            recovery._build_iso(args.kernel.resolve(), cut_iso, args.grub_mkrescue,
+                args.grub_module_dir, None, storage_cut=ordinal)
+            status, trace = recovery._run_qemu(args.qemu, args.accel, cut_iso, image,
+                output / f"{prefix}.log", args.timeout)
+            require_cut(status, trace, ordinal)
+            if trace.count(f"ST EXT4 STORAGE {ordinal} {kind} {detail}\n") != 1:
+                raise RuntimeError("device-command cut changed its baseline command identity")
+            committed = bool(re.search(r"^ST EXT4 DURABLE \d+ commit$", trace, re.MULTILINE))
+            crashed = output / f"{prefix}-crashed.raw"
+            shutil.copyfile(image, crashed)
+            status, reboot = recovery._run_qemu(args.qemu, args.accel, iso, image,
+                output / f"{prefix}-reboot.log", args.timeout)
+            verify_exit(status, reboot, pass_marker)
+            states = re.findall(rf"^{re.escape(state_marker)} (old|new)$", reboot, re.MULTILINE)
+            if len(states) != 1 or (committed and states[0] != "new"):
+                raise RuntimeError("device-command cut violated old-or-new state or lost a durable commit")
+            reports.append({"cut": ordinal, "kind": kind, "detail": int(detail), "commit_durable": committed,
+                "recovered_state": states[0], "result": inspect_recovered(image, prefix),
+                "crashed_sha256": hashlib.sha256(crashed.read_bytes()).hexdigest()})
+            # At the first durable commit, replay still has physical home writes
+            # and cleanup barriers. Cut each command before public VFS admission.
+            if committed and not repeated_recovery:
+                mount_trace = reboot.split(f"{state_marker} new\n", 1)[0]
+                recovery_commands = re.findall(r"^ST EXT4 STORAGE (\d+) (write|flush) (\d+)$", mount_trace, re.MULTILINE)
+                if not recovery_commands or not any(item[1] == "write" for item in recovery_commands):
+                    raise RuntimeError("durable commit omitted physical recovery checkpoint writes")
+                for recovery_number, recovery_kind, recovery_detail in recovery_commands:
+                    second_cut = int(recovery_number)
+                    second_prefix = f"device-recovery-{second_cut:03d}"
+                    repeated_image = output / f"{second_prefix}.raw"
+                    repeated_iso = output / f"{second_prefix}.iso"
+                    shutil.copyfile(crashed, repeated_image)
+                    recovery._build_iso(args.kernel.resolve(), repeated_iso, args.grub_mkrescue,
+                        args.grub_module_dir, None, storage_cut=second_cut)
+                    second_status, second_trace = recovery._run_qemu(args.qemu, args.accel, repeated_iso,
+                        repeated_image, output / f"{second_prefix}.log", args.timeout)
+                    require_cut(second_status, second_trace, second_cut)
+                    if state_marker in second_trace or second_trace.count(
+                            f"ST EXT4 STORAGE {second_cut} {recovery_kind} {recovery_detail}\n") != 1:
+                        raise RuntimeError("repeated device cut escaped mount recovery or changed command identity")
+                    second_hash = hashlib.sha256(repeated_image.read_bytes()).hexdigest()
+                    shutil.copyfile(repeated_image, output / f"{second_prefix}-crashed.raw")
+                    final_status, final_trace = recovery._run_qemu(args.qemu, args.accel, iso,
+                        repeated_image, output / f"{second_prefix}-reboot.log", args.timeout)
+                    verify_exit(final_status, final_trace, pass_marker)
+                    if final_trace.count(f"{state_marker} new\n") != 1:
+                        raise RuntimeError("repeated device cut lost committed state")
+                    repeated_recovery.append({"cut": second_cut, "kind": recovery_kind,
+                        "detail": int(recovery_detail), "crashed_sha256": second_hash,
+                        "result": inspect_recovered(repeated_image, second_prefix)})
+        if not repeated_recovery:
+            raise RuntimeError("device-command matrix omitted repeated recovery")
+        (output / "report.json").write_text(json.dumps({"operation": f"{args.operation}-device-cuts",
+            "before": before, "reports": reports, "repeated_recovery": repeated_recovery,
+            "cut_scope": "after each completed NVMe block write and flush; no torn-sector or volatile-cache-loss model",
+            "kernel_sha256": hashlib.sha256(args.kernel.read_bytes()).hexdigest(),
+            "fixture_sha256": hashlib.sha256(args.fixture.read_bytes()).hexdigest()}, indent=2, sort_keys=True) + "\n")
+        print(f"ordinary VFS {args.operation}: {len(reports)} device-command cuts, {len(repeated_recovery)} repeated recovery cuts, Linux readback, fsck and census PASS")
+        return
     if args.storage_failures:
         totals = re.findall(rf"^{re.escape(storage_marker)} attempts (\d+)$", transcript, re.MULTILINE)
         if len(totals) != 1 or not 1 <= int(totals[0]) <= 128:
@@ -529,9 +611,12 @@ def main():
     parser.add_argument("--accel", default="tcg")
     parser.add_argument("--timeout", type=int, default=90)
     parser.add_argument("--storage-failures", action="store_true")
+    parser.add_argument("--physical-cuts", action="store_true")
     args = parser.parse_args()
     if args.storage_failures and args.operation not in ("overwrite", "append", "truncate", "grow", "rename", "rename-cross"):
         parser.error("--storage-failures requires --operation overwrite, append, truncate, grow, rename or rename-cross")
+    if args.physical_cuts and (args.storage_failures or args.operation not in ("rename", "rename-cross")):
+        parser.error("--physical-cuts requires rename or rename-cross and excludes --storage-failures")
     run(args)
 
 

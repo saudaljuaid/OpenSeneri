@@ -318,6 +318,19 @@ checked with debugfs plus read-only `e2fsck`. Per-cut serial transcripts, disk
 reports, and hashes are retained as a Linux workflow artifact. The same mounted
 backend is writable through ordinary VFS calls after the boundary sweep.
 
+`qemu-test-ext4-rename-device-powercuts` and its `rename-cross-device`
+counterpart additionally cut after each completed NVMe block-write command and
+flush. The private `phipia.ext4-storage-cut` test option traces command ordinals
+and LBAs (or flush boundary identifiers); zero records the baseline, and a
+positive ordinal exits immediately at that command. It cannot be combined with
+the flush-only cut or storage-refusal injector. Failed commands do not count as
+completed. The runner checks old-or-new rename state, requires new state after
+a durable commit, then cuts every command in the first committed transaction's
+mount recovery. Each result must pass the ordinary VFS contents, inode and
+allocation checks, resource census, clean unmount, Linux readback and read-only
+fsck. These tests do not model torn sectors inside one device command or loss
+of an emulated volatile write cache; they do not establish all Stage 5 gates.
+
 The caller must supply a distinct physical journal block for the descriptor,
 each metadata image, and the commit. The resulting operation list has one legal
 order:

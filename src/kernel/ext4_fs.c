@@ -69,6 +69,9 @@ static uint64_t next_handle_generation = UINT64_C(1);
 static bool ext4_test_configured;
 static uint32_t ext4_test_power_cut_boundary;
 static uint32_t ext4_test_durable_boundary;
+static bool ext4_test_storage_trace_enabled;
+static uint32_t ext4_test_storage_cut_target;
+static uint32_t ext4_test_storage_completed;
 static bool ext4_test_storage_failure_armed;
 static bool ext4_test_storage_failure_seen;
 static uint32_t ext4_test_storage_failure_target;
@@ -229,7 +232,9 @@ bool ext4_backend_test_configure_power_cut(const char *command_line,
     size_t command_line_length)
 {
     static const char prefix[] = "phipia.ext4-cut=";
+    static const char storage_prefix[] = "phipia.ext4-storage-cut=";
     uint32_t selected = 0U;
+    bool storage_selected = false;
     size_t offset = 0U;
     bool found = false;
 
@@ -249,14 +254,16 @@ bool ext4_backend_test_configure_power_cut(const char *command_line,
             ++offset;
         }
         length = offset - start;
-        if (!token_has_prefix(command_line + start, length, prefix,
-                sizeof(prefix) - 1U)) {
+        const bool storage = token_has_prefix(command_line + start, length,
+            storage_prefix, sizeof(storage_prefix) - 1U);
+        const size_t prefix_length = storage ? sizeof(storage_prefix) - 1U : sizeof(prefix) - 1U;
+        if (!storage && !token_has_prefix(command_line + start, length, prefix, prefix_length)) {
             continue;
         }
-        if (found || length == sizeof(prefix) - 1U) {
+        if (found || length == prefix_length) {
             return false;
         }
-        for (size_t index = sizeof(prefix) - 1U; index < length; ++index) {
+        for (size_t index = prefix_length; index < length; ++index) {
             const char digit = command_line[start + index];
 
             if (digit < '0' || digit > '9' ||
@@ -265,26 +272,30 @@ bool ext4_backend_test_configure_power_cut(const char *command_line,
             }
             value = value * 10U + (uint32_t)(digit - '0');
         }
-        if (value == 0U || value > EXT4_POWER_CUT_BOUNDARY_COUNT) {
+        if ((!storage && value == 0U) || value > (storage ? 128U : EXT4_POWER_CUT_BOUNDARY_COUNT)) {
             return false;
         }
         selected = value;
+        storage_selected = storage;
         found = true;
     }
     ext4_test_configured = true;
-    ext4_test_power_cut_boundary = selected;
+    ext4_test_power_cut_boundary = storage_selected ? 0U : selected;
     ext4_test_durable_boundary = 0U;
+    ext4_test_storage_trace_enabled = storage_selected;
+    ext4_test_storage_cut_target = storage_selected ? selected : 0U;
+    ext4_test_storage_completed = 0U;
     return true;
 }
 
 bool ext4_backend_test_power_cut_configured(void)
 {
-    return ext4_test_configured && ext4_test_power_cut_boundary != 0U;
+    return ext4_test_configured && (ext4_test_power_cut_boundary != 0U || ext4_test_storage_trace_enabled);
 }
 
 bool ext4_backend_test_fail_storage_once(uint32_t operation_ordinal)
 {
-    if (!ext4_test_configured || ext4_test_power_cut_boundary != 0U ||
+    if (!ext4_test_configured || ext4_test_power_cut_boundary != 0U || ext4_test_storage_trace_enabled ||
         ext4_test_storage_failure_armed || operation_ordinal == 0U) {
         return false;
     }
@@ -374,6 +385,27 @@ static void report_durable_boundary(uint32_t boundary)
     console_write_u64(ext4_test_durable_boundary);
     console_putc(' ');
     console_write(name);
+    console_putc('\n');
+    cpu_out32(EXT4_POWER_CUT_EXIT_PORT, EXT4_POWER_CUT_EXIT_VALUE);
+    console_halt();
+}
+
+/* Test-only cut after a completed device command. This does not model a torn
+ * sector within one command or claim that an unflushed write is durable. */
+static void report_storage_completion(const char *kind, uint64_t detail)
+{
+    if (!ext4_test_configured || !ext4_test_storage_trace_enabled) return;
+    ++ext4_test_storage_completed;
+    console_write("ST EXT4 STORAGE ");
+    console_write_u64(ext4_test_storage_completed);
+    console_putc(' ');
+    console_write(kind);
+    console_putc(' ');
+    console_write_u64(detail);
+    console_putc('\n');
+    if (ext4_test_storage_completed != ext4_test_storage_cut_target) return;
+    console_write("ST EXT4 STORAGE CUT ");
+    console_write_u64(ext4_test_storage_completed);
     console_putc('\n');
     cpu_out32(EXT4_POWER_CUT_EXIT_PORT, EXT4_POWER_CUT_EXIT_VALUE);
     console_halt();
@@ -691,6 +723,7 @@ int32_t phipia_ext4_block_write(
                 return -1;
             }
         }
+        report_storage_completion("write", lba);
         source += chunk;
         position += chunk;
         remaining -= chunk;
@@ -732,6 +765,7 @@ int32_t phipia_ext4_block_flush(uintptr_t context, uint32_t boundary)
         return -1;
     }
     report_durable_boundary(boundary);
+    report_storage_completion("flush", boundary);
     return 0;
 }
 
@@ -944,6 +978,7 @@ void ext4_backend_initialize(void)
     zero_bytes(ext4_mounts, sizeof(ext4_mounts));
     zero_bytes(ext4_handles, sizeof(ext4_handles));
     ext4_test_durable_boundary = 0U;
+    ext4_test_storage_completed = 0U;
     ext4_test_storage_failure_armed = false;
     ext4_test_storage_failure_seen = false;
     ext4_test_storage_failure_target = 0U;
