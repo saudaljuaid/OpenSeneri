@@ -152,6 +152,12 @@ jobs:
                   make build/tests/ext4/phipia-ext4.raw
                   export PHIPIA_EXT4_RUST_FIXTURE="$PWD/build/tests/ext4/phipia-ext4.raw"
                   export CARGO_TARGET_DIR="$PWD/build/ext4-transaction-target"
+                  if [[ "$PHIPIA_EXT4_CUT_OPERATION" == 'storage-refusals' ]]; then
+                      cargo test --manifest-path tools/ext4-transaction-tests/Cargo.toml \
+                          --locked --offline --lib --test coordinator -- --nocapture \
+                          2>&1 | tee evidence/ext4/journal-and-coordinator-host.log
+                      exit 0
+                  fi
                   for regression in admitted_fixture_has_complete_storage_and_namespace_census \
                       namespace_counts_parents_types_and_unique_names_are_checked_before_mutation \
                       real_inode_exhaustion_rolls_back_namespace_and_reuses_a_freed_inode \
