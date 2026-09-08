@@ -51,7 +51,7 @@ def inspect_results(image, output, label):
         fields = line.split("/")
         if len(fields) > 5:
             name = fields[5]
-            if name == "journey" or name.startswith(("SNTMP", "PNTMP", "MSTMP", "METMP", "STTMP", "CPTMP")):
+            if name == "journey" or name.startswith(("SNTMP", "PNTMP", "MSTMP", "METMP", "MEXTP", "STTMP", "CPTMP")):
                 raise RuntimeError(f"application cleanup leaked {name}")
     for name in (*EXPECTED, "NOTES.TXT", "JOURNEY.TXT"):
         destination = target / name

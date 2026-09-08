@@ -340,6 +340,12 @@ enum paint_status paint_copy_bgr24_row(uint32_t row, uint8_t *destination,
 
 void paint_mark_saved(void) { paint_saved = true; }
 void console_serial_write(const char *message) { (void)message; }
+struct ui_rect editor_stage_rect(void) { return (struct ui_rect){ .width = 2U, .height = 2U }; }
+enum surface_status surface_read_pixel(const struct surface *surface, uint32_t x, uint32_t y, uint32_t *pixel)
+{
+    (void)surface; (void)x; (void)y; (void)pixel;
+    return SURFACE_STATUS_NULL_ARGUMENT;
+}
 
 enum phipfs_status phipfs_list(enum phipfs_volume volume, const char *path,
     struct phipfs_list_entry *entries, size_t capacity, size_t *entry_count)
@@ -376,12 +382,25 @@ static void reset_app(unsigned app, enum save_fault next_fault)
         expected_bytes[26] = 1U; expected_bytes[28] = 24U; expected_bytes[34] = 16U;
         memset(expected_bytes + 54U, 0x22, 6U);
         memset(expected_bytes + 62U, 0x11, 6U);
+        if (app == 3U) {
+            expected_destination = "EXPORT.BMP";
+            expected_scratch = "MEXTP0.BMP";
+            media_source_preview_loaded = true;
+            media_source_preview_width = media_source_preview_height = 2U;
+            media_editor_export_active = false;
+            logo_red_shift = 16U; logo_green_shift = 8U; logo_blue_shift = 0U;
+            for (unsigned x = 0U; x < 2U; ++x) {
+                media_source_preview_pixels[x] = 0x111111U;
+                media_source_preview_pixels[UI_MEDIA_SOURCE_PREVIEW_WIDTH + x] = 0x222222U;
+            }
+        }
     }
 }
 
 static enum phipfs_status save_app(unsigned app)
 {
-    return app == 0U ? media_source_save() : app == 1U ? media_editor_save_timeline() : paint_save();
+    return app == 0U ? media_source_save() : app == 1U ? media_editor_save_timeline() :
+        app == 2U ? paint_save() : media_source_export();
 }
 
 static void settings_persistence(void)
@@ -508,7 +527,7 @@ int main(void)
     reset_save(SAVE_OK);
     note_savable = false;
     assert(note_save() == PHIPFS_STATUS_RANGE && opens == 0U && note_dirty);
-    for (unsigned app = 0U; app < 3U; ++app) {
+    for (unsigned app = 0U; app < 4U; ++app) {
         const enum save_fault app_faults[] = { SAVE_OK, PUBLISH_LOST, CREATE_LOST, WRITE_FAIL,
             FIRST_SYNC_FAIL, PUBLISH_FAIL, SOURCE_REPLACED, SECOND_SYNC_FAIL, CLOSE_FAIL };
         for (size_t index = 0U; index < sizeof(app_faults) / sizeof(app_faults[0]); ++index) {
@@ -516,7 +535,8 @@ int main(void)
             const bool success = fault == SAVE_OK || fault == PUBLISH_LOST;
             assert((save_app(app) == PHIPFS_STATUS_OK) == success);
             assert(live_handles == 0U);
-            assert((app == 0U ? !media_source_dirty : app == 1U ? !media_editor_dirty : paint_saved) == success);
+            if (app < 3U)
+                assert((app == 0U ? !media_source_dirty : app == 1U ? !media_editor_dirty : paint_saved) == success);
             if (success) {
                 assert(target_inode == 20U && scratch_inode == 0U && target_length == expected_length);
                 assert(memcmp(target_bytes, expected_bytes, expected_length) == 0);
@@ -528,7 +548,16 @@ int main(void)
         fail_write_at = boundary;
         assert(paint_save() == PHIPFS_STATUS_IO);
         assert(!paint_saved && publications == 0U && closes == 1U && target_inode == 10U);
+        reset_app(3U, SAVE_OK);
+        fail_write_at = boundary;
+        assert(media_source_export() == PHIPFS_STATUS_IO);
+        assert(publications == 0U && closes == 1U && target_inode == 10U && scratch_inode == 0U);
     }
+    reset_app(3U, SAVE_OK);
+    media_editor_export_active = true; /* Fail sampling after writing the BMP header. */
+    assert(media_source_export() == PHIPFS_STATUS_IO && publications == 0U && live_handles == 0U);
+    assert(target_inode == 10U && scratch_inode == 0U);
+    media_editor_export_active = false;
     reset_app(2U, SAVE_OK);
     fail_paint_row = true;
     assert(paint_save() == PHIPFS_STATUS_IO && publications == 0U && live_handles == 0U);
