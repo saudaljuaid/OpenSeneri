@@ -5634,6 +5634,28 @@ static _Noreturn void ext4_vfs_overwrite_powercut(void)
     size_t count;
     uint64_t position;
     uint8_t changed[4097];
+    uint32_t failure_ordinal = 0U;
+    bool storage_probe = false;
+    const enum phipfs_status control_status = phipfs_stat_path(volume, "data/user/OVERFAIL.BIN", &after);
+    if (control_status == PHIPFS_STATUS_OK) {
+        phipfs_handle control;
+        uint8_t encoded[4];
+        if (after.size != sizeof(encoded)) kernel_test_fail("ext4 overwrite failure control size");
+        ext4_vfs_require(phipfs_open(volume, "data/user/OVERFAIL.BIN", PHIPFS_ACCESS_READ, &control), "overwrite failure control open");
+        ext4_vfs_require(phipfs_read(control, encoded, sizeof(encoded), &count), "overwrite failure control read");
+        ext4_vfs_require(phipfs_close(control), "overwrite failure control close");
+        if (count != sizeof(encoded) || ext4_backend_test_power_cut_configured())
+            kernel_test_fail("ext4 overwrite failure control conflicts with cut");
+        failure_ordinal = (uint32_t)encoded[0] | (uint32_t)encoded[1] << 8U |
+            (uint32_t)encoded[2] << 16U | (uint32_t)encoded[3] << 24U;
+        if ((failure_ordinal & UINT32_C(0xffff0000)) != UINT32_C(0x4f570000))
+            kernel_test_fail("ext4 overwrite failure control magic");
+        failure_ordinal &= UINT32_C(0xffff);
+        if (failure_ordinal > 128U) kernel_test_fail("ext4 overwrite failure control exceeds bound");
+        storage_probe = true;
+    } else if (control_status != PHIPFS_STATUS_NOT_FOUND) {
+        kernel_test_fail("ext4 overwrite failure control lookup");
+    }
     ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ_WRITE, &writer), "overwrite cut writer");
     ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &reader), "overwrite cut reader");
     ext4_vfs_require(phipfs_fstat(writer, &original), "overwrite cut original inode");
@@ -5645,7 +5667,33 @@ static _Noreturn void ext4_vfs_overwrite_powercut(void)
         for (size_t index = 0U; index < sizeof(changed); ++index) changed[index] = 's';
         ext4_vfs_require(phipfs_seek(writer, 123, PHIPFS_SEEK_START, &position), "overwrite cut unaligned seek");
         if (position != 123U) kernel_test_fail("ext4 overwrite cut wrong start");
-        ext4_vfs_require(phipfs_write(writer, changed, sizeof(changed), &count), "overwrite cut two partial blocks");
+        if (storage_probe && !ext4_backend_test_fail_storage_once(failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
+            kernel_test_fail("ext4 overwrite could not arm storage probe");
+        enum phipfs_status write_status = phipfs_write(writer, changed, sizeof(changed), &count);
+        if (storage_probe) {
+            uint32_t attempts;
+            enum phipia_ext4_test_storage_kind failure_kind;
+            if (!ext4_backend_test_finish_storage_probe(&attempts, &failure_kind) || attempts == 0U)
+                kernel_test_fail("ext4 overwrite storage probe was not exercised");
+            if (failure_ordinal == 0U) {
+                if (write_status != PHIPFS_STATUS_OK || failure_kind != PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
+                    kernel_test_fail("ext4 overwrite storage baseline failed");
+                console_write("ST EXT4 OVERWRITE storage attempts ");
+                console_write_u64(attempts);
+                console_putc('\n');
+            } else {
+                if (write_status != PHIPFS_STATUS_IO || count != 0U || attempts != failure_ordinal ||
+                    failure_kind >= PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
+                    kernel_test_fail("ext4 overwrite storage refusal was not exact");
+                ext4_vfs_require(phipfs_seek(writer, 0, PHIPFS_SEEK_CURRENT, &position), "overwrite failed cursor");
+                if (position != 123U) kernel_test_fail("ext4 refused overwrite advanced cursor");
+                console_write("ST EXT4 OVERWRITE storage refused ");
+                console_write_u64(attempts);
+                console_write(failure_kind == PHIPIA_EXT4_TEST_STORAGE_WRITE ? " write\n" : " flush\n");
+                write_status = phipfs_write(writer, changed, sizeof(changed), &count);
+            }
+        }
+        ext4_vfs_require(write_status, "overwrite cut two partial blocks");
         if (count != sizeof(changed)) kernel_test_fail("ext4 overwrite cut short write");
         ext4_vfs_require(phipfs_seek(writer, 0, PHIPFS_SEEK_CURRENT, &position), "overwrite cut final cursor");
         if (position != 4220U) kernel_test_fail("ext4 overwrite cut wrong final cursor");

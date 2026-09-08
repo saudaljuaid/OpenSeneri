@@ -305,6 +305,10 @@ def run(args):
         if metadata_change:
             source.write_bytes(b"t" * 1700)
             files = [(source, "metadata-target"), (empty, "CUTMODE.TST" if args.operation == "chmod" else "CUTTIMES.TST")]
+        if args.storage_failures:
+            control = work / "storage-control"
+            control.write_bytes((0x4F570000).to_bytes(4, "little"))
+            files.append((control, "OVERFAIL.BIN"))
         for file, name in files:
             ext4_image._run([tools["debugfs"], "-w", "-R",
                 f'write "{file.as_posix()}" /data/user/{name}', initial])
@@ -387,6 +391,50 @@ def run(args):
             f"stat /data/user/{name}"), f"/data/user/{name}")
         replacement_inode = created["inode"]
     inspect(baseline, tools, output / "complete", expected_blocks, expected_inodes, replacement_inode, args.operation, expected_parent_links, expected_collision_inode)
+    if args.storage_failures:
+        totals = re.findall(r"^ST EXT4 OVERWRITE storage attempts (\d+)$", transcript, re.MULTILINE)
+        if len(totals) != 1 or not 1 <= int(totals[0]) <= 128:
+            raise RuntimeError("overwrite storage baseline omitted its bounded attempt count")
+        reports = []
+        kinds = set()
+        for ordinal in range(1, int(totals[0]) + 1):
+            image = output / f"refusal-{ordinal:03d}.raw"
+            control = output / f"refusal-{ordinal:03d}.bin"
+            shutil.copyfile(initial, image)
+            control.write_bytes((0x4F570000 | ordinal).to_bytes(4, "little"))
+            ext4_image._run([tools["debugfs"], "-w", "-R", "rm /data/user/OVERFAIL.BIN", image])
+            ext4_image._run([tools["debugfs"], "-w", "-R",
+                f'write "{control.as_posix()}" /data/user/OVERFAIL.BIN', image])
+            prepared = ext4_image.inspect_image(image, tools=tools)
+            if prepared["free_blocks"] != before["free_blocks"] or prepared["free_inodes"] != before["free_inodes"]:
+                raise RuntimeError("overwrite refusal control changed fixture accounting")
+            status, trace = recovery._run_qemu(args.qemu, args.accel, iso, image,
+                output / f"refusal-{ordinal:03d}.log", args.timeout)
+            verify_exit(status, trace, pass_marker)
+            refused = re.findall(r"^ST EXT4 OVERWRITE storage refused (\d+) (write|flush)$", trace, re.MULTILINE)
+            if len(refused) != 1 or int(refused[0][0]) != ordinal or trace.count(f"{state_marker} old\n") != 1:
+                raise RuntimeError("overwrite did not exercise the exact storage refusal and identical retry")
+            kinds.add(refused[0][1])
+            after_retry = inspect(image, tools, output / f"refusal-{ordinal:03d}", expected_blocks,
+                expected_inodes, replacement_inode, args.operation, expected_parent_links)
+            status, reboot = recovery._run_qemu(args.qemu, args.accel, iso, image,
+                output / f"refusal-{ordinal:03d}-reboot.log", args.timeout)
+            verify_exit(status, reboot, pass_marker)
+            if reboot.count(f"{state_marker} new\n") != 1 or "ST EXT4 OVERWRITE storage refused" in reboot:
+                raise RuntimeError("overwrite refusal retry did not survive cold reboot")
+            after_reboot = inspect(image, tools, output / f"refusal-{ordinal:03d}-reboot", expected_blocks,
+                expected_inodes, replacement_inode, args.operation, expected_parent_links)
+            reports.append({"ordinal": ordinal, "kind": refused[0][1], "after_retry": after_retry,
+                "after_reboot": after_reboot, "prepared": prepared})
+        if kinds != {"write", "flush"}:
+            raise RuntimeError("overwrite refusal matrix did not exercise writes and flushes")
+        (output / "report.json").write_text(json.dumps({"operation": "overwrite-storage-refusals",
+            "before": before, "attempts": int(totals[0]), "reports": reports,
+            "scope": "one refusal before each platform callback, then identical retry; not torn physical writes",
+            "kernel_sha256": hashlib.sha256(args.kernel.read_bytes()).hexdigest(),
+            "fixture_sha256": hashlib.sha256(args.fixture.read_bytes()).hexdigest()}, indent=2, sort_keys=True) + "\n")
+        print(f"ordinary VFS overwrite: {len(reports)} exact storage refusals, identical retries, cold reboots, Linux readback, fsck and census PASS")
+        return
     boundaries = re.findall(r"^ST EXT4 DURABLE (\d+) ([a-z-]+)$", transcript, re.MULTILINE)
     if not 1 <= len(boundaries) <= 64 or [int(number) for number, _ in boundaries] != list(range(1, len(boundaries) + 1)):
         raise RuntimeError("held-unlink trace is not a bounded contiguous boundary sequence")
@@ -476,7 +524,11 @@ def main():
     parser.add_argument("--grub-module-dir", type=Path)
     parser.add_argument("--accel", default="tcg")
     parser.add_argument("--timeout", type=int, default=90)
-    run(parser.parse_args())
+    parser.add_argument("--storage-failures", action="store_true")
+    args = parser.parse_args()
+    if args.storage_failures and args.operation != "overwrite":
+        parser.error("--storage-failures currently requires --operation overwrite")
+    run(args)
 
 
 if __name__ == "__main__":

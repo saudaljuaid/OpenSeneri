@@ -168,6 +168,8 @@ bool ext4_backend_test_configure_power_cut(const char *command_line,
     size_t command_line_length);
 bool ext4_backend_test_power_cut_configured(void);
 bool ext4_backend_test_fail_storage_once(uint32_t operation_ordinal);
+bool ext4_backend_test_finish_storage_probe(uint32_t *attempts,
+    enum phipia_ext4_test_storage_kind *failure_kind);
 bool ext4_backend_test_storage_failure_observed(
     enum phipia_ext4_test_storage_kind expected_kind);
 enum phipfs_status ext4_backend_write(phipfs_handle handle,

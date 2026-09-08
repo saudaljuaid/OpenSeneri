@@ -291,6 +291,20 @@ bool ext4_backend_test_storage_failure_observed(
     return observed;
 }
 
+bool ext4_backend_test_finish_storage_probe(uint32_t *attempts,
+    enum phipia_ext4_test_storage_kind *failure_kind)
+{
+    if (!ext4_test_configured || attempts == NULL || failure_kind == NULL ||
+        (!ext4_test_storage_failure_armed && !ext4_test_storage_failure_seen)) return false;
+    *attempts = ext4_test_storage_operation;
+    *failure_kind = ext4_test_storage_failure_seen ? ext4_test_storage_failure_kind :
+        PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT;
+    ext4_test_storage_failure_armed = false;
+    ext4_test_storage_failure_seen = false;
+    ext4_test_storage_failure_kind = PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT;
+    return true;
+}
+
 static bool fail_test_storage_operation(
     enum phipia_ext4_test_storage_kind kind)
 {
