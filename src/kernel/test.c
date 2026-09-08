@@ -4989,11 +4989,43 @@ static void ext4_vfs_semantics(void)
     if ((metadata.mode & 0777U) != 0600U || metadata.atime_seconds != 2200000000LL ||
         metadata.mtime_seconds != 2300000000LL || metadata.atime_nanos != 123U || metadata.mtime_nanos != 456U)
         kernel_test_fail("ext4 VFS metadata changed");
+    const uint64_t free_before_xattr = phipfs_drive(volume).free_bytes;
+    if (!ext4_backend_test_fail_storage_once(3U) ||
+        phipfs_set_xattr(volume, name, "user.external", payload, 300U, false) != PHIPFS_STATUS_IO)
+        kernel_test_fail("ext4 VFS external xattr storage refusal was not exercised");
+    ext4_vfs_require(phipfs_fsync(file), "external xattr retry");
+    ext4_vfs_require(phipfs_get_xattr(volume, alias, "user.external", NULL, 0U, &count), "external xattr size");
+    if (count != 300U || phipfs_drive(volume).free_bytes != free_before_xattr - 4096U)
+        kernel_test_fail("ext4 VFS external xattr allocation changed");
+    if (phipfs_get_xattr(volume, alias, "user.external", block, 299U, &count) != PHIPFS_STATUS_RANGE || count != 0U ||
+        phipfs_set_xattr(volume, alias, "user.external", payload, 4096U, false) != PHIPFS_STATUS_FULL ||
+        phipfs_set_xattr(volume, name, "security.refused", payload, 1U, false) != PHIPFS_STATUS_INVALID_ARGUMENT)
+        kernel_test_fail("ext4 VFS xattr boundary or feature refusal changed");
+    ext4_vfs_require(phipfs_get_xattr(volume, name, "user.external", block, sizeof(block), &count), "external xattr preserved");
+    if (count != 300U) kernel_test_fail("ext4 VFS external xattr length changed");
+    for (size_t index = 0U; index < count; ++index)
+        if (block[index] != payload[index]) kernel_test_fail("ext4 VFS refused xattr update changed value");
+    ext4_vfs_require(phipfs_set_xattr(volume, alias, "user.external", NULL, 0U, true), "external xattr remove");
+    if (phipfs_drive(volume).free_bytes != free_before_xattr ||
+        phipfs_get_xattr(volume, name, "user.external", block, sizeof(block), &count) != PHIPFS_STATUS_NOT_FOUND || count != 0U ||
+        phipfs_set_xattr(volume, name, "user.external", NULL, 0U, true) != PHIPFS_STATUS_NOT_FOUND)
+        kernel_test_fail("ext4 VFS xattr removal leaked storage or retained value");
+    ext4_vfs_require(phipfs_set_xattr(volume, name, "user.empty", NULL, 0U, false), "empty xattr create");
+    ext4_vfs_require(phipfs_get_xattr(volume, alias, "user.empty", block, sizeof(block), &count), "empty xattr read");
+    if (count != 0U) kernel_test_fail("ext4 VFS empty xattr became nonempty");
+    ext4_vfs_require(phipfs_set_xattr(volume, name, "user.empty", NULL, 0U, true), "empty xattr remove");
+    ext4_vfs_require(phipfs_get_xattr(volume, alias, "user.vfs", block, sizeof(block), &count), "retained inline xattr");
+    if (count != 5U || block[0] != 'v' || block[4] != 'e') kernel_test_fail("ext4 VFS external xattr changed inline value");
+    console_write("ST EXT4 VFS external xattr retry bounds refusal remove empty allocation exact\n");
     ext4_vfs_require(phipfs_symlink(volume, symbolic, target), "symlink");
     ext4_vfs_require(phipfs_readlink(volume, symbolic, block, sizeof(block), &count), "readlink");
     if (count != sizeof(target) - 1U) kernel_test_fail("ext4 VFS symlink length changed");
     for (size_t index = 0U; index < count; ++index)
         if (block[index] != (uint8_t)target[index]) kernel_test_fail("ext4 VFS symlink target changed");
+    block[3] = 0xa5U;
+    ext4_vfs_require(phipfs_readlink(volume, symbolic, block, 3U, &count), "short readlink");
+    if (count != 3U || block[0] != 'V' || block[1] != 'F' || block[2] != 'S' || block[3] != 0xa5U)
+        kernel_test_fail("ext4 VFS short readlink changed its bound or appended NUL");
     ext4_vfs_require(phipfs_mkdir(volume, directory), "mkdir");
     ext4_vfs_require(phipfs_rename(volume, name, moved), "open cross-directory rename");
     ext4_vfs_require(phipfs_open_options(volume, name, PHIPFS_ACCESS_READ_WRITE,
