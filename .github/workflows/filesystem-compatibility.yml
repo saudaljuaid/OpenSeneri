@@ -4,6 +4,11 @@ on:
     pull_request:
         branches: [main]
     workflow_dispatch:
+        inputs:
+            ext4_only:
+                description: Run bounded ext4 gates only (not full milestone certification)
+                type: boolean
+                default: false
 
 permissions:
     contents: read
@@ -27,7 +32,7 @@ jobs:
                   sudo sed -i '\|azure.archive.ubuntu.com|d' /etc/apt/apt-mirrors.txt
                   sudo apt-get update
                   sudo apt-get install --yes --no-install-recommends \
-                      binutils bzip2 clang ffmpeg file gcc grub-common \
+                      binutils bzip2 clang e2fsprogs ffmpeg file gcc grub-common \
                       grub-pc-bin lld make \
                       mtools qemu-system-x86 xorriso
             - name: Install the Rust bare-metal target
@@ -45,8 +50,33 @@ jobs:
             - name: Verify the kernel artifact
               env:
                   PHIPIA_EXT4_KERNEL_INTEROP: "1"
-              run: make verify
+              shell: bash
+              run: |
+                  set -o pipefail
+                  mkdir -p evidence/ext4
+                  git rev-parse HEAD >evidence/ext4/head.txt
+                  make verify 2>&1 | tee evidence/ext4/verify.log
+            - name: Exercise ext4 VFS recovery and durability boundaries
+              shell: bash
+              run: |
+                  set -o pipefail
+                  make qemu-test-ext4-recovery qemu-test-ext4-powercuts QEMU_ACCEL=tcg \
+                      2>&1 | tee evidence/ext4/qemu.log
+            - name: Retain exact-head ext4 evidence, including failures
+              if: always()
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: phipia-writable-ext4-${{ github.sha }}
+                  path: |
+                      evidence/ext4
+                      build/tests/ext4-recovery
+                      build/tests/ext4-powercuts
+                      build/*.e2fsck.txt
+                      build/*.sha256.txt
+                  if-no-files-found: error
+                  retention-days: 30
             - name: Run ten complete serial TCG sweeps
+              if: ${{ !inputs.ext4_only }}
               shell: bash
               run: |
                   set -o pipefail
@@ -74,6 +104,7 @@ jobs:
                           "evidence/filesystem/scenario-isos/${scenario}.iso"
                   done
             - name: Record the accelerator safety boundary
+              if: ${{ !inputs.ext4_only }}
               shell: bash
               run: |
                   printf '%s\n' \
@@ -83,6 +114,7 @@ jobs:
                       'Linux runner hardware acceleration is therefore unmeasured by design; TCG completed ten full sweeps.' \
                       >>evidence/filesystem/accelerator-results.txt
             - name: Assemble release evidence
+              if: ${{ !inputs.ext4_only }}
               shell: bash
               run: |
                   set -o pipefail
@@ -180,6 +212,7 @@ jobs:
                   cat evidence/filesystem/verification-summary.txt
                   cat evidence/filesystem/SHA256SUMS
             - name: Upload the bounded milestone evidence
+              if: ${{ !inputs.ext4_only }}
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
                   name: phipia-filesystem-milestone-${{ github.sha }}

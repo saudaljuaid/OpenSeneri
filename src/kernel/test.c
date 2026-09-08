@@ -4794,6 +4794,118 @@ _Noreturn void kernel_test_complete_normal(void)
     kernel_test_pass();
 }
 
+static void ext4_vfs_require(enum phipfs_status status, const char *operation)
+{
+    if (status != PHIPFS_STATUS_OK) {
+        console_write("ST EXT4 VFS operation ");
+        console_write(operation);
+        console_write(" status ");
+        console_write_u64((uint64_t)status);
+        console_putc('\n');
+        kernel_test_fail("ext4 ordinary VFS semantics failed");
+    }
+}
+
+static void ext4_vfs_semantics(void)
+{
+    // One unaligned request crosses the coordinator's 32-data-block split.
+    static uint8_t payload[131073];
+    uint8_t block[4096];
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/VFS2.TMP";
+    const char *alias = "data/user/VFS2.LNK";
+    const char *symbolic = "data/user/VFS2.SYM";
+    const char *directory = "data/user/VFS2.DIR";
+    const char *moved = "data/user/VFS2.DIR/moved";
+    static const char target[] = "VFS2.TMP";
+    phipfs_handle file, appended, replaced;
+    struct phipfs_stat metadata;
+    uint64_t position;
+    size_t count;
+    const uint64_t free_before = phipfs_drive(volume).free_bytes;
+    for (size_t index = 0U; index < sizeof(payload); ++index) payload[index] = (uint8_t)(index * 37U + 11U);
+    ext4_vfs_require(phipfs_open_options(volume, name, PHIPFS_ACCESS_READ_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0640U, &file), "exclusive create");
+    ext4_vfs_require(phipfs_seek(file, 4095, PHIPFS_SEEK_START, &position), "sparse seek");
+    ext4_vfs_require(phipfs_write(file, payload, sizeof(payload), &count), "split write");
+    if (count != sizeof(payload)) kernel_test_fail("ext4 VFS split write was short");
+    ext4_vfs_require(phipfs_fsync(file), "split fsync");
+    ext4_vfs_require(phipfs_pread(file, block, 4095U, 0U, &count), "hole read");
+    if (count != 4095U) kernel_test_fail("ext4 VFS hole read was short");
+    for (size_t index = 0U; index < count; ++index)
+        if (block[index] != 0U) kernel_test_fail("ext4 VFS sparse hole was not zero");
+    for (size_t offset = 0U; offset < sizeof(payload);) {
+        const size_t capacity = sizeof(payload) - offset < sizeof(block) ? sizeof(payload) - offset : sizeof(block);
+        ext4_vfs_require(phipfs_pread(file, block, capacity, 4095U + offset, &count), "split pread");
+        if (count != capacity) kernel_test_fail("ext4 VFS split read was short");
+        for (size_t index = 0U; index < count; ++index)
+            if (block[index] != payload[offset + index]) kernel_test_fail("ext4 VFS split content changed");
+        offset += count;
+    }
+    ext4_vfs_require(phipfs_seek(file, 0, PHIPFS_SEEK_CURRENT, &position), "pread cursor");
+    if (position != 4095U + sizeof(payload)) kernel_test_fail("ext4 VFS pread moved cursor");
+    ext4_vfs_require(phipfs_link(volume, name, alias), "hard link");
+    ext4_vfs_require(phipfs_open(volume, alias, PHIPFS_ACCESS_READ_WRITE, &appended), "alias open");
+    ext4_vfs_require(phipfs_set_append(appended, true), "append mode");
+    ext4_vfs_require(phipfs_write(appended, (const uint8_t *)"append", 6U, &count), "alias append");
+    ext4_vfs_require(phipfs_fstat(file, &metadata), "shared EOF");
+    if (count != 6U || metadata.size != 4101U + sizeof(payload) || metadata.links != 2U)
+        kernel_test_fail("ext4 VFS append or link accounting changed");
+    ext4_vfs_require(phipfs_ftruncate(file, 4097U), "partial shrink");
+    ext4_vfs_require(phipfs_ftruncate(file, 8192U), "sparse grow");
+    ext4_vfs_require(phipfs_pread(appended, block, sizeof(block), 4096U, &count), "truncate tail");
+    if (count != sizeof(block) || block[0] != payload[1]) kernel_test_fail("ext4 VFS retained prefix changed");
+    for (size_t index = 1U; index < count; ++index)
+        if (block[index] != 0U) kernel_test_fail("ext4 VFS truncate exposed discarded bytes");
+    ext4_vfs_require(phipfs_chmod(volume, name, 0600U), "chmod");
+    const struct phipfs_times times = { .atime_seconds = 2200000000U, .mtime_seconds = 2300000000U,
+        .atime_nanos = 123U, .mtime_nanos = 456U };
+    ext4_vfs_require(phipfs_set_times(volume, name, &times), "timestamps");
+    ext4_vfs_require(phipfs_set_xattr(volume, name, "user.vfs", (const uint8_t *)"value", 5U, false), "xattr");
+    ext4_vfs_require(phipfs_get_xattr(volume, alias, "user.vfs", block, sizeof(block), &count), "alias xattr");
+    if (count != 5U || block[0] != 'v' || block[4] != 'e') kernel_test_fail("ext4 VFS xattr changed");
+    ext4_vfs_require(phipfs_fstat(file, &metadata), "metadata");
+    if ((metadata.mode & 0777U) != 0600U || metadata.atime_seconds != 2200000000LL ||
+        metadata.mtime_seconds != 2300000000LL || metadata.atime_nanos != 123U || metadata.mtime_nanos != 456U)
+        kernel_test_fail("ext4 VFS metadata changed");
+    ext4_vfs_require(phipfs_symlink(volume, symbolic, target), "symlink");
+    ext4_vfs_require(phipfs_readlink(volume, symbolic, block, sizeof(block), &count), "readlink");
+    if (count != sizeof(target) - 1U) kernel_test_fail("ext4 VFS symlink length changed");
+    for (size_t index = 0U; index < count; ++index)
+        if (block[index] != (uint8_t)target[index]) kernel_test_fail("ext4 VFS symlink target changed");
+    ext4_vfs_require(phipfs_mkdir(volume, directory), "mkdir");
+    ext4_vfs_require(phipfs_rename(volume, name, moved), "open cross-directory rename");
+    ext4_vfs_require(phipfs_open_options(volume, name, PHIPFS_ACCESS_READ_WRITE,
+        PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE, 0600U, &replaced), "replacement create");
+    ext4_vfs_require(phipfs_write(replaced, (const uint8_t *)"old", 3U, &count), "replacement contents");
+    if (count != 3U || phipfs_rename(volume, moved, name) != PHIPFS_STATUS_EXISTS)
+        kernel_test_fail("ext4 VFS no-replace rename changed target");
+    ext4_vfs_require(phipfs_rename_replace(volume, moved, name), "open replacement");
+    ext4_vfs_require(phipfs_fstat(replaced, &metadata), "retained destination");
+    if (metadata.links != 0U || metadata.size != 3U) kernel_test_fail("ext4 VFS replacement orphan changed");
+    ext4_vfs_require(phipfs_pread(replaced, block, sizeof(block), 0U, &count), "orphan read");
+    if (count != 3U || block[0] != 'o' || block[1] != 'l' || block[2] != 'd')
+        kernel_test_fail("ext4 VFS replacement lost open data");
+    if (phipfs_unlink_held_file(file, symbolic) != PHIPFS_STATUS_STALE_HANDLE)
+        kernel_test_fail("ext4 VFS scratch removal followed final symlink");
+    ext4_vfs_require(phipfs_unlink_held_file(file, name), "owned name cleanup");
+    ext4_vfs_require(phipfs_unlink_held_file(file, alias), "final owned link cleanup");
+    ext4_vfs_require(phipfs_fstat(file, &metadata), "unlinked source");
+    if (metadata.links != 0U || metadata.size != 8192U) kernel_test_fail("ext4 VFS open source not retained");
+    ext4_vfs_require(phipfs_fsync(file), "orphan fsync");
+    ext4_vfs_require(phipfs_close(file), "source close");
+    ext4_vfs_require(phipfs_close(appended), "alias final close");
+    ext4_vfs_require(phipfs_close(replaced), "replacement final close");
+    if (phipfs_fstat(file, &metadata) != PHIPFS_STATUS_STALE_HANDLE)
+        kernel_test_fail("ext4 VFS closed source still usable");
+    ext4_vfs_require(phipfs_unlink(volume, symbolic), "dangling symlink cleanup");
+    ext4_vfs_require(phipfs_rmdir(volume, directory), "directory cleanup");
+    ext4_vfs_require(phipfs_sync(volume), "final sync");
+    if (phipfs_drive(volume).free_bytes != free_before)
+        kernel_test_fail("ext4 VFS semantics leaked block allocations");
+    console_write("ST EXT4 VFS split unaligned sparse append truncate metadata links rename held cleanup exact\n");
+}
+
 _Noreturn void kernel_test_complete_ext4_recovery(void)
 {
     static const uint8_t expected[] =
@@ -5007,12 +5119,14 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
             phipfs_read(handle, &appended, sizeof(appended), &read_bytes) !=
                 PHIPFS_STATUS_OK || read_bytes != 1U ||
             appended != transaction_byte ||
-            phipfs_unlink(PHIPFS_VOLUME_SYSTEM,
-                "data/user/JRNLPROBE.TMP") != PHIPFS_STATUS_BUSY ||
             phipfs_rename(PHIPFS_VOLUME_SYSTEM,
                 "data/user/JRNLPROBE.TMP", "data/user/JRNLPROBE.BUSY") !=
-                    PHIPFS_STATUS_BUSY ||
-            phipfs_close(handle) != PHIPFS_STATUS_OK ||
+                    PHIPFS_STATUS_OK ||
+            phipfs_fstat(handle, &stat) != PHIPFS_STATUS_OK || stat.size != 1U ||
+            phipfs_pread(handle, &appended, sizeof(appended), 0U, &read_bytes) !=
+                PHIPFS_STATUS_OK || read_bytes != 1U || appended != transaction_byte ||
+            phipfs_rename(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.BUSY", "data/user/JRNLPROBE.TMP") != PHIPFS_STATUS_OK ||
             phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
             phipfs_link(PHIPFS_VOLUME_SYSTEM,
                 "data/user/JRNLPROBE.TMP", "data/user/JRNLPROBE.LNK") !=
@@ -5020,6 +5134,10 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
             phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
             phipfs_unlink(PHIPFS_VOLUME_SYSTEM,
                 "data/user/JRNLPROBE.TMP") != PHIPFS_STATUS_OK ||
+            phipfs_fstat(handle, &stat) != PHIPFS_STATUS_OK || stat.links != 1U ||
+            phipfs_pread(handle, &appended, sizeof(appended), 0U, &read_bytes) !=
+                PHIPFS_STATUS_OK || read_bytes != 1U || appended != transaction_byte ||
+            phipfs_close(handle) != PHIPFS_STATUS_OK ||
             phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
             phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/JRNLPROBE.TMP",
                 &stat) != PHIPFS_STATUS_NOT_FOUND ||
@@ -5070,6 +5188,7 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
             kernel_test_fail("ext4 VFS namespace journal proof failed");
         }
     }
+    if (!power_cut && !transaction_already_visible) ext4_vfs_semantics();
     if (phipfs_unmount(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
         phipfs_drive(PHIPFS_VOLUME_SYSTEM).mounted ||
         !nvme_filesystem_session_resources_released() ||
