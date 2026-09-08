@@ -45,7 +45,6 @@ RUSTC := rustc
 CARGO := cargo
 PYTHON := python3
 SDK_CC ?= clang
-SDK_LD ?= ld.lld
 SDK_AR ?= ar
 READELF ?= readelf
 FFMPEG ?= ffmpeg
@@ -70,7 +69,11 @@ RUST_SYSROOT := $(shell $(RUSTC) --print sysroot | cygpath -u -f -)
 RUST_HOST := $(shell $(RUSTC) -vV | sed -n 's/^host: //p')
 KERNEL_CC = clang --target=x86_64-unknown-none
 KERNEL_LD = $(RUST_SYSROOT)/lib/rustlib/$(RUST_HOST)/bin/rust-lld -flavor gnu
+# Use Rust's ELF frontend as a single executable for SDK shell wrappers too.
+# The MSYS2 ld.lld installation can select a non-ELF driver on Windows.
+SDK_LD ?= $(RUST_SYSROOT)/lib/rustlib/$(RUST_HOST)/bin/gcc-ld/ld.lld
 endif
+SDK_LD ?= ld.lld
 HOST_EXEEXT := $(if $(filter Windows_NT,$(OS)),.exe,)
 HOST_SOCKET_LIBS := $(if $(filter Windows_NT,$(OS)),-lws2_32,)
 HOST_THREAD_FLAGS := $(if $(filter Windows_NT,$(OS)),,-pthread)
@@ -323,6 +326,7 @@ PHIPAPP_DIR := $(BUILD_DIR)/native-phip
 PHIPAPP_APP := $(PHIPAPP_DIR)/PHIP.APP
 PHIPAPP_PACKAGE := $(PHIPAPP_DIR)/PHIP.SPK
 PHIPAPP_REPAIR_PACKAGE := $(PHIPAPP_DIR)/PHIPREP.SPK
+PHIPAPP_REMOVE_PACKAGE := $(PHIPAPP_DIR)/PHIPDEL.SPK
 PHIPAPP_SYSTEM_IMAGE := $(PHIPAPP_DIR)/system.raw
 PHIPAPP_DATA_IMAGE := $(PHIPAPP_DIR)/data.raw
 PHIPAPP_REPOSITORY := $(PHIPAPP_DIR)/repository/repository.sri
@@ -717,11 +721,15 @@ $(PHIPAPP_REPAIR_PACKAGE): $(PHIPAPP_APP) apps/phip/repair-manifest.json
 	$(PYTHON) tools/phipia-package.py build \
 		--spec apps/phip/repair-manifest.json --executable $< --output $@
 
-$(PHIPAPP_SYSTEM_IMAGE): $(PHIPAPP_PACKAGE) $(PHIPAPP_REPAIR_PACKAGE) \
+$(PHIPAPP_REMOVE_PACKAGE): $(PHIPAPP_APP) apps/phip/remove-manifest.json
+	$(PYTHON) tools/phipia-package.py build \
+		--spec apps/phip/remove-manifest.json --executable $< --output $@
+
+$(PHIPAPP_SYSTEM_IMAGE): $(PHIPAPP_PACKAGE) $(PHIPAPP_REPAIR_PACKAGE) $(PHIPAPP_REMOVE_PACKAGE) \
 		tools/phipia-package.py \
 		tools/fat32_image.py
 	$(PYTHON) tools/phipia-package.py install-system \
-		--output $@ $(PHIPAPP_PACKAGE) $(PHIPAPP_REPAIR_PACKAGE)
+		--output $@ $(PHIPAPP_PACKAGE) $(PHIPAPP_REPAIR_PACKAGE) $(PHIPAPP_REMOVE_PACKAGE)
 
 $(PHIPAPP_DATA_IMAGE): $(EXT4_FIXTURE) | $(PHIPAPP_DIR)
 	cp $< $@

@@ -272,7 +272,7 @@ def run(args: argparse.Namespace) -> int:
     if args.scenario not in ("network-persistence", "native-phip"):
         qemu.append("-no-reboot")
 
-    expected_begins = 3 if args.scenario == "native-phip" else (
+    expected_begins = 4 if args.scenario == "native-phip" else (
         2 if args.scenario == "network-persistence" else 1
     )
     try:
@@ -339,6 +339,11 @@ def run(args: argparse.Namespace) -> int:
             "PHIPIA PHIP PHASE repair-plan PASS\n",
             "PHIPIA PHIP PHASE repaired generation=3 PASS\n",
             "PHIPIA PHIP REPAIR PASS trust payload transaction cleanup\n",
+            "PHIPIA PHIP PHASE remove-plan PASS\n",
+            "PHIPIA PHIP PHASE removed generation=4 PASS\n",
+            "PHIPIA PHIP REMOVE PASS trust plan transaction cleanup\n",
+            "Phipia: SDL preferences synchronized reboot phase\n",
+            "Phipia: SDL preferences survived reboot package removal retired authority retained user data ext4 clean\n",
             "Phipia: signed HTTPS package install synchronized reboot phase\n",
             "Phipia: signed HTTPS package update synchronized reboot phase\n",
             "Phipia: damaged package generation quarantined before repair "
@@ -351,7 +356,7 @@ def run(args: argparse.Namespace) -> int:
         healthy = all(transcript.count(marker) == 1 for marker in required)
         healthy = healthy and all(
             transcript.count(marker) == count for marker, count in (
-                ("PHIPIA PHIP PHASE start\n", 4),
+                ("PHIPIA PHIP PHASE start\n", 5),
                 ("PHIPIA PHIP PHASE signed-plan PASS\n", 2),
                 ("PHIPIA PHIP PHASE payloads-authenticated PASS\n", 3),
                 ("PHIPIA PHIP PASS https trust plan payload transaction "

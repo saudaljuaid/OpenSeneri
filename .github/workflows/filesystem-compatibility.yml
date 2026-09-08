@@ -57,17 +57,26 @@ jobs:
                   git rev-parse HEAD >evidence/ext4/head.txt
                   make verify 2>&1 | tee evidence/ext4/verify.log
             - name: Exercise ext4 VFS recovery and durability boundaries
+              if: ${{ !cancelled() }}
               shell: bash
               run: |
                   set -o pipefail
                   make qemu-test-ext4-recovery qemu-test-ext4-powercuts QEMU_ACCEL=tcg \
                       2>&1 | tee evidence/ext4/qemu.log
             - name: Exercise ext4 desktop saves and cold-boot persistence
+              if: ${{ !cancelled() }}
               shell: bash
               run: |
                   set -o pipefail
                   make qemu-test-fat32-data qemu-test-ext4-applications QEMU_ACCEL=tcg \
                       2>&1 | tee evidence/ext4/applications.log
+            - name: Exercise ext4 package repair removal and SDL reboot persistence
+              if: ${{ !cancelled() }}
+              shell: bash
+              run: |
+                  set -o pipefail
+                  mkdir -p evidence/ext4
+                  make qemu-test-native-phip QEMU_ACCEL=tcg 2>&1 | tee evidence/ext4/packages.log
             - name: Retain exact-head ext4 evidence, including failures
               if: always()
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -79,6 +88,7 @@ jobs:
                       build/tests/ext4-powercuts
                       build/tests/ext4-applications
                       build/tests/fat32-data/serial.log
+                      build/tests/native-phip
                       build/*.e2fsck.txt
                       build/*.sha256.txt
                   if-no-files-found: error

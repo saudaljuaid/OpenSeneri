@@ -6074,6 +6074,37 @@ _Noreturn void kernel_test_complete_native_phip(void)
             &service)) {
         kernel_test_fail("native phip reboot authority is not canonical");
     }
+    if (service.generation == 3U) {
+        // The repair boot saved these preferences through SDL_RWops. Read
+        // them before launching any application on this fresh fourth boot.
+        if (phipfs_open(PHIPFS_VOLUME_DATA, state_path, PHIPFS_ACCESS_READ, &file) != PHIPFS_STATUS_OK ||
+            phipfs_read(file, bytes, sizeof(bytes), &read_bytes) != PHIPFS_STATUS_OK ||
+            read_bytes != sizeof(bytes) || phipfs_close(file) != PHIPFS_STATUS_OK)
+            kernel_test_fail("native phip SDL preferences did not survive reboot");
+        for (size_t index = 0U; index < sizeof(bytes); ++index)
+            if (bytes[index] != expected[index]) kernel_test_fail("native phip reboot changed SDL preferences");
+        if (native_process_launch("PHIPDEL.MAN", &proof) != NATIVE_PROCESS_OK ||
+            !proof.exited || proof.faulted || proof.exit_status != 0 ||
+            !proof.resources_released || !native_process_resources_released())
+            kernel_test_fail("native phip removal application did not release cleanly");
+        struct package_state_database_view removed;
+        if (package_service_snapshot(database, sizeof(database), &database_bytes, &service) != PACKAGE_SERVICE_STATUS_OK ||
+            service.generation != 4U || service.journal_present || service.live_file_handles != 0U ||
+            service.live_allocations != 0U ||
+            package_state_database_parse(database, database_bytes, &removed) != PACKAGE_STATE_STATUS_OK ||
+            removed.generation != 4U || removed.package_count != 0U || removed.file_count != 0U || removed.edge_count != 0U ||
+            native_process_launch_installed(repaired_manifest, &proof) == NATIVE_PROCESS_OK ||
+            !native_process_resources_released())
+            kernel_test_fail("native phip removal retained launch authority or resources");
+        if (phipfs_stat_path(PHIPFS_VOLUME_DATA, state_path, &output) != PHIPFS_STATUS_OK ||
+            output.size != sizeof(bytes) || phipfs_sync(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK ||
+            phipfs_unmount(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK ||
+            !ext4_backend_resources_released() || !nvme_filesystem_session_resources_released())
+            kernel_test_fail("native phip removal lost user preferences or leaked ext4 resources");
+        console_write("Phipia: SDL preferences survived reboot package removal retired authority retained user data ext4 clean\n");
+        console_write("ST NETWORK production path bounded and recoverable\n");
+        kernel_test_pass();
+    }
     if (service.generation == 1U) {
         if (native_process_launch("PHIP.MAN", &proof) != NATIVE_PROCESS_OK ||
             !proof.exited || proof.faulted || proof.exit_status != 0 ||
@@ -6143,8 +6174,9 @@ _Noreturn void kernel_test_complete_native_phip(void)
     }
     console_write(
         "Phipia: damaged SDL package repaired authenticated and launched from writable ext4 passed\n");
-    console_write("ST NETWORK production path bounded and recoverable\n");
-    kernel_test_pass();
+    console_write("Phipia: SDL preferences synchronized reboot phase\n");
+    cpu_out8(UINT16_C(0x0064), UINT8_C(0xFE));
+    kernel_test_fail("platform reset did not restart QEMU after SDL save");
 }
 
 static uint32_t boot_ledger_stage_sequence(
