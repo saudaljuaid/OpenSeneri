@@ -21,7 +21,7 @@ on:
                 description: Focused VFS or power-cut diagnostic (requires ext4_boot_probe; all preserves the complete probe)
                 type: choice
                 default: all
-                options: [all, vfs, journal-wrap, unlink, replace, rename, rename-errors, rename-device, rename-cross, rename-cross-errors, rename-cross-device, truncate, truncate-errors, grow, grow-errors, append, append-errors, overwrite, overwrite-errors, chmod, times, create, mkdir, rmdir, xattr, xattr-remove, link, symlink, symlink-long]
+                options: [all, vfs, journal-wrap, unlink, replace, rename, rename-errors, rename-device, rename-cross, rename-cross-errors, rename-cross-device, truncate, truncate-errors, truncate-device, grow, grow-errors, grow-device, append, append-errors, append-device, overwrite, overwrite-errors, chmod, times, create, mkdir, rmdir, xattr, xattr-remove, link, symlink, symlink-long]
 
 permissions:
     contents: read
@@ -103,7 +103,7 @@ jobs:
                       exit 1
                   fi
                   case "$PHIPIA_EXT4_CUT_OPERATION" in
-                      all|vfs|journal-wrap|unlink|replace|rename|rename-errors|rename-device|rename-cross|rename-cross-errors|rename-cross-device|truncate|truncate-errors|grow|grow-errors|append|append-errors|overwrite|overwrite-errors|chmod|times|create|mkdir|rmdir|xattr|xattr-remove|link|symlink|symlink-long) ;;
+                      all|vfs|journal-wrap|unlink|replace|rename|rename-errors|rename-device|rename-cross|rename-cross-errors|rename-cross-device|truncate|truncate-errors|truncate-device|grow|grow-errors|grow-device|append|append-errors|append-device|overwrite|overwrite-errors|chmod|times|create|mkdir|rmdir|xattr|xattr-remove|link|symlink|symlink-long) ;;
                       *) echo 'Unsupported cut diagnostic.'; exit 1 ;;
                   esac
                   printf '%s\n' 'Targeted ext4 diagnostic only; all milestone gates remain required.' \
@@ -175,6 +175,7 @@ jobs:
                       targets+=(qemu-test-ext4-rename-powercuts qemu-test-ext4-rename-cross-powercuts)
                       targets+=(qemu-test-ext4-rename-errors-powercuts qemu-test-ext4-rename-cross-errors-powercuts)
                       targets+=(qemu-test-ext4-rename-device-powercuts qemu-test-ext4-rename-cross-device-powercuts)
+                      targets+=(qemu-test-ext4-append-device-powercuts qemu-test-ext4-truncate-device-powercuts qemu-test-ext4-grow-device-powercuts)
                       targets+=(qemu-test-ext4-journal-wrap)
                       if [[ "$PHIPIA_EXT4_CUT_OPERATION" != 'all' ]]; then
                           if [[ "$PHIPIA_EXT4_CUT_OPERATION" == 'vfs' ]]; then
@@ -217,7 +218,7 @@ jobs:
                   result=0
                   make qemu-test-ext4-journal-wrap QEMU_ACCEL=tcg \
                       2>&1 | tee evidence/ext4/journal-wrap.log || result=1
-                  for operation in unlink replace rename rename-errors rename-device rename-cross rename-cross-errors rename-cross-device truncate truncate-errors grow grow-errors append append-errors overwrite overwrite-errors chmod times create mkdir rmdir xattr xattr-remove link symlink symlink-long; do
+                  for operation in unlink replace rename rename-errors rename-device rename-cross rename-cross-errors rename-cross-device truncate truncate-errors truncate-device grow grow-errors grow-device append append-errors append-device overwrite overwrite-errors chmod times create mkdir rmdir xattr xattr-remove link symlink symlink-long; do
                       make "qemu-test-ext4-${operation}-powercuts" QEMU_ACCEL=tcg \
                           2>&1 | tee "evidence/ext4/${operation}-powercuts.log" || result=1
                   done

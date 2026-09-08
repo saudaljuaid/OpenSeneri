@@ -2673,7 +2673,7 @@ qemu-test-ext4-journal-wrap: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_journal_wrap_t
 		$(if $(GRUB_MODULE_DIR),--grub-module-dir '$(GRUB_MODULE_DIR)') \
 		--accel '$(QEMU_ACCEL)'
 
-qemu-test-ext4-rename-device-powercuts qemu-test-ext4-rename-cross-device-powercuts: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_unlink_powercut_test.py tools/ext4_powercut_test.py tools/ext4_kernel_read.py
+qemu-test-ext4-rename-device-powercuts qemu-test-ext4-rename-cross-device-powercuts qemu-test-ext4-append-device-powercuts qemu-test-ext4-truncate-device-powercuts qemu-test-ext4-grow-device-powercuts: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_unlink_powercut_test.py tools/ext4_powercut_test.py tools/ext4_kernel_read.py
 	$(PYTHON) tools/ext4_unlink_powercut_test.py --operation '$(patsubst qemu-test-ext4-%-device-powercuts,%,$@)' --physical-cuts \
 		--kernel '$(KERNEL)' --fixture '$(EXT4_FIXTURE)' \
 		--output '$(TEST_BUILD_DIR)/ext4-unlink-powercuts/$(shell git rev-parse --short HEAD)/$(patsubst qemu-test-ext4-%-powercuts,%,$@)' \

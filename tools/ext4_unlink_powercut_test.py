@@ -615,8 +615,8 @@ def main():
     args = parser.parse_args()
     if args.storage_failures and args.operation not in ("overwrite", "append", "truncate", "grow", "rename", "rename-cross"):
         parser.error("--storage-failures requires --operation overwrite, append, truncate, grow, rename or rename-cross")
-    if args.physical_cuts and (args.storage_failures or args.operation not in ("rename", "rename-cross")):
-        parser.error("--physical-cuts requires rename or rename-cross and excludes --storage-failures")
+    if args.physical_cuts and (args.storage_failures or args.operation not in ("rename", "rename-cross", "append", "truncate", "grow")):
+        parser.error("--physical-cuts requires rename, rename-cross, append, truncate or grow and excludes --storage-failures")
     run(args)
 
 
