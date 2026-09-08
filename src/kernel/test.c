@@ -4806,6 +4806,66 @@ static void ext4_vfs_require(enum phipfs_status status, const char *operation)
     }
 }
 
+static void ext4_vfs_directory_semantics(void)
+{
+    static const char prefix[] = "data/user/VFS2.DIR/";
+    char child[sizeof(prefix) + 96U];
+    struct phipfs_stat metadata;
+    phipfs_directory_handle snapshot;
+    uint64_t seen = 0U;
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const uint64_t free_before = phipfs_drive(volume).free_bytes;
+    ext4_vfs_require(phipfs_mkdir(volume, "data/user/VFS2.DIR"), "snapshot mkdir");
+    for (size_t index = 0U; index < sizeof(prefix) - 1U; ++index) child[index] = prefix[index];
+    for (size_t index = sizeof(prefix) - 1U; index < sizeof(child) - 1U; ++index) child[index] = 'x';
+    child[sizeof(child) - 1U] = '\0';
+    for (unsigned index = 0U; index < 48U; ++index) {
+        child[sizeof(prefix) - 1U] = (char)('0' + index / 10U);
+        child[sizeof(prefix)] = (char)('0' + index % 10U);
+        ext4_vfs_require(phipfs_create(volume, child), "directory grow entry");
+    }
+    ext4_vfs_require(phipfs_stat_path(volume, "data/user/VFS2.DIR", &metadata), "grown directory size");
+    if (metadata.size <= 4096U) kernel_test_fail("ext4 VFS directory growth was not exercised");
+    ext4_vfs_require(phipfs_directory_open(volume, "data/user/VFS2.DIR", &snapshot), "directory snapshot");
+    if (phipfs_rmdir(volume, "data/user/VFS2.DIR") != PHIPFS_STATUS_NOT_EMPTY)
+        kernel_test_fail("ext4 VFS rmdir accepted live entries");
+    // A snapshot keeps the original enumeration after all names and its own
+    // directory name disappear. Final close must release the orphaned inode.
+    for (unsigned index = 0U; index < 48U; ++index) {
+        child[sizeof(prefix) - 1U] = (char)('0' + index / 10U);
+        child[sizeof(prefix)] = (char)('0' + index % 10U);
+        ext4_vfs_require(phipfs_unlink(volume, child), "directory shrink entry");
+    }
+    ext4_vfs_require(phipfs_stat_path(volume, "data/user/VFS2.DIR", &metadata), "shrunken directory size");
+    if (metadata.size != 4096U) kernel_test_fail("ext4 VFS directory did not shrink");
+    ext4_vfs_require(phipfs_rmdir(volume, "data/user/VFS2.DIR"), "open snapshot rmdir");
+    for (unsigned index = 0U; index < 48U; ++index) {
+        struct phipfs_list_entry entry;
+        bool present = false;
+        ext4_vfs_require(phipfs_directory_read(snapshot, &entry, &present), "removed snapshot read");
+        if (!present || entry.directory || entry.name[0] < '0' || entry.name[0] > '4' ||
+            entry.name[1] < '0' || entry.name[1] > '9' || entry.name[96] != '\0')
+            kernel_test_fail("ext4 VFS directory snapshot changed names");
+        const unsigned number = (unsigned)(entry.name[0] - '0') * 10U + (unsigned)(entry.name[1] - '0');
+        if (number >= 48U || (seen & (UINT64_C(1) << number)) != 0U)
+            kernel_test_fail("ext4 VFS directory snapshot duplicated names");
+        seen |= UINT64_C(1) << number;
+        for (size_t letter = 2U; letter < 96U; ++letter)
+            if (entry.name[letter] != 'x') kernel_test_fail("ext4 VFS snapshot truncated a long name");
+    }
+    struct phipfs_list_entry entry;
+    bool present = true;
+    ext4_vfs_require(phipfs_directory_read(snapshot, &entry, &present), "snapshot EOF");
+    if (present || seen != (UINT64_C(1) << 48U) - 1U) kernel_test_fail("ext4 VFS snapshot skipped names");
+    ext4_vfs_require(phipfs_directory_close(snapshot), "snapshot final close");
+    if (phipfs_directory_read(snapshot, &entry, &present) != PHIPFS_STATUS_STALE_HANDLE)
+        kernel_test_fail("ext4 VFS closed snapshot remained readable");
+    ext4_vfs_require(phipfs_sync(volume), "snapshot cleanup sync");
+    if (phipfs_drive(volume).free_bytes != free_before)
+        kernel_test_fail("ext4 VFS directory leaked allocations");
+    console_write("ST EXT4 VFS directory growth shrink removed snapshot long names census exact\n");
+}
+
 static void ext4_vfs_semantics(void)
 {
     // One unaligned request crosses the coordinator's 32-data-block split.
@@ -4904,6 +4964,7 @@ static void ext4_vfs_semantics(void)
     if (phipfs_drive(volume).free_bytes != free_before)
         kernel_test_fail("ext4 VFS semantics leaked block allocations");
     console_write("ST EXT4 VFS split unaligned sparse append truncate metadata links rename held cleanup exact\n");
+    ext4_vfs_directory_semantics();
 }
 
 _Noreturn void kernel_test_complete_ext4_recovery(void)
