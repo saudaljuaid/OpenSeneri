@@ -4931,10 +4931,17 @@ static void ext4_vfs_semantics(void)
     if (count != 4U) kernel_test_fail("ext4 VFS hole fill was short");
     for (unsigned extent = 0U; extent < 12U; ++extent) {
         const uint64_t offset = (4U + 2U * extent) * UINT64_C(4096) + 12U;
+        const size_t expected_count = extent == 11U ? 2U : 3U;
         ext4_vfs_require(phipfs_pread(appended, block, 3U, offset, &count), "fragment read");
-        if (count != 3U || block[0] != 0U || block[1] != extent + 1U || block[2] != 0U)
+        if (count != expected_count || block[0] != 0U || block[1] != extent + 1U ||
+            (count == 3U && block[2] != 0U))
             kernel_test_fail("ext4 VFS fragmented extent contents changed");
     }
+    const uint64_t fragmented_eof = 26U * UINT64_C(4096) + 14U;
+    ext4_vfs_require(phipfs_fstat(appended, &metadata), "fragment EOF metadata");
+    ext4_vfs_require(phipfs_pread(appended, block, sizeof(block), fragmented_eof, &count), "fragment EOF read");
+    if (metadata.size != fragmented_eof || count != 0U)
+        kernel_test_fail("ext4 VFS fragmented extent EOF changed");
     ext4_vfs_require(phipfs_ftruncate(file, 8192U), "fragment reclaim");
     ext4_vfs_require(phipfs_seek(file, 8191, PHIPFS_SEEK_START, &position), "failed write seek");
     if (!ext4_backend_test_fail_storage_once(3U) ||
