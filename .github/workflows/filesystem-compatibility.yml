@@ -10,7 +10,7 @@ on:
                 type: boolean
                 default: false
             ext4_boot_probe:
-                description: Diagnostic kernel and ext4 recovery boot only (no milestone gate credit)
+                description: Diagnostic kernel and targeted ext4 recovery cases (no milestone gate credit)
                 type: boolean
                 default: false
 
@@ -18,7 +18,7 @@ permissions:
     contents: read
 
 concurrency:
-    group: filesystem-compatibility-${{ github.ref }}${{ (inputs.ext4_only || inputs.ext4_boot_probe) && '-ext4' || '' }}
+    group: filesystem-compatibility-${{ github.ref }}${{ inputs.ext4_boot_probe && '-ext4-probe' || (inputs.ext4_only && '-ext4' || '') }}
     cancel-in-progress: true
 
 jobs:
@@ -77,6 +77,9 @@ jobs:
                   for regression in admitted_fixture_has_complete_storage_and_namespace_census \
                       namespace_counts_parents_types_and_unique_names_are_checked_before_mutation \
                       real_inode_exhaustion_rolls_back_namespace_and_reuses_a_freed_inode \
+                      wide_nested_directory_census_preserves_paths_parents_and_mutation_reload \
+                      extent_data_and_nodes_cannot_be_shared_between_live_or_orphan_inodes \
+                      external_xattr_checksums_shared_release_and_final_free \
                       commit_reload_failure_hides_view_and_retry_does_not_rewrite_storage; do
                       cargo test --manifest-path tools/ext4-transaction-tests/Cargo.toml \
                           --locked --offline --test coordinator "$regression" -- --exact --nocapture \
@@ -90,6 +93,8 @@ jobs:
                   targets=(qemu-test-ext4-recovery)
                   if [[ '${{ inputs.ext4_boot_probe }}' != 'true' ]]; then
                       targets+=(qemu-test-ext4-powercuts)
+                  else
+                      targets+=(qemu-test-ext4-replace-powercuts)
                   fi
                   make "${targets[@]}" QEMU_ACCEL=tcg \
                       2>&1 | tee evidence/ext4/qemu.log
