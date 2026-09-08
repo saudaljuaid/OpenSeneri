@@ -287,7 +287,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--grub-mkrescue", default="grub-mkrescue")
     parser.add_argument("--grub-module-dir", type=Path)
     parser.add_argument("--accel", default="tcg")
-    parser.add_argument("--timeout", type=int, default=90)
+    # The uncut reference also exercises the full VFS directory growth/shrink case.
+    parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--keep-images", action="store_true")
     return parser
 

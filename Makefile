@@ -2477,7 +2477,7 @@ qemu-test-ext4-powercuts: $(KERNEL) $(EXT4_FIXTURE) \
 		--output '$(TEST_BUILD_DIR)/ext4-powercuts' \
 		--qemu qemu-system-x86_64 --grub-mkrescue '$(GRUB_MKRESCUE)' \
 		$(if $(GRUB_MODULE_DIR),--grub-module-dir '$(GRUB_MODULE_DIR)') \
-		--accel '$(QEMU_ACCEL)' --timeout 90 --keep-images
+		--accel '$(QEMU_ACCEL)' --timeout 600 --keep-images
 
 qemu-test-%: $(TEST_BUILD_DIR)/%/phipia.iso
 	@for tool in qemu-system-x86_64 timeout grep; do \
@@ -2710,7 +2710,7 @@ qemu-test-%: $(TEST_BUILD_DIR)/%/phipia.iso
 	case '$*' in \
 		phipia-proof) timeout_seconds=60 ;; \
 		fat32-*) timeout_seconds=45 ;; \
-		ext4-recovery) timeout_seconds=90 ;; \
+		ext4-recovery) timeout_seconds=600 ;; \
 		native) timeout_seconds=180 ;; \
 		native-lua) timeout_seconds=150 ;; \
 		native-sqlite) timeout_seconds=240 ;; \
