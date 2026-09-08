@@ -228,7 +228,7 @@ enum phipfs_status phipfs_close(phipfs_handle handle)
 enum phipfs_status phipfs_open(enum phipfs_volume volume, const char *path,
     enum phipfs_access access, phipfs_handle *handle)
 {
-    if (strcmp(path, "SOURCE.BIN") == 0) {
+    if (strcmp(path, "SOURCE.BIN") == 0 || strcmp(path, "SOURCE.BMP") == 0) {
         assert(volume == PHIPFS_VOLUME_DATA && access == PHIPFS_ACCESS_READ && !copy_source_live);
         if (copy_failure == 1U) return PHIPFS_STATUS_IO;
         copy_source_live = true;
@@ -265,6 +265,20 @@ enum phipfs_status phipfs_read(phipfs_handle handle, uint8_t *bytes, size_t capa
 }
 
 uint32_t settings_row_state(size_t page, size_t row) { return setting_values[page][row]; }
+uint32_t framebuffer_pack(uint8_t red, uint8_t green, uint8_t blue)
+{
+    return ((uint32_t)red << 16U) | ((uint32_t)green << 8U) | blue;
+}
+
+enum phipfs_status phipfs_seek(phipfs_handle handle, int64_t offset,
+    enum phipfs_seek_origin origin, uint64_t *position)
+{
+    assert(handle == 89U && copy_source_live && origin == PHIPFS_SEEK_START);
+    assert(offset >= 0 && (uint64_t)offset <= expected_length);
+    copy_position = (size_t)offset;
+    *position = (uint64_t)offset;
+    return PHIPFS_STATUS_OK;
+}
 enum settings_status settings_set_tile(size_t page, const struct settings_tile *tile)
 {
     assert(page < SETTINGS_MAX_TILES && tile != NULL);
@@ -503,6 +517,22 @@ static void settings_persistence(void)
 
 int main(void)
 {
+    for (unsigned failure = 0U; failure <= 6U; ++failure) {
+        if (failure == 5U) continue; /* Copy's second-fstat growth case is separate. */
+        reset_large_bitmap(3U);
+        copy_failure = failure;
+        const enum phipfs_status status = media_source_load_preview("SOURCE.BMP");
+        assert((status == PHIPFS_STATUS_OK) == (failure == 0U));
+        assert(media_source_preview_loaded == (failure == 0U));
+        assert(!copy_source_live && live_handles == 0U && writes == 0U && publications == 0U);
+        if (failure == 0U) {
+            assert(copy_stats == 1U && media_source_preview_width == 320U && media_source_preview_height == 180U);
+            for (unsigned y = 0U; y < 180U; ++y)
+                for (unsigned x = 0U; x < 320U; ++x)
+                    assert(media_source_preview_pixels[y * UI_MEDIA_SOURCE_PREVIEW_WIDTH + x] ==
+                        (uint32_t)(y % 251U + 1U) * UINT32_C(0x010101));
+        }
+    }
     for (unsigned failure = 0U; failure < 8U; ++failure) {
         reset_save(SAVE_OK);
         copy_failure = failure;

@@ -3227,7 +3227,8 @@ static enum phipfs_status media_source_load_preview(const char *path)
     struct phipfs_stat stat;
     phipfs_handle handle = 0U;
     size_t read_bytes = 0U;
-    enum phipfs_status status = phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat);
+    enum phipfs_status status = phipfs_open(PHIPFS_VOLUME_DATA, path,
+        PHIPFS_ACCESS_READ, &handle);
     uint32_t width = 0U;
     uint32_t height = 0U;
     uint32_t pixel_offset = 0U;
@@ -3235,13 +3236,12 @@ static enum phipfs_status media_source_load_preview(const char *path)
     bool top_down = false;
 
     media_source_preview_loaded = false;
+    // Bind geometry validation and reads to the same held inode even if the
+    // source pathname is concurrently renamed or replaced.
+    if (status == PHIPFS_STATUS_OK) status = phipfs_fstat(handle, &stat);
     if (status == PHIPFS_STATUS_OK &&
         (stat.directory || stat.size < sizeof(header))) {
         status = PHIPFS_STATUS_CORRUPT;
-    }
-    if (status == PHIPFS_STATUS_OK) {
-        status = phipfs_open(PHIPFS_VOLUME_DATA, path, PHIPFS_ACCESS_READ,
-            &handle);
     }
     if (status == PHIPFS_STATUS_OK) {
         status = phipfs_read(handle, header, sizeof(header), &read_bytes);
