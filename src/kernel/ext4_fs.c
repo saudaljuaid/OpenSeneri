@@ -2064,6 +2064,10 @@ enum phipfs_status ext4_backend_set_times(enum phipfs_volume volume, const char 
     if (!valid_volume(volume) || length == 0U || length >= PHIPFS_MAX_PATH || times == NULL) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
+    if (times->atime_nanos >= 1000000000U || times->mtime_nanos >= 1000000000U)
+        return PHIPFS_STATUS_INVALID_ARGUMENT;
+    if (times->atime_seconds > UINT64_C(0x37fffffff) || times->mtime_seconds > UINT64_C(0x37fffffff))
+        return PHIPFS_STATUS_RANGE;
     struct ext4_mount_state *mount = &ext4_mounts[volume];
     enum phipfs_status status = begin_operation(mount, true);
     if (status != PHIPFS_STATUS_OK) return status;
@@ -2095,7 +2099,7 @@ enum phipfs_status ext4_backend_chmod(enum phipfs_volume volume,
     const char *path, uint16_t mode)
 {
     const size_t length = path_length(path);
-    if (!valid_volume(volume) || length == 0U || length >= PHIPFS_MAX_PATH) {
+    if (!valid_volume(volume) || length == 0U || length >= PHIPFS_MAX_PATH || (mode & ~07777U) != 0U) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
     struct ext4_mount_state *mount = &ext4_mounts[volume];

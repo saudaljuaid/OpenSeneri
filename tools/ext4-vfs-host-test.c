@@ -707,6 +707,20 @@ int main(void)
     assert(ext4_backend_chmod(PHIPFS_VOLUME_DATA, "file", 0640U) == PHIPFS_STATUS_OK);
     assert(changed_mode == 0640U);
     const struct phipfs_times times = {2200000000U, 2300000000U, 123U, 456U};
+    const unsigned before_invalid_metadata = opens;
+    for (unsigned field = 0U; field < 4U; ++field) {
+        struct phipfs_times invalid = times;
+        if (field == 0U) invalid.atime_nanos = 1000000000U;
+        if (field == 1U) invalid.mtime_nanos = UINT32_MAX;
+        if (field == 2U) invalid.atime_seconds = UINT64_C(0x380000000);
+        if (field == 3U) invalid.mtime_seconds = UINT64_MAX;
+        assert(ext4_backend_set_times(PHIPFS_VOLUME_DATA, "file", &invalid) ==
+            (field < 2U ? PHIPFS_STATUS_INVALID_ARGUMENT : PHIPFS_STATUS_RANGE));
+    }
+    assert(ext4_backend_set_times(PHIPFS_VOLUME_DATA, "file", NULL) == PHIPFS_STATUS_INVALID_ARGUMENT);
+    assert(ext4_backend_chmod(PHIPFS_VOLUME_DATA, "file", 010000U) == PHIPFS_STATUS_INVALID_ARGUMENT);
+    assert(ext4_backend_chmod(PHIPFS_VOLUME_DATA, "file", UINT16_MAX) == PHIPFS_STATUS_INVALID_ARGUMENT);
+    assert(opens == before_invalid_metadata && changed_mode == 0640U);
     permanent_status = PHIPIA_EXT4_STATUS_IO;
     assert(ext4_backend_set_times(PHIPFS_VOLUME_DATA, "file", &times) == PHIPFS_STATUS_IO);
     permanent_status = PHIPIA_EXT4_STATUS_OK;
