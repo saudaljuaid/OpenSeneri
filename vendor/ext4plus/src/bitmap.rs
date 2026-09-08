@@ -7,7 +7,7 @@ use crate::{Ext4, Ext4Error};
 
 use crate::util::usize_from_u32;
 use alloc::vec;
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::ops::RangeBounds;
 
@@ -25,7 +25,7 @@ pub struct BlockAllocationSnapshot<'a> {
     groups: BTreeMap<u32, Vec<u8>>,
     extent_ranges: BTreeMap<u64, u64>,
     claimed_blocks: u64,
-    validated_inodes: BTreeSet<crate::inode::InodeIndex>,
+    validated_inodes: Vec<crate::inode::InodeIndex>,
     directory_counts: BTreeMap<u32, u32>,
     xattr_references: BTreeMap<u64, (u32, u32, crate::inode::InodeIndex)>,
     invalid: bool,
@@ -35,7 +35,7 @@ pub struct BlockAllocationSnapshot<'a> {
 impl<'a> BlockAllocationSnapshot<'a> {
     pub(crate) fn new(filesystem: &'a Ext4) -> Self {
         Self { filesystem, groups: BTreeMap::new(), extent_ranges: BTreeMap::new(), claimed_blocks: 0,
-            validated_inodes: BTreeSet::new(), directory_counts: BTreeMap::new(), xattr_references: BTreeMap::new(),
+            validated_inodes: Vec::new(), directory_counts: BTreeMap::new(), xattr_references: BTreeMap::new(),
             invalid: false, fixed_reserved: false }
     }
 
@@ -114,7 +114,7 @@ impl<'a> BlockAllocationSnapshot<'a> {
     async fn validate_internal_journal_inner(&mut self) -> Result<(), Ext4Error> {
         if self.invalid { return Err(Ext4Error::Readonly); }
         let Some(index) = self.filesystem.superblock().journal_inode() else { return Ok(()) };
-        if self.validated_inodes.contains(&index) { return Ok(()); }
+        if self.validated_inodes.binary_search(&index).is_ok() { return Ok(()); }
         if !self.filesystem.inode_is_allocated(index).await? {
             return Err(CorruptKind::ExtentBlock(index).into());
         }
@@ -283,7 +283,13 @@ impl<'a> BlockAllocationSnapshot<'a> {
     #[maybe_async::maybe_async]
     pub async fn validate_inode_extents(&mut self, inode: &crate::inode::Inode) -> Result<(), Ext4Error> {
         if self.invalid { return Err(CorruptKind::ExtentBlock(inode.index).into()); }
-        if self.validated_inodes.contains(&inode.index) { return Ok(()); }
+        let insertion = match self.validated_inodes.binary_search(&inode.index) {
+            Ok(_) => return Ok(()),
+            Err(index) => index,
+        };
+        // A packed sorted census avoids one heap allocation per tree node on
+        // inode-dense volumes. Reserve before modifying ownership accounting.
+        self.validated_inodes.try_reserve(1).map_err(|_| Ext4Error::FileTooLarge)?;
         // Ordered journaling cannot honor per-inode data journaling,
         // compression, encryption, verity, inline data or future semantics.
         // Ordinary sync/dirsync, nodump/noatime and allocation hints are safe:
@@ -333,7 +339,7 @@ impl<'a> BlockAllocationSnapshot<'a> {
             self.invalid = true;
             return Err(error);
         }
-        self.validated_inodes.insert(inode.index);
+        self.validated_inodes.insert(insertion, inode.index);
         if inode.file_type().is_dir() {
             let group = (inode.index.get() - 1) / self.filesystem.superblock().inodes_per_block_group().get();
             *self.directory_counts.entry(group).or_default() += 1;
@@ -369,7 +375,7 @@ impl<'a> InodeAllocationSnapshot<'a> {
     /// namespace/orphan ownership pass. Otherwise an unreachable inode could
     /// hide a conflicting block claim or an unaccounted xattr reference.
     #[maybe_async::maybe_async]
-    async fn validate_known_allocations(&mut self, known: &BTreeSet<crate::inode::InodeIndex>,
+    async fn validate_known_allocations(&mut self, known: &[crate::inode::InodeIndex],
         directories: &BTreeMap<u32, u32>) -> Result<(), Ext4Error> {
         let fs = self.filesystem;
         let sb = fs.superblock();
@@ -409,7 +415,7 @@ impl<'a> InodeAllocationSnapshot<'a> {
                     }
                     if number < u64::from(sb.first_allocatable_inode()) { continue; }
                     let index = crate::inode::InodeIndex::new(number as u32).unwrap();
-                    if !known.contains(&index) { return Err(CorruptKind::OrphanInode(index.get()).into()); }
+                    if known.binary_search(&index).is_err() { return Err(CorruptKind::OrphanInode(index.get()).into()); }
                 } else {
                     if number < u64::from(sb.first_allocatable_inode()) {
                         return Err(CorruptKind::BlockGroupDescriptor(group).into());
