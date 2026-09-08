@@ -28,7 +28,7 @@ def verify_exit(status, transcript, pass_marker=PASS):
         raise RuntimeError(f"held-unlink reboot failed ({status}):\n" + recovery._transcript_tail(transcript))
 
 
-def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_inode=None, operation="unlink", expected_parent_links=None):
+def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_inode=None, operation="unlink", expected_parent_links=None, expected_collision_inode=None):
     report = ext4_image.inspect_image(image, tools=tools)
     if report["needs_recovery"] or report["free_blocks"] != expected_blocks or report["free_inodes"] != expected_inodes:
         raise RuntimeError("held-unlink recovery leaked allocations or retained recovery state")
@@ -41,6 +41,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
     removed = "owned-cut" if replacement_inode is None else "replace-source"
     if operation == "rmdir":
         removed = "removed-directory"
+    if operation in ("rename", "rename-cross"):
+        removed = "rename-source"
     if operation not in ("truncate", "grow", "append", "chmod", "times", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") and f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
@@ -78,6 +80,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
             target_name, target_size = "append-target", 9000
         if operation in ("chmod", "times"):
             target_name, target_size = "metadata-target", 1700
+        if operation in ("rename", "rename-cross"):
+            target_name = "rename-destination/moved-file" if operation == "rename-cross" else "rename-target"
         expected_content = (b"t" if operation in ("truncate", "chmod", "times", "xattr", "xattr-remove") else b"s") * target_size
         if operation == "grow":
             expected_content = b"t" * 1700 + bytes(target_size - 1700)
@@ -100,6 +104,21 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
             raise RuntimeError("sparse growth allocated physical hole blocks")
         if operation == "append" and target["block_count_512"] != 24:
             raise RuntimeError("append allocated the wrong physical blocks")
+        if operation in ("rename", "rename-cross"):
+            collision_name = "rename-destination/occupied" if operation == "rename-cross" else "rename-existing"
+            collision = ext4_image._parse_stat(ext4_image._debugfs(tools, image,
+                f"stat /data/user/{collision_name}"), f"/data/user/{collision_name}")
+            if target["block_count_512"] != 16 or target["mode"] != "0644" or \
+                    collision["inode"] != expected_collision_inode or collision["size"] != 1000 or \
+                    collision["links"] != 1 or collision["mode"] != "0644" or collision["block_count_512"] != 8:
+                raise RuntimeError("rename changed target allocation or the no-replace collision inode")
+            expected_files[f"data/user/{collision_name}"] = {"bytes": 1000, "sha256": hashlib.sha256(b"c" * 1000).hexdigest()}
+            if operation == "rename-cross":
+                directory = ext4_image._parse_stat(ext4_image._debugfs(tools, image,
+                    "stat /data/user/rename-destination"), "/data/user/rename-destination")
+                if directory["links"] != 2 or directory["size"] != 4096 or directory["block_count_512"] != 8:
+                    raise RuntimeError("cross-directory rename changed destination directory accounting")
+                expected_files["data/user/rename-destination"] = {"entries": ["moved-file", "occupied"]}
         if operation == "xattr" and target["block_count_512"] != 16:
             raise RuntimeError("external xattr physical allocation changed")
         if operation == "xattr-remove" and target["block_count_512"] != 8:
@@ -109,7 +128,7 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
                 raise RuntimeError("created directory mode type or allocation changed")
             expected_files[f"data/user/{target_name}"] = {"entries": []}
         else:
-            content = output / f"{target_name}.bin"
+            content = output / f"{Path(target_name).name}.bin"
             ext4_image._debugfs(tools, image, f'dump -p /data/user/{target_name} "{content.as_posix()}"')
             if content.read_bytes() != expected_content:
                 raise RuntimeError("held-replace changed the published file contents")
@@ -170,6 +189,9 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
 
 def run(args):
     replacement = args.operation == "replace"
+    renaming = args.operation in ("rename", "rename-cross")
+    cross_rename = args.operation == "rename-cross"
+    collision_name = "rename-destination/occupied" if cross_rename else "rename-existing"
     truncating = args.operation in ("truncate", "grow")
     growing = args.operation == "grow"
     appending = args.operation == "append"
@@ -216,6 +238,9 @@ def run(args):
     if metadata_change:
         pass_marker = "ST EXT4 VFS metadata old-or-new held inode fields contents allocation census exact"
         state_marker = "ST EXT4 METADATA initial"
+    if renaming:
+        pass_marker = "ST EXT4 VFS rename no-replace old-or-new held contents allocation census exact"
+        state_marker = "ST EXT4 RENAME initial"
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     tools = ext4_image.require_tools()
@@ -236,6 +261,14 @@ def run(args):
             destination = work / "destination"
             destination.write_bytes(b"t" * 3000)
             files = [(source, "replace-source"), (destination, "replace-target"), (empty, "CUTREPLACE.TST")]
+        if renaming:
+            source.write_bytes(b"s" * 4500)
+            collision = work / "collision"
+            collision.write_bytes(b"c" * 1000)
+            if cross_rename:
+                ext4_image._run([tools["debugfs"], "-w", "-R", "mkdir /data/user/rename-destination", initial])
+            files = [(source, "rename-source"), (collision, collision_name),
+                (empty, "CUTRENCROSS.TST" if cross_rename else "CUTRENAME.TST")]
         if truncating:
             source.write_bytes(b"t" * (1700 if growing else 4500))
             files = [(source, "truncate-target"), (empty, "CUTGROW.TST" if growing else "CUTTRUNC.TST")]
@@ -285,6 +318,8 @@ def run(args):
         removed = "append-target"
     if metadata_change:
         removed = "metadata-target"
+    if renaming:
+        removed = "rename-source"
     target = None if creating else ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
         f"stat /data/user/{removed}"), f"/data/user/{removed}")
     reclaimed = 0 if growing else (1 if replacement or truncating else 2)
@@ -304,16 +339,22 @@ def run(args):
         reclaimed = -1
     if metadata_change:
         reclaimed, initial_blocks, initial_size = 0, 1, 1700
+    if renaming:
+        reclaimed = 0
     if not creating and (target["size"] != initial_size or target["block_count_512"] != initial_blocks * 8):
         raise RuntimeError("held-unlink input has unexpected allocation geometry")
-    replacement_inode = target["inode"] if truncating or attributing or linking or appending or metadata_change else None
+    replacement_inode = target["inode"] if truncating or attributing or linking or appending or metadata_change or renaming else None
+    expected_collision_inode = None
+    if renaming:
+        expected_collision_inode = ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
+            f"stat /data/user/{collision_name}"), f"/data/user/{collision_name}")["inode"]
     if replacement:
         source_stat = ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
             "stat /data/user/replace-source"), "/data/user/replace-source")
         if source_stat["size"] != 4500 or source_stat["block_count_512"] != 16:
             raise RuntimeError("held-replace source allocation geometry changed")
         replacement_inode = source_stat["inode"]
-    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating or attributing or linking or appending or metadata_change else 1)
+    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating or attributing or linking or appending or metadata_change or renaming else 1)
     if creating:
         expected_blocks, expected_inodes = before["free_blocks"] - (1 if directory else 0), before["free_inodes"] - 1
     if symlinking:
@@ -330,7 +371,7 @@ def run(args):
         created = ext4_image._parse_stat(ext4_image._debugfs(tools, baseline,
             f"stat /data/user/{name}"), f"/data/user/{name}")
         replacement_inode = created["inode"]
-    inspect(baseline, tools, output / "complete", expected_blocks, expected_inodes, replacement_inode, args.operation, expected_parent_links)
+    inspect(baseline, tools, output / "complete", expected_blocks, expected_inodes, replacement_inode, args.operation, expected_parent_links, expected_collision_inode)
     boundaries = re.findall(r"^ST EXT4 DURABLE (\d+) ([a-z-]+)$", transcript, re.MULTILINE)
     if not 1 <= len(boundaries) <= 64 or [int(number) for number, _ in boundaries] != list(range(1, len(boundaries) + 1)):
         raise RuntimeError("held-unlink trace is not a bounded contiguous boundary sequence")
@@ -357,7 +398,7 @@ def run(args):
         expected_state = "new" if cut >= first_commit else "old"
         if transcript.count(f"{state_marker} {expected_state}\n") != 1:
             raise RuntimeError(f"held-unlink boundary {cut} violated durable {expected_state} namespace")
-        report = inspect(image, tools, output / f"cut-{cut:02d}", expected_blocks, expected_inodes, replacement_inode, args.operation, expected_parent_links)
+        report = inspect(image, tools, output / f"cut-{cut:02d}", expected_blocks, expected_inodes, replacement_inode, args.operation, expected_parent_links, expected_collision_inode)
         reports.append({"cut": cut, "boundary": boundary, "recovered_state": expected_state, "result": report,
             "crashed_sha256": hashlib.sha256(crashed.read_bytes()).hexdigest()})
         if cut == first_commit:
@@ -390,7 +431,7 @@ def run(args):
                 verify_exit(final_status, final_trace, pass_marker)
                 if final_trace.count(f"{state_marker} new\n") != 1:
                     raise RuntimeError("repeated recovery resurrected the committed removed name")
-                result = inspect(repeated_image, tools, output / prefix, expected_blocks, expected_inodes, replacement_inode, args.operation, expected_parent_links)
+                result = inspect(repeated_image, tools, output / prefix, expected_blocks, expected_inodes, replacement_inode, args.operation, expected_parent_links, expected_collision_inode)
                 repeated_recovery.append({"cut": second_cut, "boundary": recovery_boundary, "result": result,
                     "crashed_sha256": hashlib.sha256(second_crashed.read_bytes()).hexdigest()})
     (output / "report.json").write_text(json.dumps({"operation": args.operation, "before": before, "reports": reports,
@@ -402,7 +443,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "append", "chmod", "times", "create", "mkdir", "rmdir", "xattr", "xattr-remove", "link", "symlink", "symlink-long"), default="unlink")
+    parser.add_argument("--operation", choices=("unlink", "replace", "rename", "rename-cross", "truncate", "grow", "append", "chmod", "times", "create", "mkdir", "rmdir", "xattr", "xattr-remove", "link", "symlink", "symlink-long"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

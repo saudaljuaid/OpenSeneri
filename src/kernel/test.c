@@ -5305,6 +5305,68 @@ static _Noreturn void ext4_vfs_replace_powercut(void)
     kernel_test_pass();
 }
 
+static _Noreturn void ext4_vfs_rename_powercut(bool cross_directory)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *source = "data/user/rename-source";
+    const char *target = cross_directory ? "data/user/rename-destination/moved-file" : "data/user/rename-target";
+    const char *collision = cross_directory ? "data/user/rename-destination/occupied" : "data/user/rename-existing";
+    struct phipfs_stat original, destination, occupied, after, parent;
+    phipfs_handle file, reader;
+    const enum phipfs_status initial = phipfs_lstat_path(volume, source, &original);
+    const enum phipfs_status destination_status = phipfs_lstat_path(volume, target, &destination);
+    const bool old = initial == PHIPFS_STATUS_OK && destination_status == PHIPFS_STATUS_NOT_FOUND;
+    const bool changed = initial == PHIPFS_STATUS_NOT_FOUND && destination_status == PHIPFS_STATUS_OK;
+    if (!old && !changed) kernel_test_fail("ext4 rename cut namespace is neither old nor new");
+    if (changed) original = destination;
+    if (original.directory || original.size != 4500U || original.links != 1U || original.mode != 0100644U)
+        kernel_test_fail("ext4 rename cut source metadata changed");
+    ext4_vfs_require(phipfs_lstat_path(volume, collision, &occupied), "rename cut collision inode");
+    if (occupied.directory || occupied.size != 1000U || occupied.links != 1U || occupied.object_id == original.object_id)
+        kernel_test_fail("ext4 rename cut collision fixture changed");
+    ext4_vfs_require(phipfs_stat_path(volume, "data/user", &parent), "rename cut parent");
+    const uint64_t initial_free = phipfs_drive(volume).free_bytes;
+    ext4_vfs_require(phipfs_open(volume, old ? source : target, PHIPFS_ACCESS_READ, &file), "rename cut held source");
+    ext4_vfs_require(phipfs_open(volume, collision, PHIPFS_ACCESS_READ, &reader), "rename cut held collision");
+    if (old) {
+        console_write("ST EXT4 RENAME initial old\n");
+        if (phipfs_rename(volume, source, collision) != PHIPFS_STATUS_EXISTS)
+            kernel_test_fail("ext4 rename cut failed no-replace refusal");
+        ext4_vfs_require(phipfs_rename(volume, source, target), "rename cut publication");
+    } else console_write("ST EXT4 RENAME initial new\n");
+    if (phipfs_lstat_path(volume, source, &after) != PHIPFS_STATUS_NOT_FOUND)
+        kernel_test_fail("ext4 rename cut retained old source name");
+    ext4_vfs_require(phipfs_lstat_path(volume, target, &after), "rename cut target identity");
+    if (after.object_id != original.object_id || after.size != original.size || after.links != 1U ||
+        after.mode != original.mode || after.uid != original.uid || after.gid != original.gid)
+        kernel_test_fail("ext4 rename cut published wrong target inode");
+    ext4_vfs_require(phipfs_fstat(file, &after), "rename cut retained source");
+    if (after.object_id != original.object_id || after.links != 1U || after.size != 4500U)
+        kernel_test_fail("ext4 rename cut lost held source identity");
+    ext4_vfs_require(phipfs_fstat(reader, &after), "rename cut retained collision");
+    if (after.object_id != occupied.object_id || after.links != occupied.links || after.size != 1000U || after.mode != occupied.mode)
+        kernel_test_fail("ext4 rename cut overwrote no-replace target");
+    ext4_vfs_require(phipfs_lstat_path(volume, collision, &after), "rename cut collision namespace");
+    if (after.object_id != occupied.object_id || after.links != 1U || after.size != 1000U)
+        kernel_test_fail("ext4 rename cut replaced the collision name");
+    ext4_vfs_cut_contents(file, 4500U, 's');
+    ext4_vfs_cut_contents(reader, 1000U, 'c');
+    ext4_vfs_require(phipfs_stat_path(volume, "data/user", &after), "rename cut parent after");
+    if (after.object_id != parent.object_id || after.links != parent.links || phipfs_drive(volume).free_bytes != initial_free)
+        kernel_test_fail("ext4 rename cut changed allocation or parent links");
+    ext4_vfs_require(phipfs_fsync(file), "rename cut fsync");
+    ext4_vfs_require(phipfs_close(file), "rename cut close");
+    ext4_vfs_require(phipfs_close(reader), "rename cut collision close");
+    ext4_vfs_require(phipfs_sync(volume), "rename cut final sync");
+    ext4_vfs_require(phipfs_unmount(volume), "rename cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 rename cut resource census failed");
+    console_write("ST EXT4 VFS rename no-replace old-or-new held contents allocation census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_mkdir_powercut(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5968,6 +6030,10 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         ext4_vfs_held_unlink_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTREPLACE.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_replace_powercut();
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTRENAME.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_rename_powercut(false);
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTRENCROSS.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_rename_powercut(true);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTTRUNC.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_truncate_powercut(false);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTGROW.TST", &stat) == PHIPFS_STATUS_OK)
