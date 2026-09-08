@@ -70,6 +70,9 @@ def boot(args, image, output, work, number, original, before):
                 offset = serial.stat().st_size
                 click(pointer, 42, 16)
                 capture.wait_serial_after(serial, offset, b"Phipia: Save failed: ", timeout=90.0)
+                failure_trace = serial.read_bytes()[offset:]
+                if b"Phipia: Save failed: volume has no free cluster\n" not in failure_trace:
+                    raise RuntimeError("Paint save failed for a reason other than PHIPFS_STATUS_FULL")
                 if b"runtime disabled" in serial.read_bytes() or b"Phipia PANIC" in serial.read_bytes():
                     raise RuntimeError("storage refusal disabled the desktop")
                 capture.capture_png(qmp, work, output, "paint-full-refused")
