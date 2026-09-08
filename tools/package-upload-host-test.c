@@ -22,17 +22,30 @@ struct mock_file {
 };
 
 static struct mock_file files[PACKAGE_UPLOAD_SLOT_LIMIT];
+static struct mock_file replacement_file;
+static bool inode_bound_cleanup;
 static bool directory_present;
 static bool fail_next_sync;
 static bool fail_next_open;
 static bool replace_on_refused_open;
 static bool fail_next_unlink;
+static bool lose_unlink_receipt;
 static size_t write_failure_at = NO_WRITE_FAILURE;
 static uint32_t sync_count;
 static uint32_t unlink_count;
 static uint32_t truncate_count;
 static uint32_t create_count;
 static uint32_t prepared_open_count;
+
+bool phipfs_has_atomic_replace(enum phipfs_volume volume)
+{
+    return volume == PHIPFS_VOLUME_DATA && inode_bound_cleanup;
+}
+
+static struct mock_file *named_file(int index)
+{
+    return index == 0 && replacement_file.present ? &replacement_file : &files[index];
+}
 
 static int path_index(const char *path)
 {
@@ -79,19 +92,20 @@ enum phipfs_status phipfs_unlink(enum phipfs_volume volume, const char *path)
     if (volume != PHIPFS_VOLUME_DATA || index < 0) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
-    if (!files[index].present) {
+    struct mock_file *file = named_file(index);
+    if (!file->present) {
         return PHIPFS_STATUS_NOT_FOUND;
     }
     if (fail_next_unlink) {
         fail_next_unlink = false;
         return PHIPFS_STATUS_IO;
     }
-    if (files[index].open) {
+    if (file->open) {
         return PHIPFS_STATUS_BUSY;
     }
-    files[index].present = false;
-    files[index].size = 0U;
-    files[index].offset = 0U;
+    file->present = false;
+    file->size = 0U;
+    file->offset = 0U;
     ++unlink_count;
     return PHIPFS_STATUS_OK;
 }
@@ -104,11 +118,12 @@ enum phipfs_status phipfs_stat_path(enum phipfs_volume volume,
     if (volume != PHIPFS_VOLUME_DATA || index < 0 || stat == NULL) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
-    if (!files[index].present) {
+    struct mock_file *file = named_file(index);
+    if (!file->present) {
         return PHIPFS_STATUS_NOT_FOUND;
     }
     *stat = (struct phipfs_stat){
-        .size = files[index].size,
+        .size = file->size,
         .directory = false
     };
     return PHIPFS_STATUS_OK;
@@ -123,17 +138,39 @@ enum phipfs_status phipfs_truncate(enum phipfs_volume volume,
             size > MOCK_FILE_BYTES) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
-    if (!files[index].present) {
+    struct mock_file *file = named_file(index);
+    if (!file->present) {
         return PHIPFS_STATUS_NOT_FOUND;
     }
-    if (files[index].open) {
+    if (file->open) {
         return PHIPFS_STATUS_BUSY;
     }
-    files[index].size = (size_t)size;
-    if (files[index].offset > files[index].size) {
-        files[index].offset = files[index].size;
+    file->size = (size_t)size;
+    if (file->offset > file->size) {
+        file->offset = file->size;
     }
     ++truncate_count;
+    return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_unlink_held_file(phipfs_handle handle, const char *path)
+{
+    const int index = path_index(path);
+    if (handle == 0U || handle > PACKAGE_UPLOAD_SLOT_LIMIT ||
+        !files[handle - 1U].open) return PHIPFS_STATUS_STALE_HANDLE;
+    if (index < 0) return PHIPFS_STATUS_PATH;
+    if (named_file(index) != &files[handle - 1U]) return PHIPFS_STATUS_STALE_HANDLE;
+    if (!files[index].present) return PHIPFS_STATUS_NOT_FOUND;
+    if (fail_next_unlink) {
+        fail_next_unlink = false;
+        return PHIPFS_STATUS_IO;
+    }
+    files[index].present = false;
+    ++unlink_count;
+    if (lose_unlink_receipt) {
+        lose_unlink_receipt = false;
+        return PHIPFS_STATUS_IO;
+    }
     return PHIPFS_STATUS_OK;
 }
 
@@ -618,6 +655,50 @@ static int sealed_read_retains_inode_test(void)
     return 0;
 }
 
+static int held_cleanup_preserves_replacement_test(void)
+{
+    static const uint8_t payload[] = "owned upload";
+    uint8_t digest[PACKAGE_STATE_SHA256_BYTES], copy[sizeof(payload)];
+    struct package_upload_report report;
+    size_t count;
+    const uint32_t previous_truncates = truncate_count;
+    inode_bound_cleanup = true;
+    CHECK(package_state_sha256(payload, sizeof(payload), digest) == PACKAGE_STATE_STATUS_OK, 101);
+    for (unsigned attempt = 0U; attempt < 3U; ++attempt) {
+        CHECK(package_upload_open(93U, &report) == PACKAGE_UPLOAD_STATUS_OK, 102);
+        const package_upload_token token = report.token;
+        CHECK(package_upload_write(93U, token, payload, sizeof(payload), &count,
+            &report) == PACKAGE_UPLOAD_STATUS_OK && count == sizeof(payload), 103);
+        CHECK(package_upload_seal(93U, token, sizeof(payload), digest, &report) ==
+            PACKAGE_UPLOAD_STATUS_OK, 104);
+        if (attempt < 2U) {
+            fail_next_unlink = attempt == 0U;
+            lose_unlink_receipt = attempt == 1U;
+            CHECK(package_upload_close(93U, token, &report) == PACKAGE_UPLOAD_STATUS_FILESYSTEM &&
+                !report.sealed && !report.durable && files[0].open &&
+                files[0].present == (attempt == 0U) &&
+                files[0].size == sizeof(payload), 105);
+            CHECK(package_upload_read(93U, token, 0U, copy, sizeof(copy), &count,
+                &report) == PACKAGE_UPLOAD_STATUS_STATE && count == 0U, 106);
+        } else {
+            files[0].present = false;
+            replacement_file = (struct mock_file){.present = true, .size = 3U};
+            memcpy(replacement_file.bytes, "new", 3U);
+            CHECK(package_upload_read(93U, token, 0U, copy, sizeof(copy), &count,
+                &report) == PACKAGE_UPLOAD_STATUS_OK && count == sizeof(payload) &&
+                memcmp(copy, payload, sizeof(payload)) == 0, 107);
+        }
+        CHECK(package_upload_close(93U, token, &report) == PACKAGE_UPLOAD_STATUS_OK &&
+            package_upload_resources_released() && !files[0].open && !files[0].present &&
+            files[0].size == 0U && truncate_count == previous_truncates, 108);
+    }
+    CHECK(replacement_file.present && replacement_file.size == 3U &&
+        memcmp(replacement_file.bytes, "new", 3U) == 0, 109);
+    replacement_file = (struct mock_file){0};
+    inode_bound_cleanup = false;
+    return 0;
+}
+
 int main(void)
 {
     int result = initialize_test();
@@ -645,6 +726,9 @@ int main(void)
     }
     if (result == 0) {
         result = sealed_read_retains_inode_test();
+    }
+    if (result == 0) {
+        result = held_cleanup_preserves_replacement_test();
     }
     if (result != 0) {
         (void)fprintf(stderr, "package upload host test failed: %d\n", result);

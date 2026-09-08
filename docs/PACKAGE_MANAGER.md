@@ -158,6 +158,14 @@ prefix. The privileged native
 ABI exposes this session as a typed control handle with item, attach, commit,
 duplicate, final-close, and process-teardown semantics; repository and package
 upload handles remain independently closeable after the controller copies them.
+Upload requests claim the slot registry before lookup and report construction;
+competing or reentrant requests return BUSY. Exclusive prepared creation returns
+an owned VFS handle, retained through seal and reads so a reused pathname cannot
+substitute another inode. On admitted ext4, cleanup uses held-inode unlink and
+final-close orphan reclamation followed by filesystem sync. A failed cleanup
+token permits only cleanup retry, and a replacement name is preserved. This
+does not make the held file an immutable snapshot against external in-place
+writes; transaction control still authenticates the copied package bytes.
 The `phip` client and Store presentation drive the same controller over HTTPS,
 and the native QEMU lifecycle persists the resulting generations on writable
 ext4.

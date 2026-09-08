@@ -19,6 +19,7 @@ struct upload_slot {
     bool active;
     bool file_open;
     bool file_present;
+    bool inode_bound_cleanup;
     bool sealed;
     bool durable;
     bool poisoned;
@@ -320,6 +321,7 @@ static enum package_upload_status upload_open_owned(
     slot->active = true;
     slot->file_open = true;
     slot->file_present = true;
+    slot->inode_bound_cleanup = phipfs_has_atomic_replace(PHIPFS_VOLUME_DATA);
     slot->sha256 = sha256;
     servicing = false;
     return finish(report, PACKAGE_UPLOAD_STATUS_OK, PHIPFS_STATUS_OK, slot,
@@ -580,12 +582,25 @@ static enum package_upload_status upload_close_owned(
     slot->poisoned = true;
     slot->sealed = false;
     slot->durable = false;
+    slot_path(index, path);
+    if (slot->inode_bound_cleanup && slot->file_open && slot->file_present) {
+        enum phipfs_status fs_status = phipfs_unlink_held_file(slot->file, path);
+        if (fs_status != PHIPFS_STATUS_OK && fs_status != PHIPFS_STATUS_NOT_FOUND &&
+            fs_status != PHIPFS_STATUS_STALE_HANDLE) {
+            servicing = false;
+            return finish(report, PACKAGE_UPLOAD_STATUS_FILESYSTEM, fs_status,
+                slot, index);
+        }
+        /* The name is gone or belongs to someone else. Final close releases
+         * only our held inode; sync finishes any bounded orphan reclamation.
+         * Never truncate or unlink a replacement by its reused pathname. */
+        slot->file_present = false;
+    }
     if (slot->file_open) {
         (void)phipfs_close(slot->file);
         slot->file_open = false;
         slot->file = 0U;
     }
-    slot_path(index, path);
     if (slot->file_present) {
         bool changed = false;
         enum phipfs_status fs_status = remove_private_file(path, &changed);
