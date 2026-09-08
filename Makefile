@@ -1442,8 +1442,18 @@ $(PACKAGE_UPLOAD_HOST_TEST): tools/package-upload-host-test.c \
 		tools/package-upload-host-test.c src/kernel/package_upload.c \
 		src/kernel/package_state.c -o $@
 
-package-upload-tests: $(PACKAGE_UPLOAD_HOST_TEST)
+$(TEST_BUILD_DIR)/package-upload-claims-host-test$(HOST_EXEEXT): tools/package-upload-claims-host-test.c \
+		tools/package-upload-host-test.c src/kernel/package_upload.c src/kernel/package_state.c \
+		include/phipia/package_upload.h include/phipia/package_state.h include/phipia/fat32_fs.h
+	mkdir -p $(dir $@)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Wpedantic -Wshadow \
+		-Wundef -Wstrict-prototypes -Wmissing-prototypes $(HOST_THREAD_FLAGS) -Iinclude \
+		tools/package-upload-claims-host-test.c src/kernel/package_upload.c \
+		src/kernel/package_state.c -o $@
+
+package-upload-tests: $(PACKAGE_UPLOAD_HOST_TEST) $(TEST_BUILD_DIR)/package-upload-claims-host-test$(HOST_EXEEXT)
 	$(PACKAGE_UPLOAD_HOST_TEST)
+	$(TEST_BUILD_DIR)/package-upload-claims-host-test$(HOST_EXEEXT)
 
 $(TEST_BUILD_DIR)/monocypher/monocypher.o: \
 		vendor/monocypher/src/monocypher.c vendor/monocypher/src/monocypher.h

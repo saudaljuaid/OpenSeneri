@@ -243,6 +243,9 @@ enum phipfs_status phipfs_write(
     size_t *written_bytes
 )
 {
+#ifdef PACKAGE_UPLOAD_CLAIM_TEST
+    upload_claim_callback();
+#endif
     if (written_bytes == NULL || handle == 0U ||
         handle > PACKAGE_UPLOAD_SLOT_LIMIT || !files[handle - 1U].open ||
         (source == NULL && source_bytes != 0U)) {

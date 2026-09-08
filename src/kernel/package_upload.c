@@ -27,6 +27,7 @@ struct upload_slot {
 static struct upload_slot slots[PACKAGE_UPLOAD_SLOT_LIMIT];
 static bool initialized;
 static bool servicing;
+static bool request_claim;
 
 static void zero_bytes(void *destination, size_t count)
 {
@@ -201,7 +202,7 @@ static enum phipfs_status remove_private_file(
     return status == PHIPFS_STATUS_NOT_FOUND ? PHIPFS_STATUS_OK : status;
 }
 
-enum package_upload_status package_upload_initialize(
+static enum package_upload_status upload_initialize_owned(
     struct package_upload_report *report
 )
 {
@@ -257,7 +258,7 @@ enum package_upload_status package_upload_initialize(
     return finish(report, PACKAGE_UPLOAD_STATUS_OK, PHIPFS_STATUS_OK, NULL, 0U);
 }
 
-enum package_upload_status package_upload_open(
+static enum package_upload_status upload_open_owned(
     uint64_t owner,
     struct package_upload_report *report
 )
@@ -325,7 +326,7 @@ enum package_upload_status package_upload_open(
         index);
 }
 
-enum package_upload_status package_upload_write(
+static enum package_upload_status upload_write_owned(
     uint64_t owner,
     package_upload_token token,
     const uint8_t *bytes,
@@ -403,7 +404,7 @@ enum package_upload_status package_upload_write(
         index);
 }
 
-enum package_upload_status package_upload_seal(
+static enum package_upload_status upload_seal_owned(
     uint64_t owner,
     package_upload_token token,
     uint64_t expected_bytes,
@@ -480,7 +481,7 @@ enum package_upload_status package_upload_seal(
         index);
 }
 
-enum package_upload_status package_upload_read(
+static enum package_upload_status upload_read_owned(
     uint64_t owner,
     package_upload_token token,
     uint64_t offset,
@@ -538,7 +539,7 @@ enum package_upload_status package_upload_read(
         fs_status, slot, index);
 }
 
-enum package_upload_status package_upload_inspect(
+static enum package_upload_status upload_inspect_owned(
     uint64_t owner,
     package_upload_token token,
     struct package_upload_report *report
@@ -565,7 +566,7 @@ enum package_upload_status package_upload_inspect(
         index);
 }
 
-enum package_upload_status package_upload_close(
+static enum package_upload_status upload_close_owned(
     uint64_t owner,
     package_upload_token token,
     struct package_upload_report *report
@@ -625,7 +626,7 @@ enum package_upload_status package_upload_close(
     return finish(report, PACKAGE_UPLOAD_STATUS_OK, PHIPFS_STATUS_OK, NULL, 0U);
 }
 
-bool package_upload_resources_released(void)
+static bool upload_resources_released_owned(void)
 {
     if (servicing) {
         return false;
@@ -636,6 +637,98 @@ bool package_upload_resources_released(void)
         }
     }
     return true;
+}
+
+/* Serialize the entire request, including token lookup and report copies.
+ * This is a try-claim, never a spin lock held across filesystem callbacks:
+ * competing and reentrant callers refuse before touching any slot state. */
+static bool claim_request(struct package_upload_report *report)
+{
+    if (__atomic_test_and_set(&request_claim, __ATOMIC_ACQUIRE)) {
+        report_clear(report);
+        (void)finish(report, PACKAGE_UPLOAD_STATUS_BUSY, PHIPFS_STATUS_OK,
+            NULL, 0U);
+        return false;
+    }
+    return true;
+}
+
+static enum package_upload_status release_request(enum package_upload_status status)
+{
+    __atomic_clear(&request_claim, __ATOMIC_RELEASE);
+    return status;
+}
+
+enum package_upload_status package_upload_initialize(struct package_upload_report *report)
+{
+    if (report == NULL) return PACKAGE_UPLOAD_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_UPLOAD_STATUS_BUSY;
+    return release_request(upload_initialize_owned(report));
+}
+
+enum package_upload_status package_upload_open(uint64_t owner,
+    struct package_upload_report *report)
+{
+    if (report == NULL) return PACKAGE_UPLOAD_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_UPLOAD_STATUS_BUSY;
+    return release_request(upload_open_owned(owner, report));
+}
+
+enum package_upload_status package_upload_write(uint64_t owner,
+    package_upload_token token, const uint8_t *bytes, size_t byte_count,
+    size_t *written_bytes, struct package_upload_report *report)
+{
+    if (written_bytes != NULL) *written_bytes = 0U;
+    if (report == NULL) return PACKAGE_UPLOAD_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_UPLOAD_STATUS_BUSY;
+    return release_request(upload_write_owned(owner, token, bytes, byte_count,
+        written_bytes, report));
+}
+
+enum package_upload_status package_upload_seal(uint64_t owner,
+    package_upload_token token, uint64_t expected_bytes,
+    const uint8_t expected_sha256[PACKAGE_STATE_SHA256_BYTES],
+    struct package_upload_report *report)
+{
+    if (report == NULL) return PACKAGE_UPLOAD_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_UPLOAD_STATUS_BUSY;
+    return release_request(upload_seal_owned(owner, token, expected_bytes,
+        expected_sha256, report));
+}
+
+enum package_upload_status package_upload_read(uint64_t owner,
+    package_upload_token token, uint64_t offset, uint8_t *bytes, size_t capacity,
+    size_t *read_bytes, struct package_upload_report *report)
+{
+    if (read_bytes != NULL) *read_bytes = 0U;
+    if (report == NULL) return PACKAGE_UPLOAD_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_UPLOAD_STATUS_BUSY;
+    return release_request(upload_read_owned(owner, token, offset, bytes,
+        capacity, read_bytes, report));
+}
+
+enum package_upload_status package_upload_inspect(uint64_t owner,
+    package_upload_token token, struct package_upload_report *report)
+{
+    if (report == NULL) return PACKAGE_UPLOAD_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_UPLOAD_STATUS_BUSY;
+    return release_request(upload_inspect_owned(owner, token, report));
+}
+
+enum package_upload_status package_upload_close(uint64_t owner,
+    package_upload_token token, struct package_upload_report *report)
+{
+    if (report == NULL) return PACKAGE_UPLOAD_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_UPLOAD_STATUS_BUSY;
+    return release_request(upload_close_owned(owner, token, report));
+}
+
+bool package_upload_resources_released(void)
+{
+    if (__atomic_test_and_set(&request_claim, __ATOMIC_ACQUIRE)) return false;
+    const bool released = upload_resources_released_owned();
+    (void)release_request(PACKAGE_UPLOAD_STATUS_OK);
+    return released;
 }
 
 const char *package_upload_status_string(enum package_upload_status status)
