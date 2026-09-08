@@ -1364,6 +1364,7 @@ $(BUILD_DIR)/keyboard-channel-host-test: tools/keyboard-channel-host-test.c src/
 		tools/keyboard-channel-host-test.c -Wl,--gc-sections -o $@
 
 ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesystem-host-test $(BUILD_DIR)/ext4-vfs-host-test $(BUILD_DIR)/ext4-handle-claims-host-test $(BUILD_DIR)/vfs-file-claims-host-test $(BUILD_DIR)/vfs-directory-claims-host-test $(BUILD_DIR)/vfs-mutation-host-test $(BUILD_DIR)/ext4-nvme-close-host-test $(BUILD_DIR)/ext4-msix-close-host-test $(BUILD_DIR)/notes-ext4-host-test $(BUILD_DIR)/shell-ext4-host-test $(BUILD_DIR)/ui-animation-clip-host-test $(BUILD_DIR)/keyboard-channel-host-test
+	$(PYTHON) tools/ext4_guest_capture_test.py
 	$(BUILD_DIR)/vfs-mount-host-test
 	$(BUILD_DIR)/vfs-vnode-host-test
 	$(BUILD_DIR)/vfs-directory-host-test

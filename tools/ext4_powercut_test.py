@@ -9,6 +9,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 import ext4_image
@@ -99,6 +100,49 @@ def _build_iso(
             )
 
 
+def _capture_guest(command, log: Path, timeout: int) -> tuple[int, str]:
+    """Preserve serial evidence and stop immediately on an explicit guest failure."""
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    completed = threading.Event()
+    lines, failures = [], []
+
+    def read_serial():
+        try:
+            for line in process.stdout:
+                lines.append(line)
+                if "Phipia PANIC:" in line or line.startswith("ST FAIL"):
+                    failures.append("guest reported a terminal failure")
+                    completed.set()
+        except Exception as error:
+            failures.append(f"serial capture failed: {error}")
+        finally:
+            completed.set()
+
+    reader = threading.Thread(target=read_serial, name="ext4-guest-serial")
+    try:
+        reader.start()
+        timed_out = not completed.wait(timeout)
+        if timed_out or failures:
+            process.kill()
+        try:
+            status = process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            failures.append("guest did not exit after closing its serial stream")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        if reader.ident is not None:
+            reader.join()
+        process.stdout.close()
+        transcript = "".join(lines)
+        log.write_text(transcript, encoding="utf-8", newline="\n")
+    if timed_out or failures:
+        reason = "QEMU timed out" if timed_out else failures[0]
+        raise PowerCutError(f"{reason}; transcript: {log}\n" + _transcript_tail(transcript))
+    return status, transcript
+
+
 def _run_qemu(
     qemu: str,
     accel: str,
@@ -139,23 +183,7 @@ def _run_qemu(
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
         "-no-reboot",
     )
-    try:
-        result = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as error:
-        transcript = error.stdout or ""
-        if isinstance(transcript, bytes):
-            transcript = transcript.decode("utf-8", errors="replace")
-        log.write_text(transcript, encoding="utf-8", newline="\n")
-        raise PowerCutError(f"QEMU timed out; transcript: {log}\n" + _transcript_tail(transcript)) from error
-    log.write_text(result.stdout, encoding="utf-8", newline="\n")
-    return result.returncode, result.stdout
+    return _capture_guest(command, log, timeout)
 
 
 def _verify_guest_result(image: Path, tools: dict[str, str], temporary: Path) -> None:
