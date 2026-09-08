@@ -303,7 +303,7 @@ static enum package_upload_status upload_open_owned(
      * inode in one coordinator operation. No pathname cleanup is safe when
      * that operation refuses to return an owned handle. */
     enum phipfs_status fs_status = phipfs_open_options(PHIPFS_VOLUME_DATA,
-        path, PHIPFS_ACCESS_WRITE, PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE,
+        path, PHIPFS_ACCESS_READ_WRITE, PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE,
         0600U, &file);
     if (fs_status != PHIPFS_STATUS_OK) {
         servicing = false;
@@ -435,16 +435,6 @@ static enum package_upload_status upload_seal_owned(
             slot, index);
     }
     servicing = true;
-    enum phipfs_status fs_status = phipfs_close(slot->file);
-
-    slot->file_open = false;
-    slot->file = 0U;
-    if (fs_status != PHIPFS_STATUS_OK) {
-        slot->poisoned = true;
-        servicing = false;
-        return finish(report, PACKAGE_UPLOAD_STATUS_FILESYSTEM, fs_status,
-            slot, index);
-    }
     if (package_state_sha256_finish(&slot->sha256, digest) !=
             PACKAGE_STATE_STATUS_OK) {
         slot->poisoned = true;
@@ -467,7 +457,10 @@ static enum package_upload_status upload_seal_owned(
         return finish(report, PACKAGE_UPLOAD_STATUS_DIGEST, PHIPFS_STATUS_OK,
             slot, index);
     }
-    fs_status = phipfs_sync(PHIPFS_VOLUME_DATA);
+    /* Retain this exact inode through sealing and reads. Reopening the slot's
+     * pathname would allow rename/unlink/recreate to substitute another file. */
+    enum phipfs_status fs_status = phipfs_fsync(slot->file);
+    if (fs_status == PHIPFS_STATUS_OK) fs_status = phipfs_sync(PHIPFS_VOLUME_DATA);
     if (fs_status != PHIPFS_STATUS_OK) {
         slot->poisoned = true;
         servicing = false;
@@ -493,8 +486,6 @@ static enum package_upload_status upload_read_owned(
 {
     struct upload_slot *slot;
     size_t index;
-    char path[PHIPFS_MAX_PATH];
-    phipfs_handle file;
 
     report_clear(report);
     if (report == NULL || read_bytes == NULL ||
@@ -512,7 +503,7 @@ static enum package_upload_status upload_read_owned(
         return finish(report, PACKAGE_UPLOAD_STATUS_BUSY, PHIPFS_STATUS_OK,
             slot, index);
     }
-    if (!slot->sealed || !slot->durable || slot->poisoned || slot->file_open) {
+    if (!slot->sealed || !slot->durable || slot->poisoned || !slot->file_open) {
         return finish(report, PACKAGE_UPLOAD_STATUS_STATE, PHIPFS_STATUS_OK,
             slot, index);
     }
@@ -521,18 +512,10 @@ static enum package_upload_status upload_read_owned(
             slot, index);
     }
     servicing = true;
-    slot_path(index, path);
-    enum phipfs_status fs_status = phipfs_open(PHIPFS_VOLUME_DATA, path,
-        PHIPFS_ACCESS_READ, &file);
-
-    if (fs_status == PHIPFS_STATUS_OK) {
-        fs_status = phipfs_pread(file, bytes, capacity, offset, read_bytes);
-        enum phipfs_status close_status = phipfs_close(file);
-
-        if (fs_status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
-            fs_status = close_status;
-        }
-    }
+    if (capacity > slot->byte_count - offset)
+        capacity = (size_t)(slot->byte_count - offset);
+    enum phipfs_status fs_status = phipfs_pread(slot->file, bytes, capacity,
+        offset, read_bytes);
     servicing = false;
     return finish(report, fs_status == PHIPFS_STATUS_OK ?
         PACKAGE_UPLOAD_STATUS_OK : PACKAGE_UPLOAD_STATUS_FILESYSTEM,
@@ -558,7 +541,7 @@ static enum package_upload_status upload_inspect_owned(
     if (status != PACKAGE_UPLOAD_STATUS_OK) {
         return finish(report, status, PHIPFS_STATUS_OK, NULL, 0U);
     }
-    if (!slot->sealed || !slot->durable || slot->poisoned || slot->file_open) {
+    if (!slot->sealed || !slot->durable || slot->poisoned || !slot->file_open) {
         return finish(report, PACKAGE_UPLOAD_STATUS_STATE, PHIPFS_STATUS_OK,
             slot, index);
     }

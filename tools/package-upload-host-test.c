@@ -173,7 +173,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume,
     int index = path_index(path);
 
     if (volume != PHIPFS_VOLUME_DATA || index < 0 || handle == NULL ||
-        !directory_present || access != PHIPFS_ACCESS_WRITE || mode != 0600U ||
+        !directory_present || access != PHIPFS_ACCESS_READ_WRITE || mode != 0600U ||
         flags != (PHIPFS_OPEN_CREATE | PHIPFS_OPEN_EXCLUSIVE)) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
@@ -233,7 +233,18 @@ enum phipfs_status phipfs_close(phipfs_handle handle)
         return PHIPFS_STATUS_STALE_HANDLE;
     }
     files[handle - 1U].open = false;
+    if (!files[handle - 1U].present) {
+        files[handle - 1U].size = 0U;
+        files[handle - 1U].offset = 0U;
+    }
     return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_fsync(phipfs_handle handle)
+{
+    if (handle == 0U || handle > PACKAGE_UPLOAD_SLOT_LIMIT ||
+        !files[handle - 1U].open) return PHIPFS_STATUS_STALE_HANDLE;
+    return phipfs_sync(PHIPFS_VOLUME_DATA);
 }
 
 enum phipfs_status phipfs_write(
@@ -579,6 +590,34 @@ static int failed_close_retires_sealed_view_test(void)
     return 0;
 }
 
+static int sealed_read_retains_inode_test(void)
+{
+    static const uint8_t payload[] = "held payload";
+    uint8_t digest[PACKAGE_STATE_SHA256_BYTES], copy[sizeof(payload) + 4U];
+    struct package_upload_report report;
+    size_t count;
+    CHECK(package_state_sha256(payload, sizeof(payload), digest) == PACKAGE_STATE_STATUS_OK, 91);
+    CHECK(package_upload_open(92U, &report) == PACKAGE_UPLOAD_STATUS_OK, 92);
+    const package_upload_token token = report.token;
+    CHECK(package_upload_write(92U, token, payload, sizeof(payload), &count,
+        &report) == PACKAGE_UPLOAD_STATUS_OK && count == sizeof(payload), 93);
+    CHECK(package_upload_seal(92U, token, sizeof(payload), digest, &report) ==
+        PACKAGE_UPLOAD_STATUS_OK && files[0].open, 94);
+    /* Removing the name cannot redirect a sealed token's reads. Any new open
+     * would refuse, and a held read must not consume that refusal injection. */
+    files[0].present = false;
+    fail_next_open = true;
+    CHECK(package_upload_read(92U, token, 0U, copy, sizeof(copy), &count,
+        &report) == PACKAGE_UPLOAD_STATUS_OK && count == sizeof(payload) &&
+        memcmp(copy, payload, sizeof(payload)) == 0 && fail_next_open, 95);
+    CHECK(package_upload_read(92U, token, sizeof(payload), copy, sizeof(copy),
+        &count, &report) == PACKAGE_UPLOAD_STATUS_OK && count == 0U, 96);
+    CHECK(package_upload_close(92U, token, &report) == PACKAGE_UPLOAD_STATUS_OK &&
+        !files[0].open && files[0].size == 0U && package_upload_resources_released(), 97);
+    fail_next_open = false;
+    return 0;
+}
+
 int main(void)
 {
     int result = initialize_test();
@@ -603,6 +642,9 @@ int main(void)
     }
     if (result == 0) {
         result = failed_close_retires_sealed_view_test();
+    }
+    if (result == 0) {
+        result = sealed_read_retains_inode_test();
     }
     if (result != 0) {
         (void)fprintf(stderr, "package upload host test failed: %d\n", result);
