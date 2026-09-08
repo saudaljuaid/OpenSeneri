@@ -40,6 +40,7 @@ static bool cleanup_sync_fails;
 static bool cleanup_unlink_fails;
 static bool cleanup_lost;
 static bool pending_cleanup;
+static bool replace_before_cleanup;
 
 static void assert_handle(phipfs_handle handle)
 {
@@ -94,6 +95,7 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     *digit = (char)('0' + opens);
     assert(strcmp(path, expected) == 0);
     if (opens <= occupied_names) return PHIPFS_STATUS_EXISTS;
+    assert(scratch_inode == 0U); /* Successful cleanup makes the same name reusable. */
     strcpy(scratch_name, path);
     if (fault == CREATE_FAIL) return PHIPFS_STATUS_IO;
     scratch_inode = 20U;
@@ -155,6 +157,7 @@ enum phipfs_status phipfs_unlink_held_file(phipfs_handle handle, const char *pat
     assert_handle(handle);
     assert(strcmp(path, scratch_name) == 0 && !pending_publication);
     ++cleanup_calls;
+    if (replace_before_cleanup) scratch_inode = 30U;
     if (scratch_inode == 0U) return PHIPFS_STATUS_NOT_FOUND;
     if (scratch_inode != 20U) return PHIPFS_STATUS_STALE_HANDLE;
     if (cleanup_unlink_fails) return PHIPFS_STATUS_IO;
@@ -217,6 +220,7 @@ static void reset_save(enum save_fault next_fault)
     fail_paint_row = paint_saved = false;
     cleanup_calls = 0U;
     cleanup_sync_fails = cleanup_unlink_fails = cleanup_lost = pending_cleanup = false;
+    replace_before_cleanup = false;
     note_dirty = true;
     note_savable = true;
 }
@@ -371,15 +375,23 @@ int main(void)
     assert(media_editor_recover() == PHIPFS_STATUS_OK);
     assert(paint_recover_save() == PHIPFS_STATUS_OK);
     assert(opens == 0U && publications == 0U && syncs == 0U);
-    for (unsigned failure = 0U; failure < 3U; ++failure) {
+    for (unsigned failure = 0U; failure < 4U; ++failure) {
         reset_save(WRITE_FAIL);
         cleanup_sync_fails = failure == 0U;
         cleanup_unlink_fails = failure == 1U;
         cleanup_lost = failure == 2U;
+        replace_before_cleanup = failure == 3U;
         assert(note_save() == PHIPFS_STATUS_IO && note_dirty && live_handles == 0U);
         assert(target_inode == 10U && target_length == 3U);
         assert(cleanup_calls == (failure == 0U ? 0U : 1U));
-        assert(scratch_inode == (failure == 2U ? 0U : 20U));
+        assert(scratch_inode == (failure == 2U ? 0U : failure == 3U ? 30U : 20U));
+    }
+    reset_save(WRITE_FAIL);
+    for (unsigned attempt = 0U; attempt < 12U; ++attempt) {
+        // Reset observations only, retaining namespace/content between saves.
+        opens = writes = syncs = publications = closes = cleanup_calls = 0U;
+        assert(note_save() == PHIPFS_STATUS_IO && note_dirty && live_handles == 0U);
+        assert(opens == 1U && scratch_inode == 0U && target_inode == 10U && target_length == 3U);
     }
     puts("Notes, Paint, Media ext4 save: ownership, complete publication, failure handling PASS");
     return 0;
