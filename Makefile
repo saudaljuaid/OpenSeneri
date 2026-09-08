@@ -2315,6 +2315,12 @@ qemu-test-ext4-applications: iso $(FAT32_SYSTEM_IMAGE)
 		--system $(FAT32_SYSTEM_IMAGE) --ffmpeg $(FFMPEG) \
 		--output $(TEST_BUILD_DIR)/ext4-applications/$(shell git rev-parse --short HEAD)
 
+.PHONY: qemu-test-ext4-applications-low-space
+qemu-test-ext4-applications-low-space: iso $(FAT32_SYSTEM_IMAGE)
+	$(PYTHON) tools/ext4_application_space_test.py --iso $(ISO) \
+		--system $(FAT32_SYSTEM_IMAGE) --ffmpeg $(FFMPEG) \
+		--output $(TEST_BUILD_DIR)/ext4-applications/$(shell git rev-parse --short HEAD)/low-space
+
 capture-networking: iso $(FAT32_SYSTEM_IMAGE) $(FAT32_DATA_IMAGE)
 	rm -rf $(NETWORK_CAPTURE_DIR)
 	$(PYTHON) tools/capture-networking.py --iso $(ISO) \

@@ -4265,6 +4265,11 @@ static enum ui_status application_storage_action(
     (void)copy_string(request.title, sizeof(request.title),
         action == APPLICATION_MEDIA_EXPORT ? "Export failed" : "Save failed");
     (void)copy_string(request.detail, sizeof(request.detail), phipfs_status_string(status));
+    console_serial_write("Phipia: ");
+    console_serial_write(request.title);
+    console_serial_write(": ");
+    console_serial_write(request.detail);
+    console_serial_write("\n");
     return dialog_open(&request, damage) == DIALOG_STATUS_OK ? UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
 }
 
