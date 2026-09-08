@@ -1288,7 +1288,14 @@ $(BUILD_DIR)/shell-ext4-host-test: tools/shell-ext4-host-test.c src/kernel/shell
 		-Wall -Wextra -Werror -Wpedantic -Wshadow -Iinclude \
 		tools/shell-ext4-host-test.c -Wl,--gc-sections -o $@
 
-ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesystem-host-test $(BUILD_DIR)/ext4-vfs-host-test $(BUILD_DIR)/vfs-mutation-host-test $(BUILD_DIR)/ext4-nvme-close-host-test $(BUILD_DIR)/ext4-msix-close-host-test $(BUILD_DIR)/notes-ext4-host-test $(BUILD_DIR)/shell-ext4-host-test
+$(BUILD_DIR)/ui-animation-clip-host-test: tools/ui-animation-clip-host-test.c src/kernel/ui.c src/kernel/ui_anim.c
+	mkdir -p $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections \
+		-Wall -Wextra -Werror -Wpedantic -Wshadow -Iinclude \
+		tools/ui-animation-clip-host-test.c src/kernel/ui_anim.c -Wl,--gc-sections -o $@
+
+ext4-tests: tools/ext4_image.py tools/ext4_host_test.py $(BUILD_DIR)/sdk-filesystem-host-test $(BUILD_DIR)/ext4-vfs-host-test $(BUILD_DIR)/vfs-mutation-host-test $(BUILD_DIR)/ext4-nvme-close-host-test $(BUILD_DIR)/ext4-msix-close-host-test $(BUILD_DIR)/notes-ext4-host-test $(BUILD_DIR)/shell-ext4-host-test $(BUILD_DIR)/ui-animation-clip-host-test
+	$(BUILD_DIR)/ui-animation-clip-host-test
 	$(BUILD_DIR)/sdk-filesystem-host-test
 	$(BUILD_DIR)/ext4-vfs-host-test
 	$(BUILD_DIR)/vfs-mutation-host-test
