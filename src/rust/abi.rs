@@ -31,9 +31,11 @@ use alloc::boxed::Box;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::c_void;
 use core::ptr::null_mut;
+use core::sync::atomic::{AtomicI32, Ordering};
 
 const HEAP_ALIGNMENT: usize = 16;
 const HEAP_STATUS_OK: i32 = 0;
+static LAST_HEAP_ALLOCATION_FAILURE: AtomicI32 = AtomicI32::new(HEAP_STATUS_OK);
 
 struct KernelAllocator;
 
@@ -58,6 +60,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
         if status == HEAP_STATUS_OK {
             pointer.cast()
         } else {
+            LAST_HEAP_ALLOCATION_FAILURE.store(status, Ordering::Relaxed);
             null_mut()
         }
     }
@@ -272,10 +275,32 @@ pub(crate) fn panic(details: core::fmt::Arguments<'_>) -> ! {
 
     let mut writer = PanicWriter { remaining: 1024 };
     let _ = core::fmt::write(&mut writer, details);
+    // Mirror the pointer-free C heap snapshot only at the fatal boundary. This
+    // distinguishes byte exhaustion, descriptor exhaustion and mapping failure
+    // without allocating or changing a fallible allocation into a panic.
+    #[repr(C)]
+    struct HeapState {
+        base_address: u64,
+        size: u64,
+        committed_bytes: u64,
+        allocated_bytes: u64,
+        block_count: usize,
+        live_allocations: usize,
+        mapped_pages: usize,
+        active: bool,
+    }
+    const _: () = assert!(core::mem::size_of::<HeapState>() == 64);
     unsafe extern "C" {
+        fn heap_get_state() -> HeapState;
         fn console_write_n(message: *const u8, length: usize);
         fn console_panic(message: *const u8) -> !;
     }
+    // SAFETY: the C function returns this exact by-value, pointer-free layout.
+    let heap = unsafe { heap_get_state() };
+    let _ = core::fmt::write(&mut writer, format_args!(
+        "\nRust heap: last allocation status {} allocated {} committed {} limit {} blocks {} live {}",
+        LAST_HEAP_ALLOCATION_FAILURE.load(Ordering::Relaxed), heap.allocated_bytes,
+        heap.committed_bytes, heap.size, heap.block_count, heap.live_allocations));
 
     // SAFETY: this static byte remains live for the complete console call.
     unsafe { console_write_n(b"\n".as_ptr(), 1) };
