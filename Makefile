@@ -2553,6 +2553,14 @@ qemu-test-ext4-symlink-powercuts qemu-test-ext4-symlink-long-powercuts: $(KERNEL
 		$(if $(GRUB_MODULE_DIR),--grub-module-dir '$(GRUB_MODULE_DIR)') \
 		--accel '$(QEMU_ACCEL)'
 
+qemu-test-ext4-append-powercuts: $(KERNEL) $(EXT4_FIXTURE) tools/ext4_unlink_powercut_test.py tools/ext4_powercut_test.py tools/ext4_kernel_read.py
+	$(PYTHON) tools/ext4_unlink_powercut_test.py --operation append \
+		--kernel '$(KERNEL)' --fixture '$(EXT4_FIXTURE)' \
+		--output '$(TEST_BUILD_DIR)/ext4-unlink-powercuts/$(shell git rev-parse --short HEAD)/append' \
+		--grub-mkrescue '$(GRUB_MKRESCUE)' \
+		$(if $(GRUB_MODULE_DIR),--grub-module-dir '$(GRUB_MODULE_DIR)') \
+		--accel '$(QEMU_ACCEL)'
+
 qemu-test-ext4-powercuts: $(KERNEL) $(EXT4_FIXTURE) \
 		tools/ext4_image.py tools/ext4_powercut_test.py
 	@for tool in qemu-system-x86_64 $(GRUB_MKRESCUE) $(PYTHON); do \

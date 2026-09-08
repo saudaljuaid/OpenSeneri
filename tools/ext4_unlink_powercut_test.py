@@ -41,11 +41,11 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
     removed = "owned-cut" if replacement_inode is None else "replace-source"
     if operation == "rmdir":
         removed = "removed-directory"
-    if operation not in ("truncate", "grow", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") and f"/{removed}/" in namespace:
+    if operation not in ("truncate", "grow", "append", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") and f"/{removed}/" in namespace:
         raise RuntimeError("held-unlink retained its removed name")
     output.mkdir()
     (output / "namespace.txt").write_text(namespace)
-    expected_files = {} if operation in ("truncate", "grow", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") else {f"data/user/{removed}": None}
+    expected_files = {} if operation in ("truncate", "grow", "append", "xattr", "xattr-remove", "create", "mkdir", "link", "symlink", "symlink-long") else {f"data/user/{removed}": None}
     if operation in ("symlink", "symlink-long"):
         target_name = LONG_SYMLINK_TARGET if operation == "symlink-long" else "link-source"
         literal = ext4_image._debugfs(tools, image, "stat /data/user/symbolic-alias")
@@ -74,9 +74,13 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
             target_name, target_size = "created-directory", 4096
         if operation == "link":
             target_name, target_size = "link-alias", 4500
+        if operation == "append":
+            target_name, target_size = "append-target", 9000
         expected_content = (b"t" if operation in ("truncate", "xattr", "xattr-remove") else b"s") * target_size
         if operation == "grow":
             expected_content = b"t" * 1700 + bytes(target_size - 1700)
+        if operation == "append":
+            expected_content = b"t" * 4500 + b"s" * 4500
         target_output = ext4_image._debugfs(tools, image, f"stat /data/user/{target_name}")
         target = ext4_image._parse_stat(target_output, f"/data/user/{target_name}")
         if target["inode"] != replacement_inode or target["size"] != target_size or target["links"] != (2 if operation in ("mkdir", "link") else 1):
@@ -92,6 +96,8 @@ def inspect(image, tools, output, expected_blocks, expected_inodes, replacement_
             raise RuntimeError("created inode mode or empty allocation changed")
         if operation == "grow" and target["block_count_512"] != 8:
             raise RuntimeError("sparse growth allocated physical hole blocks")
+        if operation == "append" and target["block_count_512"] != 24:
+            raise RuntimeError("append allocated the wrong physical blocks")
         if operation == "xattr" and target["block_count_512"] != 16:
             raise RuntimeError("external xattr physical allocation changed")
         if operation == "xattr-remove" and target["block_count_512"] != 8:
@@ -140,6 +146,7 @@ def run(args):
     replacement = args.operation == "replace"
     truncating = args.operation in ("truncate", "grow")
     growing = args.operation == "grow"
+    appending = args.operation == "append"
     creating = args.operation in ("create", "mkdir")
     directory = args.operation == "mkdir"
     removing_directory = args.operation == "rmdir"
@@ -176,6 +183,9 @@ def run(args):
     if symlinking:
         pass_marker = "ST EXT4 VFS symlink target followed inode allocation census exact"
         state_marker = "ST EXT4 SYMLINK initial"
+    if appending:
+        pass_marker = "ST EXT4 VFS append old-or-new tail shared EOF allocation census exact"
+        state_marker = "ST EXT4 APPEND initial"
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     tools = ext4_image.require_tools()
@@ -213,6 +223,9 @@ def run(args):
         if symlinking:
             source.write_bytes(b"s" * 4500)
             files = [(source, symlink_target), (empty, "CUTSYMLONG.TST" if external_symlink else "CUTSYM.TST")]
+        if appending:
+            source.write_bytes(b"t" * 4500)
+            files = [(source, "append-target"), (empty, "CUTAPPEND.TST")]
         for file, name in files:
             ext4_image._run([tools["debugfs"], "-w", "-R",
                 f'write "{file.as_posix()}" /data/user/{name}', initial])
@@ -235,6 +248,8 @@ def run(args):
         removed = "link-source"
     if symlinking:
         removed = symlink_target
+    if appending:
+        removed = "append-target"
     target = None if creating else ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
         f"stat /data/user/{removed}"), f"/data/user/{removed}")
     reclaimed = 0 if growing else (1 if replacement or truncating else 2)
@@ -250,16 +265,18 @@ def run(args):
         reclaimed = 0
     if symlinking:
         reclaimed = -1 if external_symlink else 0
+    if appending:
+        reclaimed = -1
     if not creating and (target["size"] != initial_size or target["block_count_512"] != initial_blocks * 8):
         raise RuntimeError("held-unlink input has unexpected allocation geometry")
-    replacement_inode = target["inode"] if truncating or attributing or linking else None
+    replacement_inode = target["inode"] if truncating or attributing or linking or appending else None
     if replacement:
         source_stat = ext4_image._parse_stat(ext4_image._debugfs(tools, initial,
             "stat /data/user/replace-source"), "/data/user/replace-source")
         if source_stat["size"] != 4500 or source_stat["block_count_512"] != 16:
             raise RuntimeError("held-replace source allocation geometry changed")
         replacement_inode = source_stat["inode"]
-    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating or attributing or linking else 1)
+    expected_blocks, expected_inodes = before["free_blocks"] + reclaimed, before["free_inodes"] + (0 if truncating or attributing or linking or appending else 1)
     if creating:
         expected_blocks, expected_inodes = before["free_blocks"] - (1 if directory else 0), before["free_inodes"] - 1
     if symlinking:
@@ -348,7 +365,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "create", "mkdir", "rmdir", "xattr", "xattr-remove", "link", "symlink", "symlink-long"), default="unlink")
+    parser.add_argument("--operation", choices=("unlink", "replace", "truncate", "grow", "append", "create", "mkdir", "rmdir", "xattr", "xattr-remove", "link", "symlink", "symlink-long"), default="unlink")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

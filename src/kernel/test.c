@@ -5491,6 +5491,64 @@ static _Noreturn void ext4_vfs_truncate_powercut(bool growing)
     kernel_test_pass();
 }
 
+static void ext4_vfs_append_cut_contents(phipfs_handle file, uint64_t size)
+{
+    uint8_t bytes[513];
+    for (uint64_t offset = 0U; offset < size; offset += sizeof(bytes)) {
+        size_t count;
+        const size_t expected = size - offset < sizeof(bytes) ? (size_t)(size - offset) : sizeof(bytes);
+        ext4_vfs_require(phipfs_pread(file, bytes, sizeof(bytes), offset, &count), "append cut contents");
+        if (count != expected) kernel_test_fail("ext4 append cut changed read length");
+        for (size_t index = 0U; index < count; ++index)
+            if (bytes[index] != (offset + index < 4500U ? 't' : 's'))
+                kernel_test_fail("ext4 append cut changed prefix or published tail bytes");
+    }
+    size_t count = 99U;
+    ext4_vfs_require(phipfs_pread(file, bytes, sizeof(bytes), size, &count), "append cut EOF");
+    if (count != 0U) kernel_test_fail("ext4 append cut exposed bytes past EOF");
+}
+
+static _Noreturn void ext4_vfs_append_powercut(void)
+{
+    const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
+    const char *name = "data/user/append-target";
+    phipfs_handle writer, reader;
+    struct phipfs_stat original, after;
+    uint8_t tail[4500];
+    size_t count;
+    ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ_WRITE, &writer), "append cut writer");
+    ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &reader), "append cut existing reader");
+    ext4_vfs_require(phipfs_fstat(writer, &original), "append cut source identity");
+    if (original.directory || original.links != 1U || (original.size != 4500U && original.size != 9000U))
+        kernel_test_fail("ext4 append cut source is neither old nor committed");
+    ext4_vfs_append_cut_contents(reader, original.size);
+    if (original.size == 4500U) {
+        console_write("ST EXT4 APPEND initial old\n");
+        const uint64_t free_bytes = phipfs_drive(volume).free_bytes;
+        for (size_t index = 0U; index < sizeof(tail); ++index) tail[index] = 's';
+        ext4_vfs_require(phipfs_set_append(writer, true), "append cut atomic append mode");
+        ext4_vfs_require(phipfs_write(writer, tail, sizeof(tail), &count), "append cut write at shared EOF");
+        if (count != sizeof(tail) || phipfs_drive(volume).free_bytes != free_bytes - 4096U)
+            kernel_test_fail("ext4 append cut lost bytes or allocated wrong blocks");
+    } else console_write("ST EXT4 APPEND initial new\n");
+    ext4_vfs_require(phipfs_fstat(reader, &after), "append cut reader shared size");
+    if (after.size != 9000U || after.object_id != original.object_id || after.mode != original.mode || after.links != 1U)
+        kernel_test_fail("ext4 append cut failed shared inode or EOF update");
+    ext4_vfs_append_cut_contents(reader, 9000U);
+    ext4_vfs_append_cut_contents(writer, 9000U);
+    ext4_vfs_require(phipfs_fsync(writer), "append cut fsync");
+    ext4_vfs_require(phipfs_close(reader), "append cut reader close");
+    ext4_vfs_require(phipfs_close(writer), "append cut writer close");
+    ext4_vfs_require(phipfs_sync(volume), "append cut final sync");
+    ext4_vfs_require(phipfs_unmount(volume), "append cut clean unmount");
+    if (!phipfs_resources_released() || !ext4_backend_resources_released() ||
+        !nvme_filesystem_session_resources_released() || heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK)
+        kernel_test_fail("ext4 append cut resource census failed");
+    console_write("ST EXT4 VFS append old-or-new tail shared EOF allocation census exact\n");
+    kernel_test_pass();
+}
+
 static _Noreturn void ext4_vfs_link_powercut(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5860,6 +5918,8 @@ _Noreturn void kernel_test_complete_ext4_recovery(void)
         ext4_vfs_xattr_powercut(false);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTLINK.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_link_powercut();
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTAPPEND.TST", &stat) == PHIPFS_STATUS_OK)
+        ext4_vfs_append_powercut();
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTSYM.TST", &stat) == PHIPFS_STATUS_OK)
         ext4_vfs_symlink_powercut(false);
     if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/CUTSYMLONG.TST", &stat) == PHIPFS_STATUS_OK)
