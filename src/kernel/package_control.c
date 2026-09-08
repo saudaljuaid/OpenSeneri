@@ -43,6 +43,7 @@ struct control_session {
 
 static struct control_session sessions[PACKAGE_CONTROL_SESSION_LIMIT];
 static bool servicing;
+static bool request_claim;
 
 _Static_assert(PACKAGE_CONTROL_PLAN_MAX_PACKAGES <=
     PACKAGE_MANAGER_PLAN_MAX_PACKAGES,
@@ -392,7 +393,7 @@ static enum package_control_status plan_repair(
     return PACKAGE_CONTROL_STATUS_OK;
 }
 
-enum package_control_status package_control_open_remove(
+static enum package_control_status control_open_remove_owned(
     uint64_t owner,
     const uint8_t *identifier,
     size_t identifier_bytes,
@@ -461,7 +462,7 @@ refuse:
     return finish(report, status, NULL, 0U);
 }
 
-enum package_control_status package_control_open_install(
+static enum package_control_status control_open_install_owned(
     uint64_t owner,
     package_upload_token repository_upload,
     const uint8_t *identifier,
@@ -569,7 +570,7 @@ refuse:
     return finish(report, status, NULL, 0U);
 }
 
-enum package_control_status package_control_open_repair(
+static enum package_control_status control_open_repair_owned(
     uint64_t owner,
     package_upload_token repository_upload,
     struct package_control_report *report
@@ -668,7 +669,7 @@ static bool copy_text(char *destination, size_t capacity,
     return true;
 }
 
-enum package_control_status package_control_item(
+static enum package_control_status control_item_owned(
     uint64_t owner,
     package_control_token token,
     uint32_t index,
@@ -715,7 +716,7 @@ enum package_control_status package_control_item(
     return finish(report, PACKAGE_CONTROL_STATUS_OK, session, session_index);
 }
 
-enum package_control_status package_control_attach(
+static enum package_control_status control_attach_owned(
     uint64_t owner,
     package_control_token token,
     uint32_t index,
@@ -899,7 +900,7 @@ static enum package_control_status build_repair_workspace(
     return status;
 }
 
-enum package_control_status package_control_commit(
+static enum package_control_status control_commit_owned(
     uint64_t owner,
     package_control_token token,
     struct package_control_report *report
@@ -1042,7 +1043,7 @@ release:
     return finish(report, status, session, session_index);
 }
 
-enum package_control_status package_control_close(
+static enum package_control_status control_close_owned(
     uint64_t owner,
     package_control_token token,
     struct package_control_report *report
@@ -1070,7 +1071,7 @@ enum package_control_status package_control_close(
     return finish(report, status, NULL, 0U);
 }
 
-bool package_control_resources_released(void)
+static bool control_resources_released_owned(void)
 {
     if (servicing) {
         return false;
@@ -1081,6 +1082,93 @@ bool package_control_resources_released(void)
         }
     }
     return true;
+}
+
+/* Claim before resolving tokens or copying plan entries. Upload and service
+ * callbacks have their own try-claims; no request waits while holding this one. */
+static bool claim_request(struct package_control_report *report)
+{
+    if (__atomic_test_and_set(&request_claim, __ATOMIC_ACQUIRE)) {
+        clear_report(report);
+        (void)finish(report, PACKAGE_CONTROL_STATUS_BUSY, NULL, 0U);
+        return false;
+    }
+    return true;
+}
+
+static enum package_control_status release_request(enum package_control_status status)
+{
+    __atomic_clear(&request_claim, __ATOMIC_RELEASE);
+    return status;
+}
+
+enum package_control_status package_control_open_remove(uint64_t owner,
+    const uint8_t *identifier, size_t identifier_bytes, struct package_control_report *report)
+{
+    if (report == NULL) return PACKAGE_CONTROL_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_CONTROL_STATUS_BUSY;
+    return release_request(control_open_remove_owned(owner, identifier, identifier_bytes, report));
+}
+
+enum package_control_status package_control_open_install(uint64_t owner,
+    package_upload_token repository_upload, const uint8_t *identifier,
+    size_t identifier_bytes, struct package_control_report *report)
+{
+    if (report == NULL) return PACKAGE_CONTROL_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_CONTROL_STATUS_BUSY;
+    return release_request(control_open_install_owned(owner, repository_upload,
+        identifier, identifier_bytes, report));
+}
+
+enum package_control_status package_control_open_repair(uint64_t owner,
+    package_upload_token repository_upload, struct package_control_report *report)
+{
+    if (report == NULL) return PACKAGE_CONTROL_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_CONTROL_STATUS_BUSY;
+    return release_request(control_open_repair_owned(owner, repository_upload, report));
+}
+
+enum package_control_status package_control_item(uint64_t owner,
+    package_control_token token, uint32_t index, struct package_control_item *item,
+    struct package_control_report *report)
+{
+    if (item != NULL) zero_bytes(item, sizeof(*item));
+    if (report == NULL) return PACKAGE_CONTROL_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_CONTROL_STATUS_BUSY;
+    return release_request(control_item_owned(owner, token, index, item, report));
+}
+
+enum package_control_status package_control_attach(uint64_t owner,
+    package_control_token token, uint32_t index, package_upload_token package_upload,
+    struct package_control_report *report)
+{
+    if (report == NULL) return PACKAGE_CONTROL_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_CONTROL_STATUS_BUSY;
+    return release_request(control_attach_owned(owner, token, index, package_upload, report));
+}
+
+enum package_control_status package_control_commit(uint64_t owner,
+    package_control_token token, struct package_control_report *report)
+{
+    if (report == NULL) return PACKAGE_CONTROL_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_CONTROL_STATUS_BUSY;
+    return release_request(control_commit_owned(owner, token, report));
+}
+
+enum package_control_status package_control_close(uint64_t owner,
+    package_control_token token, struct package_control_report *report)
+{
+    if (report == NULL) return PACKAGE_CONTROL_STATUS_NULL_ARGUMENT;
+    if (!claim_request(report)) return PACKAGE_CONTROL_STATUS_BUSY;
+    return release_request(control_close_owned(owner, token, report));
+}
+
+bool package_control_resources_released(void)
+{
+    if (__atomic_test_and_set(&request_claim, __ATOMIC_ACQUIRE)) return false;
+    const bool released = control_resources_released_owned();
+    (void)release_request(PACKAGE_CONTROL_STATUS_OK);
+    return released;
 }
 
 const char *package_control_status_string(enum package_control_status status)

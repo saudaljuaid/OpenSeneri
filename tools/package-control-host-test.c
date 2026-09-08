@@ -46,6 +46,9 @@ struct upload_fixture {
 };
 
 static struct upload_fixture uploads[UPLOAD_FIXTURE_LIMIT];
+static void (*upload_observer)(void);
+static bool reentry_failed;
+static unsigned reentry_count;
 static void *heap_pointers[HEAP_FIXTURE_LIMIT];
 static size_t live_allocations;
 static struct package_trust_key trust_keys[2];
@@ -123,6 +126,7 @@ enum package_upload_status package_upload_inspect(
     struct package_upload_report *report
 )
 {
+    if (upload_observer != NULL) upload_observer();
     if (report == NULL) {
         return PACKAGE_UPLOAD_STATUS_NULL_ARGUMENT;
     }
@@ -490,6 +494,34 @@ static int attach_named(package_control_token control, const char *identifier,
     return 0;
 }
 
+static void probe_controller_reentry(void)
+{
+    struct package_control_report report;
+    struct package_control_item item;
+    static const uint8_t identifier[] = "org.phipia.app";
+    upload_observer = NULL;
+    ++reentry_count;
+    memset(&item, 0xff, sizeof(item));
+    const enum package_control_status results[] = {
+        package_control_open_remove(TEST_OWNER, identifier, sizeof(identifier) - 1U, &report),
+        package_control_open_install(TEST_OWNER, 1U, identifier, sizeof(identifier) - 1U, &report),
+        package_control_open_repair(TEST_OWNER, 1U, &report),
+        package_control_item(TEST_OWNER, 0U, 0U, &item, &report),
+        package_control_attach(TEST_OWNER, 0U, 0U, 1U, &report),
+        package_control_commit(TEST_OWNER, 0U, &report),
+        package_control_close(TEST_OWNER, 0U, &report)
+    };
+    for (size_t index = 0U; index < sizeof(results) / sizeof(results[0]); ++index)
+        if (results[index] != PACKAGE_CONTROL_STATUS_BUSY) reentry_failed = true;
+    const uint8_t *bytes = (const uint8_t *)&item;
+    for (size_t index = 0U; index < sizeof(item); ++index)
+        if (bytes[index] != 0U) reentry_failed = true;
+    if (report.status != PACKAGE_CONTROL_STATUS_BUSY || report.token != 0U ||
+        report.prepared || report.committed || report.plan_count != 0U ||
+        package_control_resources_released()) reentry_failed = true;
+    upload_observer = probe_controller_reentry;
+}
+
 int main(int argc, char **argv)
 {
     struct file_bytes repository;
@@ -555,11 +587,14 @@ int main(int argc, char **argv)
         report.manager_status == PACKAGE_MANAGER_STATUS_DIGEST &&
         package_control_resources_released() && live_allocations == 0U);
 
+    upload_observer = probe_controller_reentry;
     CHECK(package_control_open_install(TEST_OWNER, repository_upload,
         (const uint8_t *)"org.phipia.app", 14U, &report) ==
             PACKAGE_CONTROL_STATUS_OK &&
         report.repository_version == FIXTURE_REPOSITORY_VERSION &&
         report.plan_count == 2U && report.attached_count == 0U);
+    upload_observer = NULL;
+    CHECK(reentry_count != 0U && !reentry_failed);
     control = report.token;
     CHECK(control != 0U &&
         package_control_open_install(TEST_OWNER, repository_upload,
