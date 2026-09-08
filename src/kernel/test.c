@@ -5570,6 +5570,67 @@ static void ext4_vfs_append_cut_contents(phipfs_handle file, uint64_t size)
     if (count != 0U) kernel_test_fail("ext4 append cut exposed bytes past EOF");
 }
 
+static bool ext4_vfs_storage_probe_control(enum phipfs_volume volume,
+    const char *path, uint32_t *ordinal)
+{
+    struct phipfs_stat stat;
+    const enum phipfs_status status = phipfs_stat_path(volume, path, &stat);
+    if (status == PHIPFS_STATUS_NOT_FOUND) return false;
+    ext4_vfs_require(status, "storage refusal control stat");
+    phipfs_handle control;
+    uint8_t encoded[4];
+    size_t count;
+    if (stat.size != sizeof(encoded)) kernel_test_fail("ext4 storage refusal control size");
+    ext4_vfs_require(phipfs_open(volume, path, PHIPFS_ACCESS_READ, &control), "storage refusal control open");
+    ext4_vfs_require(phipfs_read(control, encoded, sizeof(encoded), &count), "storage refusal control read");
+    ext4_vfs_require(phipfs_close(control), "storage refusal control close");
+    if (count != sizeof(encoded) || ext4_backend_test_power_cut_configured())
+        kernel_test_fail("ext4 storage refusal control conflicts with cut");
+    const uint32_t value = (uint32_t)encoded[0] | (uint32_t)encoded[1] << 8U |
+        (uint32_t)encoded[2] << 16U | (uint32_t)encoded[3] << 24U;
+    if ((value & UINT32_C(0xffff0000)) != UINT32_C(0x4f570000) || (value & UINT32_C(0xffff)) > 128U)
+        kernel_test_fail("ext4 storage refusal control magic or bound");
+    *ordinal = value & UINT32_C(0xffff);
+    return true;
+}
+
+static size_t ext4_vfs_storage_probe_write(phipfs_handle writer, const uint8_t *bytes,
+    size_t length, bool probe, uint32_t ordinal, uint64_t old_cursor, const char *label)
+{
+    size_t count;
+    if (probe && !ext4_backend_test_fail_storage_once(ordinal == 0U ? UINT32_MAX : ordinal))
+        kernel_test_fail("ext4 could not arm storage refusal probe");
+    enum phipfs_status status = phipfs_write(writer, bytes, length, &count);
+    if (probe) {
+        uint32_t attempts;
+        enum phipia_ext4_test_storage_kind kind;
+        if (!ext4_backend_test_finish_storage_probe(&attempts, &kind) || attempts == 0U)
+            kernel_test_fail("ext4 storage refusal probe was not exercised");
+        if (ordinal == 0U) {
+            if (status != PHIPFS_STATUS_OK || kind != PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
+                kernel_test_fail("ext4 storage refusal baseline failed");
+            console_write(label);
+            console_write(" storage attempts ");
+            console_write_u64(attempts);
+            console_putc('\n');
+        } else {
+            if (status != PHIPFS_STATUS_IO || count != 0U || attempts != ordinal ||
+                kind >= PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
+                kernel_test_fail("ext4 storage refusal was not exact");
+            uint64_t position;
+            ext4_vfs_require(phipfs_seek(writer, 0, PHIPFS_SEEK_CURRENT, &position), "storage refusal cursor");
+            if (position != old_cursor) kernel_test_fail("ext4 refused write advanced cursor");
+            console_write(label);
+            console_write(" storage refused ");
+            console_write_u64(attempts);
+            console_write(kind == PHIPIA_EXT4_TEST_STORAGE_WRITE ? " write\n" : " flush\n");
+            status = phipfs_write(writer, bytes, length, &count);
+        }
+    }
+    ext4_vfs_require(status, "storage refusal identical write retry");
+    return count;
+}
+
 static _Noreturn void ext4_vfs_append_powercut(void)
 {
     const enum phipfs_volume volume = PHIPFS_VOLUME_SYSTEM;
@@ -5578,6 +5639,8 @@ static _Noreturn void ext4_vfs_append_powercut(void)
     struct phipfs_stat original, after;
     uint8_t tail[4500];
     size_t count;
+    uint32_t failure_ordinal = 0U;
+    const bool storage_probe = ext4_vfs_storage_probe_control(volume, "data/user/APPFAIL.BIN", &failure_ordinal);
     ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ_WRITE, &writer), "append cut writer");
     ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &reader), "append cut existing reader");
     ext4_vfs_require(phipfs_fstat(writer, &original), "append cut source identity");
@@ -5589,9 +5652,13 @@ static _Noreturn void ext4_vfs_append_powercut(void)
         const uint64_t free_bytes = phipfs_drive(volume).free_bytes;
         for (size_t index = 0U; index < sizeof(tail); ++index) tail[index] = 's';
         ext4_vfs_require(phipfs_set_append(writer, true), "append cut atomic append mode");
-        ext4_vfs_require(phipfs_write(writer, tail, sizeof(tail), &count), "append cut write at shared EOF");
+        count = ext4_vfs_storage_probe_write(writer, tail, sizeof(tail), storage_probe,
+            failure_ordinal, 0U, "ST EXT4 APPEND");
         if (count != sizeof(tail) || phipfs_drive(volume).free_bytes != free_bytes - 4096U)
             kernel_test_fail("ext4 append cut lost bytes or allocated wrong blocks");
+        uint64_t position;
+        ext4_vfs_require(phipfs_seek(writer, 0, PHIPFS_SEEK_CURRENT, &position), "append cut final cursor");
+        if (position != 9000U) kernel_test_fail("ext4 append cut wrong final cursor");
     } else console_write("ST EXT4 APPEND initial new\n");
     ext4_vfs_require(phipfs_fstat(reader, &after), "append cut reader shared size");
     if (after.size != 9000U || after.object_id != original.object_id || after.mode != original.mode || after.links != 1U)
@@ -5635,27 +5702,7 @@ static _Noreturn void ext4_vfs_overwrite_powercut(void)
     uint64_t position;
     uint8_t changed[4097];
     uint32_t failure_ordinal = 0U;
-    bool storage_probe = false;
-    const enum phipfs_status control_status = phipfs_stat_path(volume, "data/user/OVERFAIL.BIN", &after);
-    if (control_status == PHIPFS_STATUS_OK) {
-        phipfs_handle control;
-        uint8_t encoded[4];
-        if (after.size != sizeof(encoded)) kernel_test_fail("ext4 overwrite failure control size");
-        ext4_vfs_require(phipfs_open(volume, "data/user/OVERFAIL.BIN", PHIPFS_ACCESS_READ, &control), "overwrite failure control open");
-        ext4_vfs_require(phipfs_read(control, encoded, sizeof(encoded), &count), "overwrite failure control read");
-        ext4_vfs_require(phipfs_close(control), "overwrite failure control close");
-        if (count != sizeof(encoded) || ext4_backend_test_power_cut_configured())
-            kernel_test_fail("ext4 overwrite failure control conflicts with cut");
-        failure_ordinal = (uint32_t)encoded[0] | (uint32_t)encoded[1] << 8U |
-            (uint32_t)encoded[2] << 16U | (uint32_t)encoded[3] << 24U;
-        if ((failure_ordinal & UINT32_C(0xffff0000)) != UINT32_C(0x4f570000))
-            kernel_test_fail("ext4 overwrite failure control magic");
-        failure_ordinal &= UINT32_C(0xffff);
-        if (failure_ordinal > 128U) kernel_test_fail("ext4 overwrite failure control exceeds bound");
-        storage_probe = true;
-    } else if (control_status != PHIPFS_STATUS_NOT_FOUND) {
-        kernel_test_fail("ext4 overwrite failure control lookup");
-    }
+    const bool storage_probe = ext4_vfs_storage_probe_control(volume, "data/user/OVERFAIL.BIN", &failure_ordinal);
     ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ_WRITE, &writer), "overwrite cut writer");
     ext4_vfs_require(phipfs_open(volume, name, PHIPFS_ACCESS_READ, &reader), "overwrite cut reader");
     ext4_vfs_require(phipfs_fstat(writer, &original), "overwrite cut original inode");
@@ -5667,33 +5714,8 @@ static _Noreturn void ext4_vfs_overwrite_powercut(void)
         for (size_t index = 0U; index < sizeof(changed); ++index) changed[index] = 's';
         ext4_vfs_require(phipfs_seek(writer, 123, PHIPFS_SEEK_START, &position), "overwrite cut unaligned seek");
         if (position != 123U) kernel_test_fail("ext4 overwrite cut wrong start");
-        if (storage_probe && !ext4_backend_test_fail_storage_once(failure_ordinal == 0U ? UINT32_MAX : failure_ordinal))
-            kernel_test_fail("ext4 overwrite could not arm storage probe");
-        enum phipfs_status write_status = phipfs_write(writer, changed, sizeof(changed), &count);
-        if (storage_probe) {
-            uint32_t attempts;
-            enum phipia_ext4_test_storage_kind failure_kind;
-            if (!ext4_backend_test_finish_storage_probe(&attempts, &failure_kind) || attempts == 0U)
-                kernel_test_fail("ext4 overwrite storage probe was not exercised");
-            if (failure_ordinal == 0U) {
-                if (write_status != PHIPFS_STATUS_OK || failure_kind != PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
-                    kernel_test_fail("ext4 overwrite storage baseline failed");
-                console_write("ST EXT4 OVERWRITE storage attempts ");
-                console_write_u64(attempts);
-                console_putc('\n');
-            } else {
-                if (write_status != PHIPFS_STATUS_IO || count != 0U || attempts != failure_ordinal ||
-                    failure_kind >= PHIPIA_EXT4_TEST_STORAGE_KIND_COUNT)
-                    kernel_test_fail("ext4 overwrite storage refusal was not exact");
-                ext4_vfs_require(phipfs_seek(writer, 0, PHIPFS_SEEK_CURRENT, &position), "overwrite failed cursor");
-                if (position != 123U) kernel_test_fail("ext4 refused overwrite advanced cursor");
-                console_write("ST EXT4 OVERWRITE storage refused ");
-                console_write_u64(attempts);
-                console_write(failure_kind == PHIPIA_EXT4_TEST_STORAGE_WRITE ? " write\n" : " flush\n");
-                write_status = phipfs_write(writer, changed, sizeof(changed), &count);
-            }
-        }
-        ext4_vfs_require(write_status, "overwrite cut two partial blocks");
+        count = ext4_vfs_storage_probe_write(writer, changed, sizeof(changed), storage_probe,
+            failure_ordinal, 123U, "ST EXT4 OVERWRITE");
         if (count != sizeof(changed)) kernel_test_fail("ext4 overwrite cut short write");
         ext4_vfs_require(phipfs_seek(writer, 0, PHIPFS_SEEK_CURRENT, &position), "overwrite cut final cursor");
         if (position != 4220U) kernel_test_fail("ext4 overwrite cut wrong final cursor");
