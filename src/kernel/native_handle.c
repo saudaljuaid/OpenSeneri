@@ -281,6 +281,27 @@ enum native_handle_status native_handle_close_all(
     return failed ? NATIVE_HANDLE_CLOSE_FAILED : NATIVE_HANDLE_OK;
 }
 
+enum native_handle_status native_handle_close_all_report(
+    struct native_handle_table *table,
+    native_handle_close_fn close_resource,
+    void *context,
+    bool *retryable
+)
+{
+    enum native_handle_status status;
+
+    if (retryable == NULL) {
+        return NATIVE_HANDLE_NULL_ARGUMENT;
+    }
+    *retryable = false;
+    status = native_handle_close_all(table, close_resource, context);
+    if (status == NATIVE_HANDLE_CLOSE_FAILED && table != NULL &&
+        table->initialized && table->active_handles != 0U) {
+        *retryable = true;
+    }
+    return status;
+}
+
 static enum native_resource_close_result test_close(
     uint8_t type,
     const struct native_resource *resource,
@@ -295,6 +316,24 @@ static enum native_resource_close_result test_close(
     }
     ++*closed;
     return NATIVE_RESOURCE_CLOSED;
+}
+
+static enum native_resource_close_result self_test_close_result;
+
+static enum native_resource_close_result self_test_close(
+    uint8_t type,
+    const struct native_resource *resource,
+    void *context
+)
+{
+    size_t *closed = context;
+
+    if (type != PHIPIA_HANDLE_FILE || resource == NULL || closed == NULL ||
+        resource->words[0] != UINT64_C(0x5341504F5445)) {
+        return NATIVE_RESOURCE_RETAINED;
+    }
+    ++*closed;
+    return self_test_close_result;
 }
 
 bool native_handle_self_test(size_t *completed_tests)
@@ -348,6 +387,27 @@ bool native_handle_self_test(size_t *completed_tests)
         table.active_objects != 0U ||
         native_handle_resolve(&table, duplicate, PHIPIA_HANDLE_FILE,
             &resolved) != NATIVE_HANDLE_STALE) {
+        return false;
+    }
+    ++*completed_tests;
+    self_test_close_result = NATIVE_RESOURCE_RETAINED;
+    if (native_handle_install(&table, PHIPIA_HANDLE_FILE, &initial, &first) !=
+            NATIVE_HANDLE_OK) {
+        return false;
+    }
+    bool retryable = false;
+    if (native_handle_close_all_report(&table, self_test_close, &closed,
+            &retryable) != NATIVE_HANDLE_CLOSE_FAILED || !retryable ||
+        table.active_handles != 1U || table.active_objects != 1U ||
+        closed != 2U) {
+        return false;
+    }
+    self_test_close_result = NATIVE_RESOURCE_CLOSED_WITH_ERROR;
+    retryable = true;
+    if (native_handle_close_all_report(&table, self_test_close, &closed,
+            &retryable) != NATIVE_HANDLE_CLOSE_FAILED || retryable ||
+        table.active_handles != 0U || table.active_objects != 0U ||
+        closed != 3U) {
         return false;
     }
     ++*completed_tests;

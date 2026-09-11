@@ -2688,10 +2688,23 @@ static bool process_cleanup(struct native_process *process)
         success = false;
     }
     cpu_interrupt_enable();
-    if (process->handles.initialized &&
-        native_handle_close_all(&process->handles, close_resource, process) !=
-            NATIVE_HANDLE_OK) {
-        success = false;
+    if (process->handles.initialized) {
+        bool retryable = false;
+        const enum native_handle_status handle_status =
+            native_handle_close_all_report(&process->handles, close_resource,
+                process, &retryable);
+
+        if (handle_status != NATIVE_HANDLE_OK) {
+            success = false;
+        }
+        /* A retained callback-owned resource keeps the process wrapper alive.
+         * Consumed errors, in contrast, have no native identity left to retry. */
+        if (retryable) {
+            if (!interrupts_were_enabled) {
+                cpu_interrupt_disable();
+            }
+            return false;
+        }
     }
     network_process_terminated(process->generation);
     cpu_interrupt_disable();
@@ -6781,6 +6794,7 @@ enum native_process_status native_process_run(struct native_process_result *resu
     struct native_process_result selected_result;
     bool have_result = false;
     bool cleanup_ok = true;
+    bool cleanup_blocked = false;
 
     if (result == NULL) {
         return NATIVE_PROCESS_NULL_ARGUMENT;
@@ -6914,8 +6928,13 @@ enum native_process_status native_process_run(struct native_process_result *resu
             }
             if (!process_cleanup(&processes[newest])) {
                 cleanup_ok = false;
+                cleanup_blocked = processes[newest].active &&
+                    processes[newest].handles.active_handles != 0U;
                 break;
             }
+        }
+        if (cleanup_blocked) {
+            break;
         }
     }
     current_process = SIZE_MAX;

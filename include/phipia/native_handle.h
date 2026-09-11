@@ -95,6 +95,13 @@ enum native_handle_status native_handle_close_all(
     native_handle_close_fn close_resource,
     void *context
 );
+/* Report whether close_all left a wrapper that can be retried by teardown. */
+enum native_handle_status native_handle_close_all_report(
+    struct native_handle_table *table,
+    native_handle_close_fn close_resource,
+    void *context,
+    bool *retryable
+);
 bool native_handle_self_test(size_t *completed_tests);
 
 #endif
