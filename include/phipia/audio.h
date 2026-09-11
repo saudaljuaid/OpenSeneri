@@ -209,6 +209,13 @@ enum audio_native_status audio_native_close(
     uint64_t owner_generation,
     uint64_t stream_token
 );
+/* Reports whether close consumed the stream identity before any teardown
+ * error.  A consumed stream must not be retried through its native wrapper. */
+enum audio_native_status audio_native_close_report(
+    uint64_t owner_generation,
+    uint64_t stream_token,
+    bool *consumed
+);
 enum audio_native_drain_state audio_native_drain(
     uint64_t owner_generation,
     uint64_t stream_token

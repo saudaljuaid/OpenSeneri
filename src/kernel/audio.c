@@ -2260,12 +2260,29 @@ enum audio_native_status audio_native_close(
     uint64_t stream_token
 )
 {
+    bool consumed;
+
+    return audio_native_close_report(owner_generation, stream_token,
+        &consumed);
+}
+
+enum audio_native_status audio_native_close_report(
+    uint64_t owner_generation,
+    uint64_t stream_token,
+    bool *consumed
+)
+{
     struct audio_native_stream *stream = native_stream(owner_generation,
         stream_token);
 
+    if (consumed == NULL) {
+        return AUDIO_NATIVE_NULL_ARGUMENT;
+    }
+    *consumed = false;
     if (stream == NULL) {
         return AUDIO_NATIVE_STALE;
     }
+    *consumed = true;
     if (stream->active) {
         stream->closing = true;
         stream->cancel_after_active = true;

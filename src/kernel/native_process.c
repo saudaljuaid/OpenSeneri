@@ -1059,15 +1059,17 @@ static enum native_resource_close_result close_resource(
     case PHIPIA_HANDLE_AUDIO_OUTPUT: {
         const bool enabled = cpu_interrupts_enabled();
         enum audio_native_status status;
+        bool consumed = false;
 
         cpu_interrupt_disable();
-        status = audio_native_close(process->generation,
-            resource->words[0]);
+        status = audio_native_close_report(process->generation,
+            resource->words[0], &consumed);
         if (enabled) {
             cpu_interrupt_enable();
         }
         return status == AUDIO_NATIVE_OK ? NATIVE_RESOURCE_CLOSED :
-            NATIVE_RESOURCE_RETAINED;
+            consumed ? NATIVE_RESOURCE_CLOSED_WITH_ERROR :
+                NATIVE_RESOURCE_RETAINED;
     }
     case PHIPIA_HANDLE_PACKAGE_UPLOAD: {
         struct package_upload_report report;
