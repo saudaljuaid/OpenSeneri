@@ -2743,6 +2743,37 @@ static bool process_cleanup(struct native_process *process)
     return success;
 }
 
+static bool process_cleanup_retry_self_test(void)
+{
+    static struct native_process process;
+    const struct native_resource invalid_file = {
+        {PHIPIA_HANDLE_INVALID, 0U, 0U, 0U}
+    };
+    struct native_resource *resolved;
+    phipia_handle_t handle;
+
+    zero_bytes(&process, sizeof(process));
+    process.active = true;
+    process.exiting = true;
+    if (native_handle_table_initialize(&process.handles, 1U) !=
+            NATIVE_HANDLE_OK ||
+        native_handle_install(&process.handles, PHIPIA_HANDLE_FILE,
+            &invalid_file, &handle) != NATIVE_HANDLE_OK ||
+        process_cleanup(&process) || !process.active ||
+        process.handles.active_handles != 1U ||
+        native_handle_resolve(&process.handles, handle, PHIPIA_HANDLE_FILE,
+            &resolved) != NATIVE_HANDLE_OK || resolved == NULL ||
+        resolved->words[0] != PHIPIA_HANDLE_INVALID) {
+        return false;
+    }
+    if (native_handle_close_all(&process.handles, NULL, NULL) !=
+            NATIVE_HANDLE_OK || process.handles.active_handles != 0U) {
+        return false;
+    }
+    zero_bytes(&process, sizeof(process));
+    return true;
+}
+
 static enum native_process_status load_process(
     struct native_process *process,
     const char *manifest_path,
@@ -7043,6 +7074,10 @@ bool native_process_self_test(size_t *completed_tests)
         return false;
     }
     *completed_tests += handle_tests;
+    if (!process_cleanup_retry_self_test()) {
+        return false;
+    }
+    ++*completed_tests;
     /* Ordinary boots inspect capabilities without changing CR0/CR4 or FPU state. */
     if (!native_fpu_capability_self_test(&fpu_tests)) {
         return false;
