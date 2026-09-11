@@ -88,6 +88,8 @@ static void assert_report_empty(
     const struct native_handle_close_report *report
 )
 {
+    const struct native_handle_close_type_summary empty = {0};
+
     assert(report != NULL);
     assert(report->attempted_handles == 0U &&
         report->callback_attempts == 0U && report->closed_resources == 0U &&
@@ -97,6 +99,21 @@ static void assert_report_empty(
         report->duplicate_references == 0U && report->retired_handles == 0U &&
         report->omitted_entries == 0U && !report->retryable &&
         !report->progress && !report->truncated);
+    for (size_t type = 0U; type < NATIVE_HANDLE_CLOSE_TYPE_COUNT; ++type) {
+        assert(report->types[type].attempted_handles ==
+            empty.attempted_handles &&
+            report->types[type].callback_attempts == empty.callback_attempts &&
+            report->types[type].closed_resources == empty.closed_resources &&
+            report->types[type].consumed_error_resources ==
+                empty.consumed_error_resources &&
+            report->types[type].retained_resources ==
+                empty.retained_resources &&
+            report->types[type].duplicate_references ==
+                empty.duplicate_references &&
+            report->types[type].stale_entries == empty.stale_entries &&
+            report->types[type].invalid_entries == empty.invalid_entries &&
+            report->types[type].retired_handles == empty.retired_handles);
+    }
 }
 
 static void report_argument_and_reset_test(void)
@@ -185,6 +202,30 @@ static void mixed_resource_report_test(void)
     assert(table.active_handles == 1U && table.active_objects == 1U);
     assert(script.calls[PHIPIA_HANDLE_DIRECTORY] == 1U &&
         script.calls[PHIPIA_HANDLE_PACKAGE_UPLOAD] == 1U);
+    assert(report.types[PHIPIA_HANDLE_FILE].attempted_handles == 2U &&
+        report.types[PHIPIA_HANDLE_FILE].callback_attempts == 1U &&
+        report.types[PHIPIA_HANDLE_FILE].closed_resources == 1U &&
+        report.types[PHIPIA_HANDLE_FILE].duplicate_references == 1U &&
+        report.types[PHIPIA_HANDLE_FILE].retired_handles == 2U);
+    assert(report.types[PHIPIA_HANDLE_DIRECTORY].attempted_handles == 1U &&
+        report.types[PHIPIA_HANDLE_DIRECTORY].callback_attempts == 1U &&
+        report.types[PHIPIA_HANDLE_DIRECTORY].consumed_error_resources ==
+            1U && report.types[PHIPIA_HANDLE_DIRECTORY].retired_handles == 1U);
+    assert(report.types[PHIPIA_HANDLE_WINDOW].attempted_handles == 1U &&
+        report.types[PHIPIA_HANDLE_WINDOW].callback_attempts == 1U &&
+        report.types[PHIPIA_HANDLE_WINDOW].retained_resources == 1U &&
+        report.types[PHIPIA_HANDLE_WINDOW].retired_handles == 0U);
+    for (size_t type = PHIPIA_HANDLE_EVENT_QUEUE;
+         type <= PHIPIA_HANDLE_PACKAGE_CONTROL; ++type) {
+        if (type == PHIPIA_HANDLE_PACKAGE_UPLOAD) {
+            assert(report.types[type].consumed_error_resources == 1U);
+        } else if (type != PHIPIA_HANDLE_WINDOW) {
+            assert(report.types[type].closed_resources == 1U);
+        }
+        assert(report.types[type].attempted_handles == 1U &&
+            report.types[type].callback_attempts == 1U &&
+            report.types[type].retired_handles == 1U);
+    }
 
     script.results[PHIPIA_HANDLE_WINDOW] = NATIVE_RESOURCE_CLOSED;
     assert(native_handle_close_all_diagnostics(&table, scripted_close, &script,
@@ -284,18 +325,23 @@ static void ordinary_close_report_test(void)
         scripted_close, &script, &report) == NATIVE_HANDLE_STALE);
     assert(report.status == NATIVE_HANDLE_STALE && report.invalid_entries == 1U &&
         report.attempted_handles == 1U && report.callback_attempts == 0U &&
-        !report.progress);
+        !report.progress &&
+        report.types[PHIPIA_HANDLE_FILE].attempted_handles == 0U);
     assert(native_handle_close_with_report(&table,
         first | UINT64_C(0x01000000), scripted_close, &script, &report) ==
         NATIVE_HANDLE_STALE);
     assert(report.status == NATIVE_HANDLE_STALE &&
         report.invalid_entries == 1U && report.stale_entries == 0U &&
-        report.callback_attempts == 0U);
+        report.callback_attempts == 0U &&
+        report.types[PHIPIA_HANDLE_FILE].attempted_handles == 1U &&
+        report.types[PHIPIA_HANDLE_FILE].invalid_entries == 1U);
     assert(native_handle_close_with_report(&table,
         (UINT64_C(1) << 32) | ((uint64_t)PHIPIA_HANDLE_FILE << 16) | 3U,
         scripted_close, &script, &report) == NATIVE_HANDLE_STALE);
     assert(report.invalid_entries == 1U && report.stale_entries == 0U &&
-        report.callback_attempts == 0U);
+        report.callback_attempts == 0U &&
+        report.types[PHIPIA_HANDLE_FILE].attempted_handles == 1U &&
+        report.types[PHIPIA_HANDLE_FILE].invalid_entries == 1U);
 }
 
 static void malformed_entry_report_test(void)
@@ -332,6 +378,14 @@ static void malformed_entry_report_test(void)
             NATIVE_HANDLE_CLOSE_OUTCOME_STALE) &&
         report_has_outcome(&report, UINT8_C(0xFE),
             NATIVE_HANDLE_CLOSE_OUTCOME_INVALID));
+    assert(report.types[PHIPIA_HANDLE_FILE].attempted_handles == 1U &&
+        report.types[PHIPIA_HANDLE_FILE].invalid_entries == 1U &&
+        report.types[PHIPIA_HANDLE_DIRECTORY].attempted_handles == 1U &&
+        report.types[PHIPIA_HANDLE_DIRECTORY].stale_entries == 1U);
+    for (size_t type = PHIPIA_HANDLE_WINDOW;
+         type <= PHIPIA_HANDLE_PACKAGE_CONTROL; ++type) {
+        assert(report.types[type].attempted_handles == 0U);
+    }
     assert(script.calls[PHIPIA_HANDLE_FILE] == 0U &&
         script.calls[PHIPIA_HANDLE_DIRECTORY] == 0U);
     assert(native_handle_close_all(&table, scripted_close, &script) ==
@@ -362,6 +416,14 @@ static void bounded_capacity_report_test(void)
         report.active_handles_before == NATIVE_HANDLE_LIMIT &&
         report.active_handles_after == 0U && report.progress &&
         !report.retryable && script.calls[PHIPIA_HANDLE_TIMER] ==
+            NATIVE_HANDLE_LIMIT);
+    assert(report.types[PHIPIA_HANDLE_TIMER].attempted_handles ==
+            NATIVE_HANDLE_LIMIT &&
+        report.types[PHIPIA_HANDLE_TIMER].callback_attempts ==
+            NATIVE_HANDLE_LIMIT &&
+        report.types[PHIPIA_HANDLE_TIMER].closed_resources ==
+            NATIVE_HANDLE_LIMIT &&
+        report.types[PHIPIA_HANDLE_TIMER].retired_handles ==
             NATIVE_HANDLE_LIMIT);
     for (size_t index = 0U; index < NATIVE_HANDLE_CLOSE_REPORT_CAPACITY;
          ++index) {

@@ -2674,6 +2674,44 @@ static bool initialize_stack(
     return true;
 }
 
+static void build_teardown_attempt(
+    const struct native_process *process,
+    bool blocked,
+    bool retired,
+    struct native_process_teardown_attempt *attempt
+)
+{
+    const struct native_handle_close_report *report;
+
+    if (process == NULL || attempt == NULL) {
+        return;
+    }
+    zero_bytes(attempt, sizeof(*attempt));
+    report = &process->teardown_report.handles;
+    attempt->attempt_number = process->teardown_report.attempts;
+    attempt->handles_attempted = report->attempted_handles;
+    attempt->callbacks_attempted = report->callback_attempts;
+    attempt->closed_resources = report->closed_resources;
+    attempt->consumed_error_resources = report->consumed_error_resources;
+    attempt->retained_resources = report->retained_resources;
+    attempt->duplicate_references = report->duplicate_references;
+    attempt->stale_entries = report->stale_entries;
+    attempt->invalid_entries = report->invalid_entries;
+    attempt->retired_handles = report->retired_handles;
+    attempt->active_handles_before = report->active_handles_before;
+    attempt->active_handles_after = report->active_handles_after;
+    attempt->active_objects_before = report->active_objects_before;
+    attempt->active_objects_after = report->active_objects_after;
+    attempt->made_progress = report->progress;
+    attempt->retryable = report->retryable;
+    attempt->close_failed = report->status != NATIVE_HANDLE_OK;
+    attempt->blocked = blocked;
+    attempt->retired = retired;
+    for (size_t type = 0U; type < NATIVE_HANDLE_CLOSE_TYPE_COUNT; ++type) {
+        attempt->types[type] = report->types[type];
+    }
+}
+
 static bool process_cleanup_with_callback(
     struct native_process *process,
     native_handle_close_fn close_callback,
@@ -2690,7 +2728,9 @@ static bool process_cleanup_with_callback(
     if (process == NULL) {
         return false;
     }
-    ++process->teardown_report.attempts;
+    if (process->teardown_report.attempts != UINT32_MAX) {
+        ++process->teardown_report.attempts;
+    }
     native_handle_close_report_reset(&process->teardown_report.handles);
     process->teardown_report.blocked = false;
     process->teardown_report.retired = false;
@@ -2710,18 +2750,27 @@ static bool process_cleanup_with_callback(
         if (handle_status != NATIVE_HANDLE_OK) {
             success = false;
         }
-        /* A remaining wrapper, including a malformed table entry, keeps the
-         * process wrapper alive; only a fully retired table can be cleared. */
-        if (process->handles.active_handles != 0U) {
-            process->teardown_report.blocked = true;
-            if (output != NULL) {
-                *output = process->teardown_report;
-            }
-            if (!interrupts_were_enabled) {
-                cpu_interrupt_disable();
-            }
-            return false;
+    }
+    /* A remaining wrapper keeps the process wrapper alive. */
+    if (process->handles.initialized && process->handles.active_handles != 0U) {
+        process->teardown_report.blocked = true;
+    }
+    {
+        struct native_process_teardown_attempt attempt;
+
+        build_teardown_attempt(process, process->teardown_report.blocked,
+            !process->teardown_report.blocked, &attempt);
+        native_process_teardown_history_append(
+            &process->teardown_report.history, &attempt);
+    }
+    if (process->teardown_report.blocked) {
+        if (output != NULL) {
+            *output = process->teardown_report;
         }
+        if (!interrupts_were_enabled) {
+            cpu_interrupt_disable();
+        }
+        return false;
     }
     process->teardown_report.retired = true;
     if (output != NULL) {
@@ -2796,15 +2845,13 @@ static enum native_resource_close_result process_cleanup_test_close(
 static bool process_cleanup_retry_self_test(void)
 {
     static struct native_process process;
-    const struct native_resource invalid_file = {
-        {PHIPIA_HANDLE_INVALID, 0U, 0U, 0U}
-    };
     struct native_process_teardown_report refusal_report;
+    struct native_process_teardown_report success_report;
     struct native_process_teardown_report consumed_report;
+    struct native_process_teardown_attempt history_entries[2];
     struct process_cleanup_test_script script = {
-        NATIVE_RESOURCE_CLOSED_WITH_ERROR, 0U
+        NATIVE_RESOURCE_RETAINED, 0U
     };
-    struct native_resource *resolved;
     phipia_handle_t handle;
 
     zero_bytes(&process, sizeof(process));
@@ -2812,22 +2859,54 @@ static bool process_cleanup_retry_self_test(void)
     process.exiting = true;
     if (native_handle_table_initialize(&process.handles, 1U) !=
             NATIVE_HANDLE_OK ||
-        native_handle_install(&process.handles, PHIPIA_HANDLE_FILE,
-            &invalid_file, &handle) != NATIVE_HANDLE_OK ||
-        process_cleanup(&process, &refusal_report) || !process.active ||
+        native_handle_install(&process.handles, PHIPIA_HANDLE_TIMER,
+            &(const struct native_resource){{77U, 0U, 0U, 0U}}, &handle) !=
+            NATIVE_HANDLE_OK ||
+        process_cleanup_with_callback(&process, process_cleanup_test_close,
+            &script, &refusal_report) || !process.active ||
         process.handles.active_handles != 1U || refusal_report.attempts != 1U ||
         !refusal_report.blocked || refusal_report.retired ||
         refusal_report.handles.attempted_handles != 1U ||
         refusal_report.handles.retained_resources != 1U ||
         refusal_report.handles.active_handles_after != 1U ||
         !refusal_report.handles.retryable ||
-        native_handle_resolve(&process.handles, handle, PHIPIA_HANDLE_FILE,
-            &resolved) != NATIVE_HANDLE_OK || resolved == NULL ||
-        resolved->words[0] != PHIPIA_HANDLE_INVALID) {
+        refusal_report.history.total_attempts != 1U ||
+        refusal_report.history.valid_entries != 1U ||
+        refusal_report.history.entries[0].attempt_number != 1U ||
+        !refusal_report.history.entries[0].blocked ||
+        refusal_report.history.entries[0].retired ||
+        refusal_report.history.entries[0].retained_resources != 1U ||
+        !refusal_report.history.entries[0].retryable ||
+        !refusal_report.history.entries[0].close_failed ||
+        script.calls != 1U) {
         return false;
     }
-    if (native_handle_close_all(&process.handles, NULL, NULL) !=
-            NATIVE_HANDLE_OK || process.handles.active_handles != 0U) {
+    script.result = NATIVE_RESOURCE_CLOSED;
+    if (!process_cleanup_with_callback(&process, process_cleanup_test_close,
+            &script, &success_report) || process.active ||
+        process.handles.active_handles != 0U || script.calls != 2U ||
+        success_report.attempts != 2U || success_report.blocked ||
+        !success_report.retired ||
+        success_report.handles.status != NATIVE_HANDLE_OK ||
+        success_report.handles.closed_resources != 1U ||
+        success_report.handles.active_handles_before != 1U ||
+        success_report.handles.active_handles_after != 0U ||
+        !success_report.handles.progress ||
+        success_report.history.total_attempts != 2U ||
+        success_report.history.valid_entries != 2U ||
+        success_report.history.dropped_attempts != 0U ||
+        success_report.history.entries[1].attempt_number != 2U ||
+        !success_report.history.entries[1].retired ||
+        success_report.history.entries[1].close_failed ||
+        success_report.history.entries[1].closed_resources != 1U) {
+        return false;
+    }
+    if (native_process_teardown_history_copy(&success_report.history,
+            history_entries, 2U) != 2U ||
+        history_entries[0].attempt_number != 1U ||
+        !history_entries[0].blocked ||
+        history_entries[1].attempt_number != 2U ||
+        history_entries[1].blocked || !history_entries[1].retired) {
         return false;
     }
     zero_bytes(&process, sizeof(process));
@@ -2835,6 +2914,8 @@ static bool process_cleanup_retry_self_test(void)
     process.active = true;
     process.exiting = true;
     process.generation = UINT64_C(777);
+    script.result = NATIVE_RESOURCE_CLOSED_WITH_ERROR;
+    script.calls = 0U;
     if (native_handle_table_initialize(&process.handles, 1U) !=
             NATIVE_HANDLE_OK ||
         native_handle_install(&process.handles, PHIPIA_HANDLE_TIMER,
@@ -2849,7 +2930,13 @@ static bool process_cleanup_retry_self_test(void)
         consumed_report.handles.consumed_error_resources != 1U ||
         consumed_report.handles.retained_resources != 0U ||
         consumed_report.handles.active_handles_after != 0U ||
-        consumed_report.handles.retryable || !consumed_report.handles.progress) {
+        consumed_report.handles.retryable || !consumed_report.handles.progress ||
+        consumed_report.history.total_attempts != 1U ||
+        consumed_report.history.entries[0].consumed_error_resources != 1U ||
+        consumed_report.history.entries[0].retryable ||
+        !consumed_report.history.entries[0].close_failed ||
+        consumed_report.history.entries[0].blocked ||
+        !consumed_report.history.entries[0].retired || script.calls != 1U) {
         return false;
     }
     zero_bytes(&process, sizeof(process));

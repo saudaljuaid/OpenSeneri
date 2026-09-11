@@ -12,6 +12,7 @@
 #define NATIVE_THREAD_LIMIT 8U
 #define NATIVE_PROCESS_PAGE_LIMIT 4096U
 #define NATIVE_STACK_PAGES 16U
+#define NATIVE_PROCESS_TEARDOWN_HISTORY_CAPACITY 8U
 
 enum native_process_status {
     NATIVE_PROCESS_OK = 0,
@@ -44,8 +45,43 @@ enum native_process_failure_stage {
     NATIVE_PROCESS_FAILURE_FPU_RESTORE
 };
 
+struct native_process_teardown_attempt {
+    uint64_t attempt_number;
+    uint16_t handles_attempted;
+    uint16_t callbacks_attempted;
+    uint16_t closed_resources;
+    uint16_t consumed_error_resources;
+    uint16_t retained_resources;
+    uint16_t duplicate_references;
+    uint16_t stale_entries;
+    uint16_t invalid_entries;
+    uint16_t retired_handles;
+    uint16_t active_handles_before;
+    uint16_t active_handles_after;
+    uint16_t active_objects_before;
+    uint16_t active_objects_after;
+    bool made_progress;
+    bool retryable;
+    bool close_failed;
+    bool blocked;
+    bool retired;
+    struct native_handle_close_type_summary types[
+        NATIVE_HANDLE_CLOSE_TYPE_COUNT];
+};
+
+struct native_process_teardown_history {
+    struct native_process_teardown_attempt entries[
+        NATIVE_PROCESS_TEARDOWN_HISTORY_CAPACITY];
+    uint16_t valid_entries;
+    uint16_t insertion_cursor;
+    uint64_t total_attempts;
+    uint64_t dropped_attempts;
+    bool truncated;
+};
+
 struct native_process_teardown_report {
     struct native_handle_close_report handles;
+    struct native_process_teardown_history history;
     uint32_t attempts;
     bool blocked;
     bool retired;
@@ -71,6 +107,22 @@ struct native_process_result {
 
 struct interrupt_frame;
 struct native_syscall_frame;
+
+/* NULL reset is a no-op; reset clears entries and truncation metadata. */
+void native_process_teardown_history_reset(
+    struct native_process_teardown_history *history
+);
+/* Full history overwrites its oldest entry and records truncation. */
+void native_process_teardown_history_append(
+    struct native_process_teardown_history *history,
+    const struct native_process_teardown_attempt *attempt
+);
+/* Copies the newest entries oldest-to-newest; NULL or zero capacity copies none. */
+size_t native_process_teardown_history_copy(
+    const struct native_process_teardown_history *history,
+    struct native_process_teardown_attempt *output,
+    size_t output_capacity
+);
 
 enum native_process_status native_process_spawn(
     const char *manifest_path,

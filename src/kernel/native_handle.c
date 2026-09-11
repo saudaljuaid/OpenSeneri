@@ -274,35 +274,68 @@ static void report_record(
     uint8_t type,
     uint16_t object_index,
     uint16_t references,
-    enum native_handle_close_outcome outcome
+    enum native_handle_close_outcome outcome,
+    bool retired
 )
 {
     const uint16_t entry_index = report->attempted_handles;
+    struct native_handle_close_type_summary *type_summary = NULL;
 
     ++report->attempted_handles;
+    if (valid_type(type)) {
+        type_summary = &report->types[type];
+        ++type_summary->attempted_handles;
+    }
     switch (outcome) {
     case NATIVE_HANDLE_CLOSE_OUTCOME_CLOSED:
         ++report->closed_resources;
+        if (type_summary != NULL) {
+            ++type_summary->closed_resources;
+        }
         break;
     case NATIVE_HANDLE_CLOSE_OUTCOME_CONSUMED_ERROR:
         ++report->consumed_error_resources;
+        if (type_summary != NULL) {
+            ++type_summary->consumed_error_resources;
+        }
         break;
     case NATIVE_HANDLE_CLOSE_OUTCOME_RETAINED:
         ++report->retained_resources;
+        if (type_summary != NULL) {
+            ++type_summary->retained_resources;
+        }
         break;
     case NATIVE_HANDLE_CLOSE_OUTCOME_DUPLICATE:
         ++report->duplicate_references;
+        if (type_summary != NULL) {
+            ++type_summary->duplicate_references;
+        }
         break;
     case NATIVE_HANDLE_CLOSE_OUTCOME_STALE:
         ++report->stale_entries;
+        if (type_summary != NULL) {
+            ++type_summary->stale_entries;
+        }
         break;
     case NATIVE_HANDLE_CLOSE_OUTCOME_INVALID:
         ++report->invalid_entries;
+        if (type_summary != NULL) {
+            ++type_summary->invalid_entries;
+        }
         break;
     default:
         ++report->invalid_entries;
+        if (type_summary != NULL) {
+            ++type_summary->invalid_entries;
+        }
         outcome = NATIVE_HANDLE_CLOSE_OUTCOME_INVALID;
         break;
+    }
+    if (retired) {
+        ++report->retired_handles;
+        if (type_summary != NULL) {
+            ++type_summary->retired_handles;
+        }
     }
     if (entry_index < NATIVE_HANDLE_CLOSE_REPORT_CAPACITY) {
         report->entries[entry_index].handle = handle;
@@ -337,14 +370,16 @@ static enum native_handle_status close_valid_slot(
         retire_slot(table, slot, object);
         if (report != NULL) {
             report_record(report, handle, type, object_index,
-                references, NATIVE_HANDLE_CLOSE_OUTCOME_DUPLICATE);
-            ++report->retired_handles;
+                references, NATIVE_HANDLE_CLOSE_OUTCOME_DUPLICATE, true);
         }
         return NATIVE_HANDLE_OK;
     }
     if (close_resource != NULL) {
         if (report != NULL) {
             ++report->callback_attempts;
+            if (valid_type(type)) {
+                ++report->types[type].callback_attempts;
+            }
         }
         closed = close_resource(type, &object->resource, context);
     } else {
@@ -353,7 +388,7 @@ static enum native_handle_status close_valid_slot(
     if (closed == NATIVE_RESOURCE_RETAINED) {
         if (report != NULL) {
             report_record(report, handle, type, object_index,
-                references, NATIVE_HANDLE_CLOSE_OUTCOME_RETAINED);
+                references, NATIVE_HANDLE_CLOSE_OUTCOME_RETAINED, false);
         }
         return NATIVE_HANDLE_CLOSE_FAILED;
     }
@@ -362,7 +397,7 @@ static enum native_handle_status close_valid_slot(
         /* Unknown callback results cannot prove that the resource was consumed. */
         if (report != NULL) {
             report_record(report, handle, type, object_index,
-                references, NATIVE_HANDLE_CLOSE_OUTCOME_RETAINED);
+                references, NATIVE_HANDLE_CLOSE_OUTCOME_RETAINED, false);
         }
         return NATIVE_HANDLE_CLOSE_FAILED;
     }
@@ -371,8 +406,7 @@ static enum native_handle_status close_valid_slot(
         report_record(report, handle, type, object_index,
             references, closed == NATIVE_RESOURCE_CLOSED ?
                 NATIVE_HANDLE_CLOSE_OUTCOME_CLOSED :
-                NATIVE_HANDLE_CLOSE_OUTCOME_CONSUMED_ERROR);
-        ++report->retired_handles;
+                NATIVE_HANDLE_CLOSE_OUTCOME_CONSUMED_ERROR, true);
     }
     return closed == NATIVE_RESOURCE_CLOSED_WITH_ERROR ?
         NATIVE_HANDLE_CLOSE_FAILED : NATIVE_HANDLE_OK;
@@ -437,7 +471,7 @@ enum native_handle_status native_handle_close_with_report(
         report_record(report, handle, type, UINT16_MAX, 0U,
             invalid_handle_encoding(table, handle) ?
             NATIVE_HANDLE_CLOSE_OUTCOME_INVALID :
-            NATIVE_HANDLE_CLOSE_OUTCOME_STALE);
+            NATIVE_HANDLE_CLOSE_OUTCOME_STALE, false);
         report->active_handles_after = table->active_handles;
         report->active_objects_after = table->active_objects;
         report->status = status;
@@ -445,7 +479,7 @@ enum native_handle_status native_handle_close_with_report(
     }
     if (slot->generation == 0U || !valid_type(slot->type)) {
         report_record(report, handle, slot->type, slot->object_index, 0U,
-            NATIVE_HANDLE_CLOSE_OUTCOME_INVALID);
+            NATIVE_HANDLE_CLOSE_OUTCOME_INVALID, false);
         report->active_handles_after = table->active_handles;
         report->active_objects_after = table->active_objects;
         report->status = NATIVE_HANDLE_STALE;
@@ -457,7 +491,7 @@ enum native_handle_status native_handle_close_with_report(
                 table->objects[slot->object_index].references : 0U,
             slot->object_index >= table->limit ?
                 NATIVE_HANDLE_CLOSE_OUTCOME_INVALID :
-                NATIVE_HANDLE_CLOSE_OUTCOME_STALE);
+                NATIVE_HANDLE_CLOSE_OUTCOME_STALE, false);
         report->active_handles_after = table->active_handles;
         report->active_objects_after = table->active_objects;
         report->status = NATIVE_HANDLE_STALE;
@@ -517,7 +551,7 @@ static enum native_handle_status close_all_impl(
             if (report != NULL) {
                 report_record(report, encode_handle(index, slot->type,
                     slot->generation), slot->type, slot->object_index, 0U,
-                    NATIVE_HANDLE_CLOSE_OUTCOME_INVALID);
+                    NATIVE_HANDLE_CLOSE_OUTCOME_INVALID, false);
             }
             failed = true;
             continue;
@@ -533,7 +567,7 @@ static enum native_handle_status close_all_impl(
                     slot->generation), slot->type, slot->object_index,
                     slot->object_index < table->limit ?
                         table->objects[slot->object_index].references : 0U,
-                    outcome);
+                    outcome, false);
             }
             failed = true;
             continue;
