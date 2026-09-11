@@ -997,7 +997,7 @@ static bool window_release_surface(struct native_process *process)
     return success;
 }
 
-static bool close_resource(
+static enum native_resource_close_result close_resource(
     uint8_t type,
     const struct native_resource *resource,
     void *context
@@ -1006,48 +1006,54 @@ static bool close_resource(
     struct native_process *process = context;
 
     if (resource == NULL || process == NULL) {
-        return false;
+        return NATIVE_RESOURCE_RETAINED;
     }
     switch (type) {
-    case PHIPIA_HANDLE_FILE:
-        return phipfs_close((phipfs_handle)resource->words[0]) == PHIPFS_STATUS_OK;
+    case PHIPIA_HANDLE_FILE: {
+        bool consumed = false;
+        const enum phipfs_status status = phipfs_close_report((phipfs_handle)resource->words[0], &consumed);
+        return status == PHIPFS_STATUS_OK ? NATIVE_RESOURCE_CLOSED :
+            consumed ? NATIVE_RESOURCE_CLOSED_WITH_ERROR : NATIVE_RESOURCE_RETAINED;
+    }
     case PHIPIA_HANDLE_DIRECTORY:
         if (resource->words[0] >= NATIVE_HANDLE_LIMIT) {
-            return false;
+            return NATIVE_RESOURCE_RETAINED;
         }
         if (phipfs_directory_close(
                 process->directories[resource->words[0]].iterator) !=
                 PHIPFS_STATUS_OK) {
-            return false;
+            return NATIVE_RESOURCE_RETAINED;
         }
         zero_bytes(&process->directories[resource->words[0]],
             sizeof(process->directories[resource->words[0]]));
-        return true;
+        return NATIVE_RESOURCE_CLOSED;
     case PHIPIA_HANDLE_STREAM:
     case PHIPIA_HANDLE_DATAGRAM:
         return network_close(process->generation,
-            (network_handle)resource->words[0]) == NETWORK_STATUS_OK;
+            (network_handle)resource->words[0]) == NETWORK_STATUS_OK ?
+            NATIVE_RESOURCE_CLOSED : NATIVE_RESOURCE_RETAINED;
     case PHIPIA_HANDLE_TIMER:
-        return true;
+        return NATIVE_RESOURCE_CLOSED;
     case PHIPIA_HANDLE_WINDOW:
         if (!process->window.allocated ||
             process->window.generation != resource->words[1] ||
             process->window.ui_slot != resource->words[0]) {
-            return false;
+            return NATIVE_RESOURCE_RETAINED;
         }
-        return window_release_surface(process);
+        return window_release_surface(process) ? NATIVE_RESOURCE_CLOSED :
+            NATIVE_RESOURCE_RETAINED;
     case PHIPIA_HANDLE_EVENT_QUEUE:
         if (!process->window.allocated ||
             process->window.generation != resource->words[1]) {
-            return false;
+            return NATIVE_RESOURCE_RETAINED;
         }
         process->window.event_object_open = false;
         process->window.event_count = 0U;
         process->window.overflow_pending = false;
         window_finalize_if_unreferenced(process);
-        return true;
+        return NATIVE_RESOURCE_CLOSED;
     case PHIPIA_HANDLE_THREAD:
-        return true;
+        return NATIVE_RESOURCE_CLOSED;
     case PHIPIA_HANDLE_AUDIO_OUTPUT: {
         const bool enabled = cpu_interrupts_enabled();
         enum audio_native_status status;
@@ -1058,22 +1064,25 @@ static bool close_resource(
         if (enabled) {
             cpu_interrupt_enable();
         }
-        return status == AUDIO_NATIVE_OK;
+        return status == AUDIO_NATIVE_OK ? NATIVE_RESOURCE_CLOSED :
+            NATIVE_RESOURCE_RETAINED;
     }
     case PHIPIA_HANDLE_PACKAGE_UPLOAD: {
         struct package_upload_report report;
 
         return package_upload_close(process->generation, resource->words[0],
-            &report) == PACKAGE_UPLOAD_STATUS_OK;
+            &report) == PACKAGE_UPLOAD_STATUS_OK ? NATIVE_RESOURCE_CLOSED :
+            NATIVE_RESOURCE_RETAINED;
     }
     case PHIPIA_HANDLE_PACKAGE_CONTROL: {
         struct package_control_report report;
 
         return package_control_close(process->generation, resource->words[0],
-            &report) == PACKAGE_CONTROL_STATUS_OK;
+            &report) == PACKAGE_CONTROL_STATUS_OK ? NATIVE_RESOURCE_CLOSED :
+            NATIVE_RESOURCE_RETAINED;
     }
     default:
-        return false;
+        return NATIVE_RESOURCE_RETAINED;
     }
 }
 

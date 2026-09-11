@@ -231,8 +231,9 @@ enum native_handle_status native_handle_close(
     if (!object->active || object->references == 0U) {
         return NATIVE_HANDLE_STALE;
     }
-    if (object->references == 1U && close_resource != NULL &&
-        !close_resource(object->type, &object->resource, context)) {
+    const enum native_resource_close_result closed = object->references == 1U && close_resource != NULL ?
+        close_resource(object->type, &object->resource, context) : NATIVE_RESOURCE_CLOSED;
+    if (closed == NATIVE_RESOURCE_RETAINED) {
         return NATIVE_HANDLE_CLOSE_FAILED;
     }
     slot->active = false;
@@ -249,7 +250,7 @@ enum native_handle_status native_handle_close(
         --table->active_objects;
     }
     (void)slot_index;
-    return NATIVE_HANDLE_OK;
+    return closed == NATIVE_RESOURCE_CLOSED_WITH_ERROR ? NATIVE_HANDLE_CLOSE_FAILED : NATIVE_HANDLE_OK;
 }
 
 enum native_handle_status native_handle_close_all(
@@ -280,7 +281,7 @@ enum native_handle_status native_handle_close_all(
     return failed ? NATIVE_HANDLE_CLOSE_FAILED : NATIVE_HANDLE_OK;
 }
 
-static bool test_close(
+static enum native_resource_close_result test_close(
     uint8_t type,
     const struct native_resource *resource,
     void *context
@@ -290,10 +291,10 @@ static bool test_close(
 
     if (type != PHIPIA_HANDLE_FILE || resource == NULL || closed == NULL ||
         resource->words[0] != UINT64_C(0x5341504F5445)) {
-        return false;
+        return NATIVE_RESOURCE_RETAINED;
     }
     ++*closed;
-    return true;
+    return NATIVE_RESOURCE_CLOSED;
 }
 
 bool native_handle_self_test(size_t *completed_tests)

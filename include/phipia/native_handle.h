@@ -50,7 +50,14 @@ struct native_handle_table {
     bool initialized;
 };
 
-typedef bool (*native_handle_close_fn)(
+enum native_resource_close_result {
+    NATIVE_RESOURCE_RETAINED = 0,
+    NATIVE_RESOURCE_CLOSED = 1,
+    NATIVE_RESOURCE_CLOSED_WITH_ERROR = 2
+};
+
+/* A consumed resource must retire even when its final writeback failed. */
+typedef enum native_resource_close_result (*native_handle_close_fn)(
     uint8_t type,
     const struct native_resource *resource,
     void *context

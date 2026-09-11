@@ -137,6 +137,8 @@ enum phipfs_status phipfs_open(
 enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *path,
     enum phipfs_access access, uint8_t flags, uint16_t mode, phipfs_handle *handle);
 enum phipfs_status phipfs_close(phipfs_handle handle);
+/* Report ownership separately from writeback status for enclosing registries. */
+enum phipfs_status phipfs_close_report(phipfs_handle handle, bool *consumed);
 enum phipfs_status phipfs_fsync(phipfs_handle handle);
 enum phipfs_status phipfs_fstat(phipfs_handle handle, struct phipfs_stat *stat);
 enum phipfs_status phipfs_publish_file(phipfs_handle handle, const char *source, const char *destination);

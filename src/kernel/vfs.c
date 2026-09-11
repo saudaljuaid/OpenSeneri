@@ -1059,6 +1059,14 @@ failed:
 
 enum phipfs_status phipfs_close(phipfs_handle handle)
 {
+    bool consumed;
+    return phipfs_close_report(handle, &consumed);
+}
+
+enum phipfs_status phipfs_close_report(phipfs_handle handle, bool *consumed)
+{
+    if (consumed == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    *consumed = false;
     const bool restore_interrupts = vnode_metadata_acquire();
     struct vfs_open_file_state *state;
     phipfs_handle backend_handle;
@@ -1083,6 +1091,7 @@ enum phipfs_status phipfs_close(phipfs_handle handle)
         vnode_metadata_release(restore_interrupts);
         return PHIPFS_STATUS_BUSY;
     }
+    *consumed = true;
     state->active = false;
     state->backend_handle = 0U;
     // Retire the VFS identity before final-close cleanup can free and reuse
