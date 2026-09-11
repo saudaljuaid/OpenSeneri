@@ -18,6 +18,7 @@
 #include <phipia/native_handle.h>
 #include <phipia/native_image.h>
 #include <phipia/native_syscall.h>
+#include <phipia/native_teardown_diagnostics.h>
 #include <phipia/network.h>
 #include <phipia/keyboard.h>
 #include <phipia/paging.h>
@@ -2852,6 +2853,7 @@ static bool process_cleanup_retry_self_test(void)
     struct process_cleanup_test_script script = {
         NATIVE_RESOURCE_RETAINED, 0U
     };
+    size_t diagnostic_length;
     phipia_handle_t handle;
 
     zero_bytes(&process, sizeof(process));
@@ -2878,6 +2880,14 @@ static bool process_cleanup_retry_self_test(void)
         refusal_report.history.entries[0].retained_resources != 1U ||
         !refusal_report.history.entries[0].retryable ||
         !refusal_report.history.entries[0].close_failed ||
+        !native_handle_close_report_validate(&refusal_report.handles) ||
+        !native_process_teardown_history_validate(&refusal_report.history) ||
+        native_handle_close_report_format(&refusal_report.handles, NULL, 0U,
+            &diagnostic_length) != NATIVE_TEARDOWN_DIAGNOSTICS_OK ||
+        diagnostic_length == 0U ||
+        native_process_teardown_history_format(&refusal_report.history, NULL,
+            0U, &diagnostic_length) != NATIVE_TEARDOWN_DIAGNOSTICS_OK ||
+        diagnostic_length == 0U ||
         script.calls != 1U) {
         return false;
     }
@@ -2898,7 +2908,9 @@ static bool process_cleanup_retry_self_test(void)
         success_report.history.entries[1].attempt_number != 2U ||
         !success_report.history.entries[1].retired ||
         success_report.history.entries[1].close_failed ||
-        success_report.history.entries[1].closed_resources != 1U) {
+        success_report.history.entries[1].closed_resources != 1U ||
+        !native_handle_close_report_validate(&success_report.handles) ||
+        !native_process_teardown_history_validate(&success_report.history)) {
         return false;
     }
     if (native_process_teardown_history_copy(&success_report.history,
@@ -2936,7 +2948,10 @@ static bool process_cleanup_retry_self_test(void)
         consumed_report.history.entries[0].retryable ||
         !consumed_report.history.entries[0].close_failed ||
         consumed_report.history.entries[0].blocked ||
-        !consumed_report.history.entries[0].retired || script.calls != 1U) {
+        !consumed_report.history.entries[0].retired ||
+        !native_handle_close_report_validate(&consumed_report.handles) ||
+        !native_process_teardown_history_validate(&consumed_report.history) ||
+        script.calls != 1U) {
         return false;
     }
     zero_bytes(&process, sizeof(process));

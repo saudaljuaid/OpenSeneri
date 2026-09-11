@@ -116,6 +116,7 @@ PACKAGE_FETCH_HOST_TEST := $(TEST_BUILD_DIR)/package-fetch-host-test$(HOST_EXEEX
 PACKAGE_UPLOAD_HOST_TEST := $(TEST_BUILD_DIR)/package-upload-host-test$(HOST_EXEEXT)
 NATIVE_TEARDOWN_REPORT_HOST_TEST := $(TEST_BUILD_DIR)/native-teardown-report-host-test$(HOST_EXEEXT)
 NATIVE_TEARDOWN_HISTORY_HOST_TEST := $(TEST_BUILD_DIR)/native-teardown-history-host-test$(HOST_EXEEXT)
+NATIVE_TEARDOWN_DIAGNOSTICS_HOST_TEST := $(TEST_BUILD_DIR)/native-teardown-diagnostics-host-test$(HOST_EXEEXT)
 TLS_HOST_TEST := $(TEST_BUILD_DIR)/tls-client-host-test$(HOST_EXEEXT)
 TLS_HOST_OBJECT := $(TEST_BUILD_DIR)/tls-client.o
 TLS_HOST_WRAPPER_OBJECT := $(TEST_BUILD_DIR)/tls-wrapper.o
@@ -1493,6 +1494,25 @@ $(NATIVE_TEARDOWN_HISTORY_HOST_TEST): tools/native-teardown-history-host-test.c 
 .PHONY: native-teardown-history-test
 native-teardown-history-test: $(NATIVE_TEARDOWN_HISTORY_HOST_TEST)
 	$(NATIVE_TEARDOWN_HISTORY_HOST_TEST)
+
+$(NATIVE_TEARDOWN_DIAGNOSTICS_HOST_TEST): \
+		tools/native-teardown-diagnostics-host-test.c \
+		src/kernel/native_teardown_diagnostics.c \
+		src/kernel/native_process_teardown.c src/kernel/native_handle.c \
+		include/phipia/native_teardown_diagnostics.h \
+		include/phipia/native_process.h include/phipia/native_handle.h
+	mkdir -p $(dir $@)
+	$(CC) -std=c11 -O2 -ffunction-sections -fdata-sections \
+		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wundef \
+		-Wstrict-prototypes -Wmissing-prototypes -Iinclude \
+		tools/native-teardown-diagnostics-host-test.c \
+		src/kernel/native_teardown_diagnostics.c \
+		src/kernel/native_process_teardown.c src/kernel/native_handle.c \
+		-Wl,--gc-sections -o $@
+
+.PHONY: native-teardown-diagnostics-test
+native-teardown-diagnostics-test: $(NATIVE_TEARDOWN_DIAGNOSTICS_HOST_TEST)
+	$(NATIVE_TEARDOWN_DIAGNOSTICS_HOST_TEST)
 
 $(TEST_BUILD_DIR)/monocypher/monocypher.o: \
 		vendor/monocypher/src/monocypher.c vendor/monocypher/src/monocypher.h
