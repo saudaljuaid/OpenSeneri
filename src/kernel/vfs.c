@@ -1461,6 +1461,16 @@ enum phipfs_status phipfs_directory_read(
 
 enum phipfs_status phipfs_directory_close(phipfs_directory_handle handle)
 {
+    bool consumed;
+    return phipfs_directory_close_report(handle, &consumed);
+}
+
+enum phipfs_status phipfs_directory_close_report(
+    phipfs_directory_handle handle, bool *consumed
+)
+{
+    if (consumed == NULL) return PHIPFS_STATUS_INVALID_ARGUMENT;
+    *consumed = false;
     const bool restore_interrupts = vnode_metadata_acquire();
     struct vfs_directory_state *state;
     const struct vfs_backend_ops *backend;
@@ -1487,6 +1497,7 @@ enum phipfs_status phipfs_directory_close(phipfs_directory_handle handle)
         vnode_metadata_release(restore_interrupts);
         return PHIPFS_STATUS_BUSY;
     }
+    *consumed = true;
     state->active = false;
     state->backend_handle = 0U;
     vnode_release_locked(vnode_index, vnode_generation);

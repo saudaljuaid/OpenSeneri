@@ -1019,14 +1019,16 @@ static enum native_resource_close_result close_resource(
         if (resource->words[0] >= NATIVE_HANDLE_LIMIT) {
             return NATIVE_RESOURCE_RETAINED;
         }
-        if (phipfs_directory_close(
-                process->directories[resource->words[0]].iterator) !=
-                PHIPFS_STATUS_OK) {
+        bool consumed = false;
+        const enum phipfs_status status = phipfs_directory_close_report(
+            process->directories[resource->words[0]].iterator, &consumed);
+        if (!consumed) {
             return NATIVE_RESOURCE_RETAINED;
         }
         zero_bytes(&process->directories[resource->words[0]],
             sizeof(process->directories[resource->words[0]]));
-        return NATIVE_RESOURCE_CLOSED;
+        return status == PHIPFS_STATUS_OK ? NATIVE_RESOURCE_CLOSED :
+            NATIVE_RESOURCE_CLOSED_WITH_ERROR;
     case PHIPIA_HANDLE_STREAM:
     case PHIPIA_HANDLE_DATAGRAM:
         return network_close(process->generation,

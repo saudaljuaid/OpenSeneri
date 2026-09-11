@@ -193,6 +193,9 @@ enum phipfs_status phipfs_directory_read(
     bool *present
 );
 enum phipfs_status phipfs_directory_close(phipfs_directory_handle handle);
+/* Report ownership separately from backend close/writeback status. */
+enum phipfs_status phipfs_directory_close_report(
+    phipfs_directory_handle handle, bool *consumed);
 enum phipfs_status phipfs_create(enum phipfs_volume volume, const char *path);
 enum phipfs_status phipfs_create_mode(enum phipfs_volume volume,
     const char *path, uint16_t mode);
