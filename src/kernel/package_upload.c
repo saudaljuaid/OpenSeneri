@@ -554,7 +554,8 @@ static enum package_upload_status upload_inspect_owned(
 static enum package_upload_status upload_close_owned(
     uint64_t owner,
     package_upload_token token,
-    struct package_upload_report *report
+    struct package_upload_report *report,
+    bool *consumed
 )
 {
     struct upload_slot *slot;
@@ -562,9 +563,10 @@ static enum package_upload_status upload_close_owned(
     char path[PHIPFS_MAX_PATH];
 
     report_clear(report);
-    if (report == NULL) {
+    if (report == NULL || consumed == NULL) {
         return PACKAGE_UPLOAD_STATUS_NULL_ARGUMENT;
     }
+    *consumed = false;
     enum package_upload_status status = resolve_slot(owner, token, &slot,
         &index);
 
@@ -596,10 +598,24 @@ static enum package_upload_status upload_close_owned(
          * Never truncate or unlink a replacement by its reused pathname. */
         slot->file_present = false;
     }
+    enum package_upload_status close_status = PACKAGE_UPLOAD_STATUS_OK;
+    enum phipfs_status close_fs_status = PHIPFS_STATUS_OK;
     if (slot->file_open) {
-        (void)phipfs_close(slot->file);
+        bool file_consumed = false;
+        close_fs_status = phipfs_close_report(slot->file, &file_consumed);
+        if (!file_consumed) {
+            servicing = false;
+            return finish(report, PACKAGE_UPLOAD_STATUS_FILESYSTEM,
+                close_fs_status, slot, index);
+        }
+        /* The VFS identity is gone even when backend writeback failed. Keep
+         * the package token until its remaining private cleanup completes,
+         * then retire it with the close error. */
         slot->file_open = false;
         slot->file = 0U;
+        if (close_fs_status != PHIPFS_STATUS_OK) {
+            close_status = PACKAGE_UPLOAD_STATUS_FILESYSTEM;
+        }
     }
     if (slot->file_present) {
         bool changed = false;
@@ -620,8 +636,9 @@ static enum package_upload_status upload_close_owned(
             slot, index);
     }
     release_slot(slot);
+    *consumed = true;
     servicing = false;
-    return finish(report, PACKAGE_UPLOAD_STATUS_OK, PHIPFS_STATUS_OK, NULL, 0U);
+    return finish(report, close_status, close_fs_status, NULL, 0U);
 }
 
 static bool upload_resources_released_owned(void)
@@ -713,12 +730,24 @@ enum package_upload_status package_upload_inspect(uint64_t owner,
     return release_request(upload_inspect_owned(owner, token, report));
 }
 
+enum package_upload_status package_upload_close_report(uint64_t owner,
+    package_upload_token token, struct package_upload_report *report,
+    bool *consumed)
+{
+    if (report == NULL || consumed == NULL) {
+        return PACKAGE_UPLOAD_STATUS_NULL_ARGUMENT;
+    }
+    *consumed = false;
+    if (!claim_request(report)) return PACKAGE_UPLOAD_STATUS_BUSY;
+    return release_request(upload_close_owned(owner, token, report, consumed));
+}
+
 enum package_upload_status package_upload_close(uint64_t owner,
     package_upload_token token, struct package_upload_report *report)
 {
-    if (report == NULL) return PACKAGE_UPLOAD_STATUS_NULL_ARGUMENT;
-    if (!claim_request(report)) return PACKAGE_UPLOAD_STATUS_BUSY;
-    return release_request(upload_close_owned(owner, token, report));
+    bool consumed;
+
+    return package_upload_close_report(owner, token, report, &consumed);
 }
 
 bool package_upload_resources_released(void)

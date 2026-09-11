@@ -1114,10 +1114,13 @@ static enum native_resource_close_result close_resource(
     }
     case PHIPIA_HANDLE_PACKAGE_UPLOAD: {
         struct package_upload_report report;
+        bool consumed = false;
+        const enum package_upload_status status = package_upload_close_report(
+            process->generation, resource->words[0], &report, &consumed);
 
-        return package_upload_close(process->generation, resource->words[0],
-            &report) == PACKAGE_UPLOAD_STATUS_OK ? NATIVE_RESOURCE_CLOSED :
-            NATIVE_RESOURCE_RETAINED;
+        return status == PACKAGE_UPLOAD_STATUS_OK ? NATIVE_RESOURCE_CLOSED :
+            consumed ? NATIVE_RESOURCE_CLOSED_WITH_ERROR :
+                NATIVE_RESOURCE_RETAINED;
     }
     case PHIPIA_HANDLE_PACKAGE_CONTROL: {
         struct package_control_report report;

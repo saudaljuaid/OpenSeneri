@@ -107,6 +107,14 @@ enum package_upload_status package_upload_close(
     struct package_upload_report *report
 );
 
+/* Reports whether the upload token was consumed despite a close error. */
+enum package_upload_status package_upload_close_report(
+    uint64_t owner,
+    package_upload_token token,
+    struct package_upload_report *report,
+    bool *consumed
+);
+
 bool package_upload_resources_released(void);
 
 const char *package_upload_status_string(enum package_upload_status status);

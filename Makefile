@@ -1436,22 +1436,25 @@ package-service-tests: $(PACKAGE_SERVICE_HOST_TEST)
 
 $(PACKAGE_UPLOAD_HOST_TEST): tools/package-upload-host-test.c \
 		src/kernel/package_upload.c src/kernel/package_state.c \
+		src/kernel/native_handle.c \
 		include/phipia/package_upload.h include/phipia/package_state.h \
-		include/phipia/fat32_fs.h
+		include/phipia/fat32_fs.h include/phipia/native_handle.h
 	mkdir -p $(dir $@)
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Wpedantic -Wshadow \
 		-Wundef -Wstrict-prototypes -Wmissing-prototypes -Iinclude \
 		tools/package-upload-host-test.c src/kernel/package_upload.c \
-		src/kernel/package_state.c -o $@
+		src/kernel/package_state.c src/kernel/native_handle.c -o $@
 
 $(TEST_BUILD_DIR)/package-upload-claims-host-test$(HOST_EXEEXT): tools/package-upload-claims-host-test.c \
 		tools/package-upload-host-test.c src/kernel/package_upload.c src/kernel/package_state.c \
-		include/phipia/package_upload.h include/phipia/package_state.h include/phipia/fat32_fs.h
+		src/kernel/native_handle.c include/phipia/package_upload.h \
+		include/phipia/package_state.h include/phipia/fat32_fs.h \
+		include/phipia/native_handle.h
 	mkdir -p $(dir $@)
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Wpedantic -Wshadow \
 		-Wundef -Wstrict-prototypes -Wmissing-prototypes $(HOST_THREAD_FLAGS) -Iinclude \
 		tools/package-upload-claims-host-test.c src/kernel/package_upload.c \
-		src/kernel/package_state.c -o $@
+		src/kernel/package_state.c src/kernel/native_handle.c -o $@
 
 package-upload-tests: $(PACKAGE_UPLOAD_HOST_TEST) $(TEST_BUILD_DIR)/package-upload-claims-host-test$(HOST_EXEEXT)
 	$(PACKAGE_UPLOAD_HOST_TEST)

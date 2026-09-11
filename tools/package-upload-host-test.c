@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include <phipia/fat32_fs.h>
+#include <phipia/native_handle.h>
 #include <phipia/package_state.h>
 #include <phipia/package_upload.h>
 
@@ -28,6 +29,7 @@ static bool directory_present;
 static bool fail_next_sync;
 static bool fail_next_open;
 static bool replace_on_refused_open;
+static bool refuse_next_close;
 static bool fail_next_unlink;
 static bool lose_unlink_receipt;
 static size_t write_failure_at = NO_WRITE_FAILURE;
@@ -263,18 +265,34 @@ enum phipfs_status phipfs_open(
     return PHIPFS_STATUS_OK;
 }
 
-enum phipfs_status phipfs_close(phipfs_handle handle)
+enum phipfs_status phipfs_close_report(phipfs_handle handle, bool *consumed)
 {
+    if (consumed == NULL) {
+        return PHIPFS_STATUS_INVALID_ARGUMENT;
+    }
+    *consumed = false;
     if (handle == 0U || handle > PACKAGE_UPLOAD_SLOT_LIMIT ||
         !files[handle - 1U].open) {
         return PHIPFS_STATUS_STALE_HANDLE;
+    }
+    if (refuse_next_close) {
+        refuse_next_close = false;
+        return PHIPFS_STATUS_BUSY;
     }
     files[handle - 1U].open = false;
     if (!files[handle - 1U].present) {
         files[handle - 1U].size = 0U;
         files[handle - 1U].offset = 0U;
     }
+    *consumed = true;
     return PHIPFS_STATUS_OK;
+}
+
+enum phipfs_status phipfs_close(phipfs_handle handle)
+{
+    bool consumed;
+
+    return phipfs_close_report(handle, &consumed);
 }
 
 enum phipfs_status phipfs_fsync(phipfs_handle handle)
@@ -560,6 +578,47 @@ static int failure_recovery_test(void)
     return 0;
 }
 
+static enum native_resource_close_result close_upload_resource(
+    uint8_t type, const struct native_resource *resource, void *context)
+{
+    struct package_upload_report report;
+    enum package_upload_status status;
+
+    CHECK(type == PHIPIA_HANDLE_PACKAGE_UPLOAD && resource != NULL &&
+        context == NULL, NATIVE_RESOURCE_RETAINED);
+    status = package_upload_close(95U,
+        (package_upload_token)resource->words[0], &report);
+    return status == PACKAGE_UPLOAD_STATUS_OK ? NATIVE_RESOURCE_CLOSED :
+        NATIVE_RESOURCE_RETAINED;
+}
+
+static int native_upload_close_refusal_test(void)
+{
+    struct package_upload_report report;
+    struct native_handle_table table;
+    struct native_resource resource = {{0U, 0U, 0U, 0U}};
+    phipia_handle_t first;
+    phipia_handle_t duplicate;
+
+    CHECK(package_upload_open(95U, &report) == PACKAGE_UPLOAD_STATUS_OK, 110);
+    resource.words[0] = report.token;
+    CHECK(native_handle_table_initialize(&table, 2U) == NATIVE_HANDLE_OK, 111);
+    CHECK(native_handle_install(&table, PHIPIA_HANDLE_PACKAGE_UPLOAD,
+        &resource, &first) == NATIVE_HANDLE_OK, 112);
+    CHECK(native_handle_duplicate(&table, first, &duplicate) ==
+        NATIVE_HANDLE_OK, 113);
+    refuse_next_close = true;
+    CHECK(native_handle_close_all(&table, close_upload_resource, NULL) ==
+        NATIVE_HANDLE_CLOSE_FAILED && table.active_handles == 1U &&
+        table.active_objects == 1U && files[0].open &&
+        !package_upload_resources_released(), 114);
+    CHECK(native_handle_close_all(&table, close_upload_resource, NULL) ==
+        NATIVE_HANDLE_OK && table.active_handles == 0U &&
+        table.active_objects == 0U && !files[0].open && !files[0].present &&
+        package_upload_resources_released(), 115);
+    return 0;
+}
+
 static int refused_open_preserves_namespace_test(void)
 {
     struct package_upload_report report;
@@ -714,6 +773,9 @@ int main(void)
     }
     if (result == 0) {
         result = failure_recovery_test();
+    }
+    if (result == 0) {
+        result = native_upload_close_refusal_test();
     }
     if (result == 0) {
         result = bounded_large_cleanup_test();
