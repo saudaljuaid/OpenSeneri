@@ -62,7 +62,7 @@ static void mixed_close_all_test(void)
     phipia_handle_t file_duplicate;
     phipia_handle_t directory_handle;
     struct native_resource *resolved;
-    bool retryable = false;
+    struct native_handle_close_report report;
 
     assert(native_handle_table_initialize(&table, 3U) == NATIVE_HANDLE_OK);
     assert(native_handle_install(&table, PHIPIA_HANDLE_FILE, &file,
@@ -74,19 +74,23 @@ static void mixed_close_all_test(void)
 
     /* close_all must retire the consumed directory error and still retain the
      * final duplicate's file wrapper when its callback refuses first. */
-    assert(native_handle_close_all_report(&table, close_scripted, &script,
-        &retryable) == NATIVE_HANDLE_CLOSE_FAILED);
-    assert(retryable && script.file_calls == 1U &&
+    assert(native_handle_close_all_diagnostics(&table, close_scripted, &script,
+        &report) == NATIVE_HANDLE_CLOSE_FAILED);
+    assert(report.attempted_handles == 3U && report.callback_attempts == 2U &&
+        report.duplicate_references == 1U && report.retained_resources == 1U &&
+        report.consumed_error_resources == 1U && report.retired_handles == 2U &&
+        report.active_handles_after == 1U && report.retryable && report.progress &&
+        script.file_calls == 1U &&
         script.directory_calls == 1U);
     assert(table.active_handles == 1U && table.active_objects == 1U);
     assert(native_handle_resolve(&table, file_duplicate, PHIPIA_HANDLE_FILE,
         &resolved) == NATIVE_HANDLE_OK && resolved->words[0] == 77U);
 
     script.file_result = NATIVE_RESOURCE_CLOSED;
-    retryable = true;
-    assert(native_handle_close_all_report(&table, close_scripted, &script,
-        &retryable) == NATIVE_HANDLE_OK);
-    assert(!retryable && script.file_calls == 2U &&
+    assert(native_handle_close_all_diagnostics(&table, close_scripted, &script,
+        &report) == NATIVE_HANDLE_OK);
+    assert(report.attempted_handles == 1U && report.closed_resources == 1U &&
+        !report.retryable && report.progress && script.file_calls == 2U &&
         script.directory_calls == 1U);
     assert_table_empty(&table);
 }
@@ -95,6 +99,7 @@ static void close_all_report_argument_test(void)
 {
     struct native_handle_table table = {0};
     bool retryable = true;
+    struct native_handle_close_report report;
 
     assert(native_handle_close_all_report(NULL, close_file, &calls,
         &retryable) == NATIVE_HANDLE_NULL_ARGUMENT && !retryable);
@@ -102,6 +107,9 @@ static void close_all_report_argument_test(void)
         NATIVE_HANDLE_NULL_ARGUMENT);
     assert(native_handle_close_all_report(&table, close_file, &calls,
         &retryable) == NATIVE_HANDLE_BAD_LIMIT && !retryable);
+    assert(native_handle_close_all_diagnostics(&table, close_file, &calls,
+        &report) == NATIVE_HANDLE_BAD_LIMIT && report.invalid_arguments == 1U &&
+        report.status == NATIVE_HANDLE_BAD_LIMIT);
 }
 
 static void duplicate_reference_census_test(void)
@@ -118,7 +126,7 @@ static void duplicate_reference_census_test(void)
     phipia_handle_t second;
     phipia_handle_t third;
     struct native_resource *resolved;
-    bool retryable = false;
+    struct native_handle_close_report report;
 
     assert(native_handle_table_initialize(&table, 3U) == NATIVE_HANDLE_OK);
     assert(native_handle_install(&table, PHIPIA_HANDLE_FILE, &resource,
@@ -127,9 +135,12 @@ static void duplicate_reference_census_test(void)
         NATIVE_HANDLE_OK);
     assert(native_handle_duplicate(&table, first, &third) ==
         NATIVE_HANDLE_OK);
-    assert(native_handle_close_all_report(&table, close_scripted, &script,
-        &retryable) == NATIVE_HANDLE_CLOSE_FAILED);
-    assert(retryable && script.file_calls == 1U &&
+    assert(native_handle_close_all_diagnostics(&table, close_scripted, &script,
+        &report) == NATIVE_HANDLE_CLOSE_FAILED);
+    assert(report.attempted_handles == 3U && report.callback_attempts == 1U &&
+        report.duplicate_references == 2U && report.retained_resources == 1U &&
+        report.retired_handles == 2U && report.retryable && report.progress &&
+        script.file_calls == 1U &&
         table.active_handles == 1U && table.active_objects == 1U);
     assert(native_handle_resolve(&table, first, PHIPIA_HANDLE_FILE,
         &resolved) == NATIVE_HANDLE_STALE);
@@ -139,13 +150,14 @@ static void duplicate_reference_census_test(void)
         &resolved) == NATIVE_HANDLE_OK);
 
     script.file_result = NATIVE_RESOURCE_CLOSED;
-    retryable = true;
-    assert(native_handle_close_all_report(&table, close_scripted, &script,
-        &retryable) == NATIVE_HANDLE_OK && !retryable);
-    assert(script.file_calls == 2U);
+    assert(native_handle_close_all_diagnostics(&table, close_scripted, &script,
+        &report) == NATIVE_HANDLE_OK && !report.retryable);
+    assert(report.attempted_handles == 1U && report.closed_resources == 1U &&
+        report.active_handles_after == 0U && script.file_calls == 2U);
     assert_table_empty(&table);
-    assert(native_handle_close_all_report(&table, close_scripted, &script,
-        &retryable) == NATIVE_HANDLE_OK && !retryable);
+    assert(native_handle_close_all_diagnostics(&table, close_scripted, &script,
+        &report) == NATIVE_HANDLE_OK && report.attempted_handles == 0U &&
+        !report.retryable && !report.progress);
     assert(script.file_calls == 2U);
 }
 
@@ -261,7 +273,7 @@ static void retryable_process_teardown_test(void)
     struct native_directory_state state = {open_test_directory(), true};
     phipia_handle_t first;
     phipia_handle_t duplicate;
-    bool retryable = false;
+    struct native_handle_close_report report;
 
     assert(native_handle_table_initialize(&table, 2U) == NATIVE_HANDLE_OK);
     assert(native_handle_install(&table, PHIPIA_HANDLE_DIRECTORY, &resource,
@@ -272,19 +284,22 @@ static void retryable_process_teardown_test(void)
     /* A full mount reference count makes the VFS refuse before consuming the
      * iterator.  close_all must leave its final wrapper for a later retry. */
     mounts[PHIPFS_VOLUME_DATA].references = SIZE_MAX;
-    assert(native_handle_close_all_report(&table, close_directory, &state,
-        &retryable) == NATIVE_HANDLE_CLOSE_FAILED);
-    assert(retryable);
+    assert(native_handle_close_all_diagnostics(&table, close_directory,
+        &state, &report) == NATIVE_HANDLE_CLOSE_FAILED);
+    assert(report.attempted_handles == 2U && report.callback_attempts == 0U &&
+        report.duplicate_references == 1U && report.retained_resources == 1U &&
+        report.retired_handles == 1U && report.retryable && report.progress);
     assert(directory_close_calls == 0U);
     assert_directory_wrapper(&table, &state, 1U, 1U, true);
     assert(phipfs_directory_read(state.iterator,
         &(struct phipfs_list_entry){0}, &(bool){false}) == PHIPFS_STATUS_BUSY);
 
     mounts[PHIPFS_VOLUME_DATA].references = 0U;
-    retryable = true;
-    assert(native_handle_close_all_report(&table, close_directory, &state,
-        &retryable) == NATIVE_HANDLE_OK);
-    assert(!retryable);
+    assert(native_handle_close_all_diagnostics(&table, close_directory, &state,
+        &report) == NATIVE_HANDLE_OK && !report.retryable);
+    assert(report.attempted_handles == 1U && report.callback_attempts == 1U &&
+        report.closed_resources == 1U && report.active_handles_after == 0U &&
+        report.progress);
     assert(directory_close_calls == 1U);
     assert_directory_wrapper(&table, &state, 0U, 0U, false);
     bool consumed = true;
@@ -299,7 +314,7 @@ static void consumed_error_process_teardown_test(void)
     struct native_directory_state state = {open_test_directory(), true};
     phipia_handle_t first;
     phipia_handle_t duplicate;
-    bool retryable = true;
+    struct native_handle_close_report report;
 
     assert(native_handle_table_initialize(&table, 2U) == NATIVE_HANDLE_OK);
     assert(native_handle_install(&table, PHIPIA_HANDLE_DIRECTORY, &resource,
@@ -307,9 +322,13 @@ static void consumed_error_process_teardown_test(void)
     assert(native_handle_duplicate(&table, first, &duplicate) ==
         NATIVE_HANDLE_OK);
     directory_close_status = PHIPFS_STATUS_IO;
-    assert(native_handle_close_all_report(&table, close_directory, &state,
-        &retryable) == NATIVE_HANDLE_CLOSE_FAILED);
-    assert(!retryable);
+    assert(native_handle_close_all_diagnostics(&table, close_directory, &state,
+        &report) == NATIVE_HANDLE_CLOSE_FAILED);
+    assert(!report.retryable && report.attempted_handles == 2U &&
+        report.callback_attempts == 1U &&
+        report.consumed_error_resources == 1U && report.duplicate_references == 1U &&
+        report.retired_handles == 2U && report.active_handles_after == 0U &&
+        report.progress);
     assert(directory_close_calls == 1U);
     assert_directory_wrapper(&table, &state, 0U, 0U, false);
     bool consumed = true;

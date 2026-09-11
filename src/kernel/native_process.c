@@ -176,6 +176,7 @@ struct native_process {
     struct paging_process_space address_space;
     struct paging_process_alias_set aliases;
     struct native_handle_table handles;
+    struct native_process_teardown_report teardown_report;
     struct native_thread threads[NATIVE_THREAD_LIMIT];
     struct native_page pages[NATIVE_PROCESS_PAGE_LIMIT];
     struct native_directory_resource directories[NATIVE_HANDLE_LIMIT];
@@ -2673,14 +2674,26 @@ static bool initialize_stack(
     return true;
 }
 
-static bool process_cleanup(struct native_process *process)
+static bool process_cleanup_with_callback(
+    struct native_process *process,
+    native_handle_close_fn close_callback,
+    void *close_context,
+    struct native_process_teardown_report *output
+)
 {
     bool success = true;
     const bool interrupts_were_enabled = cpu_interrupts_enabled();
 
+    if (output != NULL) {
+        zero_bytes(output, sizeof(*output));
+    }
     if (process == NULL) {
         return false;
     }
+    ++process->teardown_report.attempts;
+    native_handle_close_report_reset(&process->teardown_report.handles);
+    process->teardown_report.blocked = false;
+    process->teardown_report.retired = false;
     cpu_interrupt_disable();
     if (process->address_space.state == PAGING_PROCESS_SPACE_ACTIVE &&
         paging_process_restore_kernel(&process->address_space) !=
@@ -2689,22 +2702,30 @@ static bool process_cleanup(struct native_process *process)
     }
     cpu_interrupt_enable();
     if (process->handles.initialized) {
-        bool retryable = false;
         const enum native_handle_status handle_status =
-            native_handle_close_all_report(&process->handles, close_resource,
-                process, &retryable);
+            native_handle_close_all_diagnostics(&process->handles,
+                close_callback, close_context,
+                &process->teardown_report.handles);
 
         if (handle_status != NATIVE_HANDLE_OK) {
             success = false;
         }
-        /* A retained callback-owned resource keeps the process wrapper alive.
-         * Consumed errors, in contrast, have no native identity left to retry. */
-        if (retryable) {
+        /* A remaining wrapper, including a malformed table entry, keeps the
+         * process wrapper alive; only a fully retired table can be cleared. */
+        if (process->handles.active_handles != 0U) {
+            process->teardown_report.blocked = true;
+            if (output != NULL) {
+                *output = process->teardown_report;
+            }
             if (!interrupts_were_enabled) {
                 cpu_interrupt_disable();
             }
             return false;
         }
+    }
+    process->teardown_report.retired = true;
+    if (output != NULL) {
+        *output = process->teardown_report;
     }
     network_process_terminated(process->generation);
     cpu_interrupt_disable();
@@ -2743,11 +2764,45 @@ static bool process_cleanup(struct native_process *process)
     return success;
 }
 
+static bool process_cleanup(
+    struct native_process *process,
+    struct native_process_teardown_report *output
+)
+{
+    return process_cleanup_with_callback(process, close_resource, process,
+        output);
+}
+
+struct process_cleanup_test_script {
+    enum native_resource_close_result result;
+    unsigned calls;
+};
+
+static enum native_resource_close_result process_cleanup_test_close(
+    uint8_t type,
+    const struct native_resource *resource,
+    void *context
+)
+{
+    struct process_cleanup_test_script *script = context;
+
+    if (script == NULL || resource == NULL || type != PHIPIA_HANDLE_TIMER) {
+        return NATIVE_RESOURCE_RETAINED;
+    }
+    ++script->calls;
+    return script->result;
+}
+
 static bool process_cleanup_retry_self_test(void)
 {
     static struct native_process process;
     const struct native_resource invalid_file = {
         {PHIPIA_HANDLE_INVALID, 0U, 0U, 0U}
+    };
+    struct native_process_teardown_report refusal_report;
+    struct native_process_teardown_report consumed_report;
+    struct process_cleanup_test_script script = {
+        NATIVE_RESOURCE_CLOSED_WITH_ERROR, 0U
     };
     struct native_resource *resolved;
     phipia_handle_t handle;
@@ -2759,8 +2814,13 @@ static bool process_cleanup_retry_self_test(void)
             NATIVE_HANDLE_OK ||
         native_handle_install(&process.handles, PHIPIA_HANDLE_FILE,
             &invalid_file, &handle) != NATIVE_HANDLE_OK ||
-        process_cleanup(&process) || !process.active ||
-        process.handles.active_handles != 1U ||
+        process_cleanup(&process, &refusal_report) || !process.active ||
+        process.handles.active_handles != 1U || refusal_report.attempts != 1U ||
+        !refusal_report.blocked || refusal_report.retired ||
+        refusal_report.handles.attempted_handles != 1U ||
+        refusal_report.handles.retained_resources != 1U ||
+        refusal_report.handles.active_handles_after != 1U ||
+        !refusal_report.handles.retryable ||
         native_handle_resolve(&process.handles, handle, PHIPIA_HANDLE_FILE,
             &resolved) != NATIVE_HANDLE_OK || resolved == NULL ||
         resolved->words[0] != PHIPIA_HANDLE_INVALID) {
@@ -2768,6 +2828,28 @@ static bool process_cleanup_retry_self_test(void)
     }
     if (native_handle_close_all(&process.handles, NULL, NULL) !=
             NATIVE_HANDLE_OK || process.handles.active_handles != 0U) {
+        return false;
+    }
+    zero_bytes(&process, sizeof(process));
+
+    process.active = true;
+    process.exiting = true;
+    process.generation = UINT64_C(777);
+    if (native_handle_table_initialize(&process.handles, 1U) !=
+            NATIVE_HANDLE_OK ||
+        native_handle_install(&process.handles, PHIPIA_HANDLE_TIMER,
+            &(const struct native_resource){{77U, 0U, 0U, 0U}}, &handle) !=
+            NATIVE_HANDLE_OK ||
+        process_cleanup_with_callback(&process, process_cleanup_test_close,
+            &script, &consumed_report) || process.active ||
+        process.handles.active_handles != 0U || script.calls != 1U ||
+        consumed_report.attempts != 1U || consumed_report.blocked ||
+        !consumed_report.retired ||
+        consumed_report.handles.status != NATIVE_HANDLE_CLOSE_FAILED ||
+        consumed_report.handles.consumed_error_resources != 1U ||
+        consumed_report.handles.retained_resources != 0U ||
+        consumed_report.handles.active_handles_after != 0U ||
+        consumed_report.handles.retryable || !consumed_report.handles.progress) {
         return false;
     }
     zero_bytes(&process, sizeof(process));
@@ -2995,7 +3077,7 @@ static enum native_process_status native_process_spawn_from_volume(
     }
     status = load_process(process, manifest_path, image_volume);
     if (status != NATIVE_PROCESS_OK) {
-        if (!process_cleanup(process)) {
+        if (!process_cleanup(process, NULL)) {
             return NATIVE_PROCESS_TEARDOWN;
         }
         return status;
@@ -6787,6 +6869,7 @@ static void capture_result(
     result->exited = process->exiting;
     result->faulted = process->faulted;
     result->resources_released = false;
+    result->teardown_report = process->teardown_report;
 }
 
 static bool service_native_devices(void)
@@ -6952,15 +7035,17 @@ enum native_process_status native_process_run(struct native_process_result *resu
                 break;
             }
             capture_result(&processes[newest], &completed);
+            const bool process_retired = process_cleanup(&processes[newest],
+                &completed.teardown_report);
             if (!have_result || completed.generation >
                     selected_result.generation) {
                 selected_result = completed;
                 have_result = true;
             }
-            if (!process_cleanup(&processes[newest])) {
+            if (!process_retired) {
                 cleanup_ok = false;
                 cleanup_blocked = processes[newest].active &&
-                    processes[newest].handles.active_handles != 0U;
+                    completed.teardown_report.blocked;
                 break;
             }
         }

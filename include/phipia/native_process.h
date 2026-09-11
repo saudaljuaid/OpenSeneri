@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <phipia/native_handle.h>
+
 #define NATIVE_PROCESS_LIMIT 4U
 #define NATIVE_THREAD_LIMIT 8U
 #define NATIVE_PROCESS_PAGE_LIMIT 4096U
@@ -42,6 +44,13 @@ enum native_process_failure_stage {
     NATIVE_PROCESS_FAILURE_FPU_RESTORE
 };
 
+struct native_process_teardown_report {
+    struct native_handle_close_report handles;
+    uint32_t attempts;
+    bool blocked;
+    bool retired;
+};
+
 struct native_process_result {
     uint64_t generation;
     int32_t exit_status;
@@ -57,6 +66,7 @@ struct native_process_result {
     bool exited;
     bool faulted;
     bool resources_released;
+    struct native_process_teardown_report teardown_report;
 };
 
 struct interrupt_frame;
