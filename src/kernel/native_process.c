@@ -938,13 +938,21 @@ static void window_finalize_if_unreferenced(struct native_process *process)
     }
 }
 
-static bool window_release_surface(struct native_process *process)
+static bool window_release_surface_report(
+    struct native_process *process,
+    bool *consumed
+)
 {
     struct native_window_state *window;
     const bool enabled = cpu_interrupts_enabled();
     bool success = true;
+    bool surface_released = true;
     size_t page_count;
 
+    if (consumed == NULL) {
+        return false;
+    }
+    *consumed = false;
     if (process == NULL || !process->window.allocated) {
         return false;
     }
@@ -956,10 +964,14 @@ static bool window_release_surface(struct native_process *process)
         ui_native_window_close(window->ui_slot) != UI_STATUS_OK) {
         success = false;
     }
+    if (ui_native_window_is_open(window->ui_slot)) {
+        surface_released = false;
+    } else {
+        *consumed = true;
+    }
     page_count = (window->surface_bytes + PAGING_PAGE_SIZE - 1U) /
         PAGING_PAGE_SIZE;
     for (size_t page = 0U; page < page_count; ++page) {
-        struct native_page removed;
         const uint64_t address = window->surface_address +
             page * PAGING_PAGE_SIZE;
         struct native_page *record = page_at(process, address);
@@ -967,6 +979,7 @@ static bool window_release_surface(struct native_process *process)
         if (record == NULL ||
             record->kind != PAGING_PROCESS_MAPPING_NATIVE_SURFACE) {
             success = false;
+            surface_released = false;
             continue;
         }
         if (record->mapped &&
@@ -974,27 +987,48 @@ static bool window_release_surface(struct native_process *process)
                 PAGING_PROCESS_MAPPING_NATIVE_SURFACE, address) !=
                     PAGING_STATUS_OK) {
             success = false;
+            surface_released = false;
             continue;
         }
-        if (!remove_page_record(process, address, &removed) ||
-            !release_page_frame(&removed)) {
+        record->mapped = false;
+        *consumed = true;
+        if (!release_page_frame(record)) {
             success = false;
+            surface_released = false;
+            continue;
+        }
+        if (!remove_page_record(process, address, NULL)) {
+            success = false;
+            surface_released = false;
+            continue;
         }
     }
     if (window->shadow_pixels != NULL &&
         heap_free(window->shadow_pixels) != HEAP_STATUS_OK) {
         success = false;
+        surface_released = false;
+    } else if (window->shadow_pixels != NULL) {
+        window->shadow_pixels = NULL;
+        *consumed = true;
     }
-    window->shadow_pixels = NULL;
-    window->surface_address = 0U;
-    window->surface_bytes = 0U;
-    window->visible = false;
-    window->window_object_open = false;
+    if (surface_released) {
+        window->surface_address = 0U;
+        window->surface_bytes = 0U;
+        window->visible = false;
+        window->window_object_open = false;
+        window_finalize_if_unreferenced(process);
+    }
     if (enabled) {
         cpu_interrupt_enable();
     }
-    window_finalize_if_unreferenced(process);
     return success;
+}
+
+static bool window_release_surface(struct native_process *process)
+{
+    bool consumed;
+
+    return window_release_surface_report(process, &consumed);
 }
 
 static enum native_resource_close_result close_resource(
@@ -1042,8 +1076,15 @@ static enum native_resource_close_result close_resource(
             process->window.ui_slot != resource->words[0]) {
             return NATIVE_RESOURCE_RETAINED;
         }
-        return window_release_surface(process) ? NATIVE_RESOURCE_CLOSED :
-            NATIVE_RESOURCE_RETAINED;
+        {
+            bool consumed = false;
+            const bool success = window_release_surface_report(process,
+                &consumed);
+
+            return success ? NATIVE_RESOURCE_CLOSED :
+                consumed ? NATIVE_RESOURCE_CLOSED_WITH_ERROR :
+                    NATIVE_RESOURCE_RETAINED;
+        }
     case PHIPIA_HANDLE_EVENT_QUEUE:
         if (!process->window.allocated ||
             process->window.generation != resource->words[1]) {
