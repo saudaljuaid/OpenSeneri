@@ -385,6 +385,24 @@ pub(crate) unsafe extern "C" fn phipia_ext4_sync(mounted: usize, open_inodes: *c
     }
 }
 
+/// Retry only the retained durability plan for one inode, or validate the
+/// checkpointed inode and return an idempotent success when it is clean.
+///
+/// # Safety
+/// `mounted` must be a live uniquely borrowed mount under a writable C lease.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn phipia_ext4_fsync(mounted: usize, inode: u64) -> i32 {
+    if mounted == 0 || inode == 0 {
+        return ext4::Status::NullArgument as i32;
+    }
+    // SAFETY: unique access and provenance are the function contract.
+    let mounted = unsafe { &mut *(mounted as *mut ext4::Mounted) };
+    match ext4::fsync_inode(mounted, inode) {
+        Ok(()) => ext4::Status::Ok as i32,
+        Err(status) => status as i32,
+    }
+}
+
 /// Read the checked allocator capacity from one live ext4 mount.
 ///
 /// # Safety

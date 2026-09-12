@@ -121,6 +121,8 @@ int32_t phipia_ext4_block_write(
     size_t length
 );
 int32_t phipia_ext4_block_flush(uintptr_t context, uint32_t boundary);
+/* Inode-scoped retry/no-op durability boundary used by the C backend. */
+int32_t phipia_ext4_fsync(uintptr_t mounted, uint64_t inode);
 uint64_t phipia_ext4_current_time(uintptr_t context);
 
 void ext4_backend_initialize(void);

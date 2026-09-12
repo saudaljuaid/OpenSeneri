@@ -429,7 +429,7 @@ DEPENDENCIES := $(C_OBJECTS:.o=.d) $(MONOCYPHER_OBJECTS:.o=.d) \
 # implicit and pattern rule search for a phony target, so declaring them phony
 # makes every scenario resolve to "nothing to be done" and pass without booting.
 # They never create a file of their own name, so they rerun regardless.
-.PHONY: all audio-wav-tests capture-boot-video capture-phipia capture-phipia-proof capture-networking clean contract-counts contract-scenarios dynamic-elf-tests ext4-images ext4-tests fat32-images force-package-trust hooks https-tests \
+.PHONY: all audio-wav-tests capture-boot-video capture-phipia capture-phipia-proof capture-networking clean contract-counts contract-scenarios dynamic-elf-tests ext4-images ext4-tests ext4-fsync-test fat32-images force-package-trust hooks https-tests \
 	iso kernel lint native-apps native-audio-proof native-dynamic-proof native-https-proof native-phip-proof native-sdl-proof port-tests qemu-port-tests reproducible-sdk run \
 	package-control-tests package-fetch-tests package-manager-tests package-repository-tests package-service-tests package-state-tests package-transaction-tests package-trust-asset-tests package-trust-tests package-upload-tests qemu-test-ext4-powercuts screenshot-proof sdk sdk-once smoke tls-tests toolchain verify wall-clock-tests zlib-tests
 
@@ -1255,6 +1255,17 @@ $(BUILD_DIR)/ext4-vfs-host-test: tools/ext4-vfs-host-test.c \
 	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections \
 		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion -Iinclude \
 		tools/ext4-vfs-host-test.c -Wl,--gc-sections -o $@
+
+$(BUILD_DIR)/ext4-fsync-host-test: tools/ext4-fsync-host-test.c \
+		src/kernel/ext4_fs.c include/phipia/ext4_fs.h include/phipia/nvme.h \
+		include/phipia/fat32_fs.h include/phipia/slot_claim.h
+	mkdir -p $(dir $@)
+	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections \
+		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion -Iinclude \
+		tools/ext4-fsync-host-test.c -Wl,--gc-sections -o $@
+
+ext4-fsync-test: $(BUILD_DIR)/ext4-fsync-host-test
+	$(BUILD_DIR)/ext4-fsync-host-test
 
 $(BUILD_DIR)/ext4-handle-claims-host-test: tools/ext4-handle-claims-host-test.c \
 		src/kernel/ext4_fs.c include/phipia/ext4_fs.h include/phipia/fat32_fs.h

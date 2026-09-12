@@ -84,6 +84,7 @@ extern int32_t phipia_ext4_mount(uintptr_t context, uint64_t media_bytes,
     struct phipia_ext4_identity *identity, uintptr_t *mounted_out);
 extern int32_t phipia_ext4_prepare_unmount(uintptr_t mounted);
 extern int32_t phipia_ext4_sync(uintptr_t mounted, const uint64_t *open_inodes, size_t open_count);
+extern int32_t phipia_ext4_fsync(uintptr_t mounted, uint64_t inode);
 extern int32_t phipia_ext4_free_bytes(uintptr_t mounted, uint64_t *free_bytes);
 extern int32_t phipia_ext4_unmount(uintptr_t mounted);
 extern int32_t phipia_ext4_stat(uintptr_t mounted, const uint8_t *path,
@@ -1304,6 +1305,41 @@ enum phipfs_status ext4_backend_sync(enum phipfs_volume volume)
     return sync_volume_handle(volume, 0U);
 }
 
+static enum phipfs_status refresh_inode_handles(enum phipfs_volume volume,
+    struct ext4_mount_state *mount, uint64_t inode)
+{
+    struct phipia_ext4_metadata metadata;
+    zero_bytes(&metadata, sizeof(metadata));
+    enum phipfs_status status = map_status(
+        phipia_ext4_stat_inode(mount->rust_mount, inode, &metadata));
+    if (status != PHIPFS_STATUS_OK) return status;
+    if (metadata.inode != inode || metadata.file_type != PHIPIA_EXT4_FILE_REGULAR) {
+        return PHIPFS_STATUS_STALE_HANDLE;
+    }
+
+    /* Read the durable size once before publishing it to any live handle. A
+     * per-handle stat loop could update an early handle and then fail on a
+     * later one, leaving shared cache state only partly refreshed. */
+    for (size_t index = 0U; index < EXT4_MAX_HANDLES; ++index) {
+        bool restore_interrupts = handle_metadata_acquire();
+        struct ext4_handle_state *state = &ext4_handles[index];
+        const struct ext4_handle_state snapshot = *state;
+        handle_metadata_release(restore_interrupts);
+
+        if (!snapshot.active || snapshot.directory || snapshot.volume != volume ||
+            snapshot.mount_generation != mount->generation || snapshot.inode != inode) {
+            continue;
+        }
+        restore_interrupts = handle_metadata_acquire();
+        if (state->active && !state->closing && state->generation == snapshot.generation &&
+            state->mount_generation == snapshot.mount_generation && state->inode == inode) {
+            state->size = metadata.size;
+        }
+        handle_metadata_release(restore_interrupts);
+    }
+    return PHIPFS_STATUS_OK;
+}
+
 enum phipfs_status ext4_backend_fstat(phipfs_handle handle, struct phipfs_stat *stat)
 {
     struct ext4_handle_state initial;
@@ -1355,8 +1391,38 @@ enum phipfs_status ext4_backend_fsync(phipfs_handle handle)
 {
     struct ext4_handle_state initial;
     struct ext4_handle_state *state = &initial;
-    const enum phipfs_status status = handle_snapshot(handle, &initial);
-    return status == PHIPFS_STATUS_OK ? sync_volume_handle(state->volume, handle) : status;
+    struct ext4_mount_state *mount;
+    enum phipfs_status status = handle_snapshot(handle, &initial);
+    enum phipfs_status close_status;
+    const uint64_t completion_before =
+        status == PHIPFS_STATUS_OK && valid_volume(initial.volume) ?
+        ext4_mounts[initial.volume].completion_count : 0U;
+
+    if (status != PHIPFS_STATUS_OK) return status;
+    if (state->directory) return PHIPFS_STATUS_IS_DIRECTORY;
+    mount = &ext4_mounts[state->volume];
+    if (mount->close_failed) {
+        status = retry_session_close(mount);
+        if (status != PHIPFS_STATUS_OK) return status;
+    }
+    status = begin_operation(mount, true);
+    if (status != PHIPFS_STATUS_OK) return status;
+    status = leased_handle_state(handle, mount, &state);
+    if (status == PHIPFS_STATUS_OK && state->directory) status = PHIPFS_STATUS_IS_DIRECTORY;
+    if (status == PHIPFS_STATUS_OK) {
+        status = map_status(phipia_ext4_fsync(mount->rust_mount, state->inode));
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = refresh_inode_handles(state->volume, mount, state->inode);
+    }
+    close_status = end_operation(mount, NULL);
+    if (status != PHIPFS_STATUS_OK && close_status == PHIPFS_STATUS_OK) {
+        /* A rejected durability boundary is not a completed fsync operation.
+         * Keep the backend probe count retry-stable just as the handle cursor
+         * and Rust durable marker are retry-stable. */
+        mount->completion_count = completion_before;
+    }
+    return status != PHIPFS_STATUS_OK ? status : close_status;
 }
 
 struct phipfs_drive_info ext4_backend_drive(enum phipfs_volume volume)

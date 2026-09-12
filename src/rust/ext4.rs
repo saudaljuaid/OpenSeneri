@@ -164,6 +164,9 @@ struct PendingMutation {
     source: Vec<u8>,
     offset: u64,
     written: usize,
+    /// Stable inode identity for file-scoped durability retries. Namespace
+    /// plans without one file target retain `None`.
+    target_inode: Option<u64>,
     checkpointed_superblock: Option<FilesystemSuperblockCheckpoint>,
     phase: PendingMutationPhase,
 }
@@ -175,6 +178,7 @@ struct PendingWrite {
     completed: usize,
     append: bool,
     chunk_bytes: usize,
+    inode: u64,
 }
 
 struct PendingOpen {
@@ -1121,6 +1125,7 @@ fn commit_staged_mutation(
             return Err(Status::Invalid);
         }
     };
+    let target_inode = mutation_target_inode(mounted, &path);
     let checkpointed_superblock = match mounted
         .stage
         .staged_images()
@@ -1149,10 +1154,39 @@ fn commit_staged_mutation(
         source,
         offset,
         written,
+        target_inode,
         checkpointed_superblock,
         phase: PendingMutationPhase::Commit(prepared),
     });
     resume_pending_mutation_inner(mounted)
+}
+
+/// Recover the stable inode identity for a retained plan without introducing
+/// a second ownership table. Inode-key requests already carry their identity;
+/// ordinary file and inode-metadata paths can still be resolved through the
+/// staged view because the inode remains present for those operations. A
+/// namespace pair intentionally returns `None`: its parent-directory change is
+/// a volume operation and must be retried by the matching namespace request or
+/// by volume sync, never by an arbitrary file handle.
+fn mutation_target_inode(mounted: &Mounted, path: &[u8]) -> Option<u64> {
+    if path.first() == Some(&0) && path.len() == 1 + core::mem::size_of::<u64>() {
+        return path
+            .get(1..)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u64::from_le_bytes);
+    }
+    if let Some(reclaim) = mounted.pending_reclaim.as_ref() {
+        if reclaim.path == path {
+            return Some(reclaim.inode);
+        }
+    }
+    let path = Path::try_from(path).ok()?;
+    mounted
+        .filesystem()
+        .ok()?
+        .path_to_inode(path, FollowSymlinks::All)
+        .ok()
+        .map(|inode| u64::from(inode.index.get()))
 }
 
 /// Execute a bounded write request as checkpointed journal transactions.
@@ -1213,6 +1247,7 @@ fn write_target(mounted: &mut Mounted, absolute: Vec<u8>, offset: u64, source: &
             return Err(Status::Invalid);
         }
         let file = open_io_target(mounted.readable_filesystem()?, &absolute)?;
+        let inode = file.inode_number();
         if file.inode().flags().contains(InodeFlags::APPEND_ONLY) && !append {
             return Err(Status::ReadOnly);
         }
@@ -1221,7 +1256,7 @@ fn write_target(mounted: &mut Mounted, absolute: Vec<u8>, offset: u64, source: &
         copy.extend_from_slice(source);
         mounted.pending_write = Some(PendingWrite {
             path: absolute, source: copy, offset, completed: 0, append,
-            chunk_bytes: TRANSACTION_WRITE_BYTES,
+            chunk_bytes: TRANSACTION_WRITE_BYTES, inode,
         });
     }
     resume_write_request(mounted)
@@ -1283,6 +1318,46 @@ pub(crate) fn append_probe(
 
 pub(crate) fn append_inode(mounted: &mut Mounted, inode: u64, source: &[u8], maximum_size: u64) -> Result<(u64, usize), Status> {
     append_target(mounted, inode_key(inode)?, source, maximum_size)
+}
+
+/// Make one regular inode durable through the existing retained-plan executor.
+///
+/// Unlike volume sync, this function never clears the filesystem recovery
+/// marker or reclaims an unrelated orphan. It only resumes a pending request
+/// whose stable inode identity matches the caller. When there is no matching
+/// retained request, the checkpointed view has already crossed the durable
+/// boundary, so validation followed by success is an idempotent no-op.
+pub(crate) fn fsync_inode(mounted: &mut Mounted, inode: u64) -> Result<(), Status> {
+    let inode = inode_index(inode)?;
+    let number = u64::from(inode.get());
+
+    if let Some(reclaim) = mounted.pending_reclaim.as_ref() {
+        if reclaim.inode != number {
+            return Err(Status::Busy);
+        }
+        resume_reclaim_request(mounted)?;
+        return Ok(());
+    }
+    if let Some(pending) = mounted.pending_write.as_ref() {
+        if pending.inode != number {
+            return Err(Status::Busy);
+        }
+        let _ = resume_write_request(mounted)?;
+        return Ok(());
+    }
+    if let Some(pending) = mounted.pending_mutation.as_ref() {
+        if pending.target_inode != Some(number) {
+            return Err(Status::Busy);
+        }
+        let _ = resume_pending_mutation_inner(mounted)?;
+        return Ok(());
+    }
+
+    let target = allocated_inode(mounted.readable_filesystem()?, number)?;
+    if !target.file_type().is_regular_file() {
+        return Err(Status::Special);
+    }
+    Ok(())
 }
 
 fn append_target(mounted: &mut Mounted, key: Vec<u8>, source: &[u8], maximum_size: u64) -> Result<(u64, usize), Status> {

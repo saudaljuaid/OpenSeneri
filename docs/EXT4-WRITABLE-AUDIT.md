@@ -90,7 +90,7 @@ are test locations, not a claim that this audit head has passed them.
 | stat | Partial | size, identity, uid/gid/mode/links; no timestamps/xattrs/sparse map in public structure |
 | directory iteration | Partial | bounded ordinal rescan; quadratic; no stable mutation cookies or snapshot semantics |
 | sync | Implemented, bounded | finish retained plan and durably clean marker; clean view reload required |
-| fsync(file) | Refused through VFS | no per-file operation; volume sync is not a per-file contract |
+| fsync(file) | Implemented, bounded | inode-identity retry through the existing commit/checkpoint executor; unrelated retained work remains owned by its mutation or volume sync |
 | close | Partial | releases cookie only; a previously failed write is not implicitly completed |
 | clean unmount | Implemented, bounded | VFS references must be zero; pending plan and clean census checked; retries retained |
 | access / permissions | Partial | handle access bits enforced; mode preserved on create/stat; backend open does not authorize credentials against inode mode |

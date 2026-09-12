@@ -65,6 +65,16 @@ impl File {
         &self.inode
     }
 
+    /// Return the stable on-disk inode number represented by this file.
+    ///
+    /// The number is useful to an outer coordinator that owns the durability
+    /// policy. It deliberately exposes identity only; file contents and
+    /// mutation ownership remain in the coordinator and inode objects.
+    #[must_use]
+    pub fn inode_number(&self) -> u64 {
+        u64::from(self.inode.index.get())
+    }
+
     /// Mutable access to the internal [`Inode`] for this file. This allows for modifying metadata etc.
     /// Note that changes to the inode will not be persisted until [`Inode::write`] is called.
     pub fn inode_mut(&mut self) -> &mut Inode {

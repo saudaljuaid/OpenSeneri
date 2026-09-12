@@ -576,16 +576,20 @@ their owners until a mount retry or explicit unmount cleans them up. Host
 fault tests cover repeated DMA-release and lease-close failures; bare-metal
 teardown failure injection remains a separate required gate.
 
-SDK fsync now passes a native file handle through FILE_SYNC and VFS to the
-ext4 operation lease. The backend rechecks the handle after storage acquisition;
-a stale descriptor or mount generation cannot redirect sync to a later mount.
-Its current guarantee is mount-wide: drain retained work, checkpoint committed
-transactions with the coordinator's NVMe flush barriers, preserve live open
-orphans, and refresh shared EOFs before releasing the lease. Errors remain
-retryable and may follow durable writes; fsync does not undo earlier failures.
-The changed C tests pass for read-handle sync, storage refusal/retry, shared EOF,
-closure during acquisition, and stale mount rejection. Linux SDK verification
-and the complete durability/concurrency stage remain pending.
+SDK fsync passes a native file handle through FILE_SYNC and VFS to the ext4
+operation lease. The backend rechecks the handle after storage acquisition; a
+stale descriptor or mount generation cannot redirect sync to a later mount.
+Regular-file handles, including established read-only callers, identify one
+shared inode. The Rust coordinator resumes only a retained write, inode
+metadata, or inode-owned reclaim plan for that identity, then crosses the
+existing ordered-data, journal-payload, commit, checkpoint, journal-state and
+storage-flush boundaries. A clean inode is an idempotent no-op; unrelated
+retained work is left for its owner or volume sync. Same-inode handles refresh
+their cached EOF only after the durable plan succeeds. Errors remain retryable,
+do not advance the fsync completion count, and may follow a durable prefix
+without replaying the logical request. The focused host test covers each
+boundary, repeated calls, shared handles, read-only/directory/stale statuses,
+lease open/close refusal and size-refresh refusal.
 
 Close releases a descriptor and tries to reclaim unreferenced orphans. It is
 not a durability barrier: refused cleanup remains owned by the mount, with its

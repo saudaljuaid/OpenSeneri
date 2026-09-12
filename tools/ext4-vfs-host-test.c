@@ -432,6 +432,22 @@ int32_t phipia_ext4_sync(uintptr_t mounted, const uint64_t *open_inodes, size_t 
     return PHIPIA_EXT4_STATUS_OK;
 }
 
+int32_t phipia_ext4_fsync(uintptr_t mounted, uint64_t inode)
+{
+    ++file_sync_calls;
+    assert(mounted == 1U && inode == 42U);
+    assert(ext4_mounts[PHIPFS_VOLUME_DATA].session.writable);
+    if (sync_refusals != 0U) {
+        --sync_refusals;
+        return PHIPIA_EXT4_STATUS_IO;
+    }
+    if (pending) {
+        disk_size = pending_size;
+        pending = false;
+    }
+    return PHIPIA_EXT4_STATUS_OK;
+}
+
 int32_t phipia_ext4_lstat(uintptr_t mounted, const uint8_t *path,
     size_t path_bytes, struct phipia_ext4_metadata *metadata)
 {
@@ -859,6 +875,9 @@ int main(void)
         assert(handle_state(callback_handle, &state) == PHIPFS_STATUS_STALE_HANDLE);
     }
     assert(ext4_backend_directory_open(PHIPFS_VOLUME_DATA, "file", &callback_handle) == PHIPFS_STATUS_OK);
+    const unsigned sync_before_directory = file_sync_calls;
+    assert(ext4_backend_fsync(callback_handle) == PHIPFS_STATUS_IS_DIRECTORY);
+    assert(file_sync_calls == sync_before_directory && opens == closes);
     close_callback_kind = 5U;
     const unsigned snapshots_before_close = freed_snapshots;
     assert(ext4_backend_directory_read(callback_handle, &entry, &present) == PHIPFS_STATUS_OK);
@@ -920,13 +939,19 @@ int main(void)
     assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);
     assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ_WRITE, &second) == PHIPFS_STATUS_OK);
     assert(ext4_backend_seek(first, 3, PHIPFS_SEEK_START, &position) == PHIPFS_STATUS_OK);
+    const unsigned sync_before_read_only = file_sync_calls;
+    assert(ext4_backend_fsync(first) == PHIPFS_STATUS_OK);
+    assert(file_sync_calls == sync_before_read_only + 1U && opens == closes);
     pending = true;
     pending_size = 321U;
     sync_refusals = 1U;
-    assert(ext4_backend_fsync(first) == PHIPFS_STATUS_IO);
-    assert(pending && last_sync_open_count == 2U && opens == closes);
-    assert(ext4_backend_fsync(first) == PHIPFS_STATUS_OK);
-    assert(!pending && disk_size == 321U && last_sync_open_count == 2U && opens == closes);
+    const unsigned sync_before_retry = file_sync_calls;
+    assert(ext4_backend_fsync(second) == PHIPFS_STATUS_IO);
+    assert(file_sync_calls == sync_before_retry + 1U && pending && opens == closes);
+    assert(ext4_backend_fsync(second) == PHIPFS_STATUS_OK);
+    assert(file_sync_calls == sync_before_retry + 2U && !pending && disk_size == 321U && opens == closes);
+    assert(ext4_backend_fsync(second) == PHIPFS_STATUS_OK);
+    assert(file_sync_calls == sync_before_retry + 3U && !pending && disk_size == 321U && opens == closes);
     assert(handle_state(first, &state) == PHIPFS_STATUS_OK && state->size == 321U && state->offset == 3U);
     assert(handle_state(second, &state) == PHIPFS_STATUS_OK && state->size == 321U);
     inode_links = 0U; // An unlinked inode is still held by both descriptors.
@@ -953,11 +978,13 @@ int main(void)
     permanent_status = PHIPIA_EXT4_STATUS_OK;
     assert(ext4_backend_unlink_held_file(second, "file") == PHIPFS_STATUS_OK);
     assert(held_unlink_calls == 3U && opens == closes);
+    assert(ext4_backend_close(first) == PHIPFS_STATUS_OK);
     callback_handle = first;
     close_callback_kind = 3U;
     const unsigned sync_before_stale = file_sync_calls;
     assert(ext4_backend_fsync(first) == PHIPFS_STATUS_STALE_HANDLE);
-    assert(close_callback_kind == 0U && file_sync_calls == sync_before_stale && opens == closes);
+    assert(close_callback_kind == 3U && file_sync_calls == sync_before_stale && opens == closes);
+    close_callback_kind = 0U;
     assert(ext4_backend_close(second) == PHIPFS_STATUS_OK);
     assert(ext4_backend_fsync(second) == PHIPFS_STATUS_STALE_HANDLE);
     assert(ext4_backend_open(PHIPFS_VOLUME_DATA, "file", PHIPFS_ACCESS_READ, &first) == PHIPFS_STATUS_OK);

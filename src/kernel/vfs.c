@@ -1158,6 +1158,10 @@ enum phipfs_status phipfs_fsync(phipfs_handle handle)
     if (status != PHIPFS_STATUS_OK) return status;
     const struct vfs_open_file_state *state = &snapshot.file;
     const struct vfs_vnode_state *vnode = &snapshot.vnode;
+    /* A backend fsync receives the live handle cookie, not merely its volume.
+     * Ext4 uses that identity to retry one inode's retained plan while the
+     * fallback remains the legacy volume barrier for backends without a file
+     * operation. */
     status = state->backend->fsync != NULL ? state->backend->fsync(state->backend_handle) :
         phipfs_sync(vnode->volume);
     mount_release(vnode->volume);

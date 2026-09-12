@@ -236,6 +236,142 @@ fn fsck(path: &std::path::Path, suffix: &str) {
     assert!(result.status.success(), "e2fsck rejected {suffix}: {log}");
 }
 
+#[test]
+fn inode_fsync_clean_file_is_idempotent_and_does_not_start_a_transaction() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let metadata = ext4::stat(&mounted, b"system/README.TXT").unwrap();
+    assert_eq!(ext4::fsync_inode(&mut mounted, metadata.inode), Ok(()));
+    assert_eq!(ext4::fsync_inode(&mut mounted, metadata.inode), Ok(()));
+    assert!(DEVICE.with_borrow(|device| device.events.is_empty()),
+        "clean inode fsync must not allocate a journal transaction");
+}
+
+#[test]
+fn inode_fsync_retries_every_real_storage_prefix_without_replaying_the_write() {
+    let Some(path) = fixture() else { return };
+    let name = b"system/README.TXT";
+    let payload = b"inode fsync retry boundary";
+
+    let mut baseline = mount_fixture(&path);
+    let inode = ext4::stat(&baseline, name).unwrap().inode;
+    ext4::transaction_probe(&mut baseline, name, 4093, payload).unwrap();
+    let event_count = DEVICE.with_borrow(|device| device.events.len());
+    assert!(event_count > 8, "fixture transaction must cross journal boundaries");
+    drop(baseline);
+
+    for failure in 0..event_count {
+        let mut mounted = mount_fixture(&path);
+        let current_inode = ext4::stat(&mounted, name).unwrap().inode;
+        assert_eq!(current_inode, inode);
+        DEVICE.with_borrow_mut(|device| {
+            device.fail_event = Some(failure);
+        });
+        let result = ext4::transaction_probe(&mut mounted, name, 4093, payload);
+        assert_eq!(result, Err(Status::Io), "storage event {failure} must refuse");
+        let failed_events = DEVICE.with_borrow(|device| device.events.len());
+        DEVICE.with_borrow_mut(|device| {
+            device.fail_event = None;
+        });
+
+        assert_eq!(ext4::fsync_inode(&mut mounted, current_inode), Ok(()),
+            "fsync must resume storage event {failure}");
+        let retried_events = DEVICE.with_borrow(|device| device.events.len());
+        assert!(retried_events > failed_events,
+            "retry must execute the retained plan for event {failure}");
+        let mut output = vec![0; payload.len()];
+        assert_eq!(ext4::pread(&mounted, name, 4093, &mut output), Ok(payload.len()));
+        assert_eq!(output, payload);
+        let after_retry = retried_events;
+        assert_eq!(ext4::fsync_inode(&mut mounted, current_inode), Ok(()));
+        assert_eq!(DEVICE.with_borrow(|device| device.events.len()), after_retry,
+            "repeated fsync must not append another logical transaction");
+    }
+}
+
+#[test]
+fn inode_fsync_accepts_checkpointed_metadata_and_preserves_the_inode_identity() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let name = b"system/README.TXT";
+    let before = ext4::stat(&mounted, name).unwrap();
+    ext4::chmod(&mut mounted, name, before.mode ^ 1).unwrap();
+    let changed = ext4::stat(&mounted, name).unwrap();
+    assert_eq!(changed.inode, before.inode);
+    assert_eq!(ext4::fsync_inode(&mut mounted, before.inode), Ok(()));
+    let after = ext4::stat_inode(&mounted, before.inode).unwrap();
+    assert_eq!(after.inode, before.inode);
+    assert_eq!(after.mode, changed.mode);
+}
+
+#[test]
+fn inode_fsync_retries_partial_overwrite_and_append_without_replaying_data() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let name = b"system/fsync-data-path";
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    let inode = ext4::stat(&mounted, name).unwrap().inode;
+
+    let partial = b"partial boundary";
+    DEVICE.with_borrow_mut(|device| {
+        device.events.clear();
+        device.fail_event = Some(0);
+    });
+    assert_eq!(ext4::write_inode(&mut mounted, inode, 4093, partial), Err(Status::Io));
+    DEVICE.with_borrow_mut(|device| device.fail_event = None);
+    assert_eq!(ext4::fsync_inode(&mut mounted, inode), Ok(()));
+    let mut output = vec![0; partial.len()];
+    assert_eq!(ext4::pread_inode(&mounted, inode, 4093, &mut output), Ok(partial.len()));
+    assert_eq!(output, partial);
+    assert_eq!(ext4::stat_inode(&mounted, inode).unwrap().size, 4093 + partial.len() as u64);
+
+    let suffix = b" append";
+    DEVICE.with_borrow_mut(|device| {
+        device.events.clear();
+        device.fail_event = Some(0);
+    });
+    assert_eq!(ext4::append_inode(&mut mounted, inode, suffix, 64 * 1024), Err(Status::Io));
+    DEVICE.with_borrow_mut(|device| device.fail_event = None);
+    assert_eq!(ext4::fsync_inode(&mut mounted, inode), Ok(()));
+    let size = ext4::stat_inode(&mounted, inode).unwrap().size;
+    assert_eq!(size, 4093 + partial.len() as u64 + suffix.len() as u64);
+    let mut all = vec![0; size as usize - 4093];
+    assert_eq!(ext4::pread_inode(&mounted, inode, 4093, &mut all), Ok(all.len()));
+    assert_eq!(&all[..partial.len()], partial);
+    assert_eq!(&all[partial.len()..], suffix);
+    assert_eq!(ext4::fsync_inode(&mut mounted, inode), Ok(()));
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-fsync-data-path");
+}
+
+#[test]
+fn inode_fsync_does_not_claim_a_retained_plan_for_another_inode_or_directory() {
+    let Some(path) = fixture() else { return };
+    let mut mounted = mount_fixture(&path);
+    let name = b"system/fsync-identity";
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    let inode = ext4::stat(&mounted, name).unwrap().inode;
+    let other = ext4::stat(&mounted, b"system/README.TXT").unwrap().inode;
+    let directory = ext4::stat(&mounted, b"system").unwrap().inode;
+
+    DEVICE.with_borrow_mut(|device| {
+        device.events.clear();
+        device.fail_event = Some(0);
+    });
+    assert_eq!(ext4::transaction_probe(&mut mounted, name, 0, b"owned"), Err(Status::Io));
+    DEVICE.with_borrow_mut(|device| device.fail_event = None);
+    assert_eq!(ext4::fsync_inode(&mut mounted, other), Err(Status::Busy));
+    assert_eq!(ext4::fsync_inode(&mut mounted, directory), Err(Status::Busy));
+    assert_eq!(ext4::fsync_inode(&mut mounted, inode), Ok(()));
+    assert_eq!(ext4::fsync_inode(&mut mounted, directory), Err(Status::Special));
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-fsync-identity");
+}
+
 fn read_exact(mounted: &ext4::Mounted, path: &[u8], output: &mut [u8]) {
     let mut read = 0;
     while read < output.len() {
