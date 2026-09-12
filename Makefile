@@ -84,6 +84,23 @@ QEMU_ACCEL ?= tcg
 GRUB_MKRESCUE ?= grub-mkrescue
 GRUB_MODULE_DIR ?=
 GRUB_MKRESCUE_FLAGS := $(if $(GRUB_MODULE_DIR),-d $(GRUB_MODULE_DIR),)
+ifeq ($(OS),Windows_NT)
+# The bundled MinGW Python has no AF_UNIX socket family. Use separate loopback
+# HMP ports for the interactive QEMU scenarios on Windows.
+QEMU_LUA_MONITOR_SOCKET := tcp:127.0.0.1:46201
+QEMU_LUA_MONITOR_ARGUMENT := -monitor tcp:127.0.0.1:46201,server=on,wait=off
+QEMU_CANVAS_MONITOR_SOCKET := tcp:127.0.0.1:46202
+QEMU_CANVAS_MONITOR_ARGUMENT := -monitor tcp:127.0.0.1:46202,server=on,wait=off
+QEMU_SDL_MONITOR_SOCKET := tcp:127.0.0.1:46203
+QEMU_SDL_MONITOR_ARGUMENT := -monitor tcp:127.0.0.1:46203,server=on,wait=off
+else
+QEMU_LUA_MONITOR_SOCKET := $(TEST_BUILD_DIR)/native-lua/monitor.sock
+QEMU_LUA_MONITOR_ARGUMENT := -monitor unix:$(QEMU_LUA_MONITOR_SOCKET),server=on,wait=off
+QEMU_CANVAS_MONITOR_SOCKET := $(TEST_BUILD_DIR)/native-canvas/monitor.sock
+QEMU_CANVAS_MONITOR_ARGUMENT := -monitor unix:$(QEMU_CANVAS_MONITOR_SOCKET),server=on,wait=off
+QEMU_SDL_MONITOR_SOCKET := $(TEST_BUILD_DIR)/native-sdl/monitor.sock
+QEMU_SDL_MONITOR_ARGUMENT := -monitor unix:$(QEMU_SDL_MONITOR_SOCKET),server=on,wait=off
+endif
 # CI keeps the clean-build contract.  Local loops can skip the clean step after
 # one complete run, while independent host-test groups fan out by default.
 VERIFY_CLEAN ?= 1
@@ -2968,7 +2985,7 @@ qemu-test-%: $(TEST_BUILD_DIR)/%/phipia.iso
 				$(MAKE) '$(AUDIO_SYSTEM_IMAGE)' '$(AUDIO_DATA_IMAGE)' || exit 1; \
 				cp '$(AUDIO_DATA_IMAGE)' '$(TEST_BUILD_DIR)/$*/data.raw' || exit 1; \
 				audio_wav='$(abspath $(TEST_BUILD_DIR)/$*/native-audio.wav)'; rm -f "$$audio_wav"; audio_capture=false; \
-				if qemu-system-x86_64 -audiodev help 2>&1 | grep -Eq '(^|[[:space:]])wav([[:space:]]|$$)'; then \
+				if test '$(OS)' != Windows_NT && qemu-system-x86_64 -audiodev help 2>&1 | grep -Eq '(^|[[:space:]])wav([[:space:]]|$$)'; then \
 					audio_capture=true; \
 					audio_backend="-audiodev wav,id=wav0,path=$$audio_wav,out.frequency=48000,out.channels=2,out.format=s16"; \
 				else audio_backend='-audiodev none,id=wav0'; fi; \
@@ -2977,7 +2994,7 @@ qemu-test-%: $(TEST_BUILD_DIR)/%/phipia.iso
 				$(MAKE) '$(SDL_PROOF_SYSTEM_IMAGE)' '$(SDL_PROOF_DATA_IMAGE)' || exit 1; \
 				cp '$(SDL_PROOF_DATA_IMAGE)' '$(TEST_BUILD_DIR)/$*/data.raw' || exit 1; \
 				audio_wav='$(abspath $(TEST_BUILD_DIR)/$*/native-sdl.wav)'; rm -f "$$audio_wav"; audio_capture=false; \
-				if qemu-system-x86_64 -audiodev help 2>&1 | grep -Eq '(^|[[:space:]])wav([[:space:]]|$$)'; then \
+				if test '$(OS)' != Windows_NT && qemu-system-x86_64 -audiodev help 2>&1 | grep -Eq '(^|[[:space:]])wav([[:space:]]|$$)'; then \
 					audio_capture=true; \
 					audio_backend="-audiodev wav,id=wav0,path=$$audio_wav,out.frequency=48000,out.channels=2,out.format=s16"; \
 				else audio_backend='-audiodev none,id=wav0'; fi; \
@@ -3103,16 +3120,16 @@ qemu-test-%: $(TEST_BUILD_DIR)/%/phipia.iso
 	if test '$*' = fat32-persistence -o '$*' = native-sqlite; then reboot_control=''; fi; \
 	monitor_argument='-monitor none'; injector=''; injection_result=0; \
 	if test '$*' = native-lua; then \
-		monitor_socket='$(TEST_BUILD_DIR)/$*/monitor.sock'; \
+		monitor_socket='$(QEMU_LUA_MONITOR_SOCKET)'; \
 		rm -f "$$monitor_socket"; \
-		monitor_argument="-monitor unix:$$monitor_socket,server=on,wait=off"; \
+		monitor_argument='$(QEMU_LUA_MONITOR_ARGUMENT)'; \
 		$(PYTHON) tools/qemu-send-keys.py --monitor "$$monitor_socket" \
 			--serial "$$log" --marker 'PHIPIA LUA INPUT READY' \
 			--text phipia --enter --timeout 120 & injector=$$!; \
 	elif test '$*' = native-canvas; then \
-		monitor_socket='$(TEST_BUILD_DIR)/$*/monitor.sock'; \
+		monitor_socket='$(QEMU_CANVAS_MONITOR_SOCKET)'; \
 		rm -f "$$monitor_socket"; \
-		monitor_argument="-monitor unix:$$monitor_socket,server=on,wait=off"; \
+		monitor_argument='$(QEMU_CANVAS_MONITOR_ARGUMENT)'; \
 		$(PYTHON) tools/qemu-send-keys.py --monitor "$$monitor_socket" \
 			--serial "$$log" --marker 'PHIPIA CANVAS READY' \
 			--marker-count 2 --text k --hmp 'mouse_move 20 -20' \
@@ -3124,9 +3141,9 @@ qemu-test-%: $(TEST_BUILD_DIR)/%/phipia.iso
 			--ffmpeg '$(FFMPEG)' --timeout 150 \
 			& injector=$$!; \
 	elif test '$*' = native-sdl; then \
-		monitor_socket='$(TEST_BUILD_DIR)/$*/monitor.sock'; \
+		monitor_socket='$(QEMU_SDL_MONITOR_SOCKET)'; \
 		rm -f "$$monitor_socket"; \
-		monitor_argument="-monitor unix:$$monitor_socket,server=on,wait=off"; \
+		monitor_argument='$(QEMU_SDL_MONITOR_ARGUMENT)'; \
 		$(PYTHON) tools/qemu-send-keys.py --monitor "$$monitor_socket" \
 			--serial "$$log" --marker 'PHIPIA SDL READY run=1' \
 			--text s --hmp 'mouse_move -240 -30' \

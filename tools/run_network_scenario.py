@@ -21,6 +21,13 @@ NO_NIC = {
     "network-missing-linux-cat",
 }
 
+
+def qemu_exit_matches(actual: int, expected: int) -> bool:
+    """Account for the MSYS2 QEMU exit-code offset seen by Win32 callers."""
+    return actual == expected or (
+        sys.platform == "win32" and actual == expected + 256
+    )
+
 STORAGE = {
     "network-http-length",
     "network-http-chunked",
@@ -298,7 +305,8 @@ def run(args: argparse.Namespace) -> int:
     transcript = serial.read_text(encoding="utf-8", errors="replace")
     begin = transcript.count(f"ST BEGIN {args.scenario}\n")
     passed = transcript.count(f"ST PASS {args.scenario}\n")
-    healthy = (result == args.expected and begin == expected_begins and
+    healthy = (qemu_exit_matches(result, args.expected) and
+               begin == expected_begins and
                passed == 1 and "ST FAIL" not in transcript and
                "Phipia PANIC" not in transcript and
                "ST NETWORK production path bounded and recoverable" in transcript)

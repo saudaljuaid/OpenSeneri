@@ -1677,6 +1677,7 @@ enum phipfs_status ext4_backend_truncate_probe(enum phipfs_volume volume,
         return PHIPFS_STATUS_RANGE;
     }
     mount = &ext4_mounts[volume];
+    const uint64_t completion_before = mount->completion_count;
     status = begin_operation(mount, true);
     if (status != PHIPFS_STATUS_OK) {
         return status;
@@ -1696,6 +1697,11 @@ enum phipfs_status ext4_backend_truncate_probe(enum phipfs_volume volume,
         }
     }
     close_status = end_operation(mount, NULL);
+    if (status != PHIPFS_STATUS_OK && close_status == PHIPFS_STATUS_OK) {
+        /* A refused truncate is retryable mutation state, not a completed
+         * operation. Keep its completion marker stable across the retry. */
+        mount->completion_count = completion_before;
+    }
     return status != PHIPFS_STATUS_OK ? status : close_status;
 }
 
@@ -2319,12 +2325,17 @@ enum phipfs_status ext4_backend_ftruncate(phipfs_handle handle, uint64_t size)
     if ((state->access & PHIPFS_ACCESS_WRITE) == 0U) return PHIPFS_STATUS_ACCESS;
     if (size > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES) return PHIPFS_STATUS_RANGE;
     struct ext4_mount_state *mount = &ext4_mounts[state->volume];
+    const uint64_t completion_before = mount->completion_count;
     status = begin_operation(mount, true);
     if (status != PHIPFS_STATUS_OK) return status;
     status = leased_handle_state(handle, mount, &state);
     if (status == PHIPFS_STATUS_OK) status = map_status(phipia_ext4_truncate_inode(mount->rust_mount, state->inode, size));
     if (status == PHIPFS_STATUS_OK) update_open_sizes(state->volume, state->inode, size);
     enum phipfs_status close_status = end_operation(mount, NULL);
+    if (status != PHIPFS_STATUS_OK && close_status == PHIPFS_STATUS_OK) {
+        /* Preserve the retry identity of a failed inode truncate. */
+        mount->completion_count = completion_before;
+    }
     return status != PHIPFS_STATUS_OK ? status : close_status;
 }
 

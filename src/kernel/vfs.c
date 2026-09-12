@@ -994,6 +994,13 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
             if (status == PHIPFS_STATUS_NOT_FOUND) status = phipfs_create_mode(volume, path, mode);
             if (status != PHIPFS_STATUS_OK) goto failed;
         }
+        /* Legacy backends do not expose an inode-bound ftruncate callback.
+         * Truncate before opening so their path truncate does not reject the
+         * newly opened handle as busy. */
+        if ((flags & PHIPFS_OPEN_TRUNCATE) != 0U) {
+            status = backend->truncate(volume, canonical, 0U);
+            if (status != PHIPFS_STATUS_OK) goto failed;
+        }
         status = resolve_path(volume, path, canonical, &vnode_index);
         if (status != PHIPFS_STATUS_OK) goto failed;
         if (vnode_snapshot(vnode_index).stat.directory) {
@@ -1037,14 +1044,6 @@ enum phipfs_status phipfs_open_options(enum phipfs_volume volume, const char *pa
     vnode_metadata_release(restore_interrupts);
     vnode_unreserve(reserved_vnode);
     mount_release(volume);
-    if (backend->open_options == NULL && (flags & PHIPFS_OPEN_TRUNCATE) != 0U) {
-        status = phipfs_ftruncate(*handle, 0U);
-        if (status != PHIPFS_STATUS_OK) {
-            (void)phipfs_close(*handle);
-            *handle = 0U;
-            return status;
-        }
-    }
     return PHIPFS_STATUS_OK;
 failed:
     vnode_unreserve(reserved_vnode);

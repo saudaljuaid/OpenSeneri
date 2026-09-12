@@ -88,6 +88,26 @@ enum nvme_status nvme_volume_close(struct nvme_volume_session *session)
     return NVME_STATUS_OK;
 }
 
+int32_t phipia_ext4_free_bytes(uintptr_t mounted, uint64_t *bytes)
+{
+    assert(mounted == 1U && bytes != NULL);
+    assert(ext4_mounts[PHIPFS_VOLUME_DATA].operation_active);
+    *bytes = 32768U * 4096U;
+    return PHIPIA_EXT4_STATUS_OK;
+}
+
+void phipia_ext4_snapshot_free(uintptr_t snapshot)
+{
+    assert(snapshot == 0U);
+}
+
+int32_t phipia_ext4_sync(uintptr_t mounted, const uint64_t *open_inodes,
+    size_t open_count)
+{
+    assert(mounted == 1U && open_inodes != NULL && open_count <= EXT4_MAX_HANDLES);
+    return PHIPIA_EXT4_STATUS_OK;
+}
+
 int32_t phipia_ext4_transaction_probe(uintptr_t mounted, const uint8_t *path,
     size_t path_bytes, uint64_t offset, const uint8_t *source, size_t length,
     size_t *written)
