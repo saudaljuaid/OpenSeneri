@@ -1644,6 +1644,11 @@ enum phipfs_status ext4_backend_transaction_probe(enum phipfs_volume volume,
         written_bytes == NULL) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
+    if (offset > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES ||
+        (uint64_t)source_bytes > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES - offset) {
+        *written_bytes = 0U;
+        return PHIPFS_STATUS_RANGE;
+    }
     *written_bytes = 0U;
     mount = &ext4_mounts[volume];
     status = begin_operation(mount, true);
@@ -1667,6 +1672,9 @@ enum phipfs_status ext4_backend_truncate_probe(enum phipfs_volume volume,
 
     if (!valid_volume(volume) || length == 0U || length >= PHIPFS_MAX_PATH) {
         return PHIPFS_STATUS_INVALID_ARGUMENT;
+    }
+    if (size > PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES) {
+        return PHIPFS_STATUS_RANGE;
     }
     mount = &ext4_mounts[volume];
     status = begin_operation(mount, true);

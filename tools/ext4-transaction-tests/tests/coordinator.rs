@@ -5915,6 +5915,136 @@ fn split_write_retry_case(block_limit: usize) {
     fsck(&path, &format!("coordinator-split-write-budget-{block_limit}"));
 }
 
+fn retry_truncate_case(initial: &[u8], name: &[u8], size: u64,
+    expected_events: &[Event], expected_disk: &[u8]) {
+    for fail_at in 0..expected_events.len() {
+        let mut mounted = mount_bytes(initial.to_vec());
+        DEVICE.with_borrow_mut(|device| {
+            device.fail_event = Some(fail_at);
+            device.accept_failed_write = false;
+        });
+        assert_eq!(ext4::truncate_probe(&mut mounted, name, size), Err(Status::Io),
+            "truncate failure event {fail_at}");
+        DEVICE.with_borrow_mut(|device| {
+            assert_eq!(device.events, expected_events[..=fail_at],
+                "truncate event prefix {fail_at}");
+            device.events.clear();
+            device.fail_event = None;
+        });
+        assert_eq!(ext4::truncate_probe(&mut mounted, name, size), Ok(()),
+            "truncate retry event {fail_at}");
+        assert_eq!(ext4::stat(&mounted, name).unwrap().size, size);
+        ext4::sync(&mut mounted).unwrap();
+        DEVICE.with_borrow(|device| assert_eq!(device.bytes, expected_disk,
+            "truncate retry disk {fail_at}"));
+        ext4::unmount(&mounted).unwrap();
+    }
+}
+
+fn retry_write_case(initial: &[u8], name: &[u8], offset: u64, source: &[u8],
+    expected_events: &[Event], expected_disk: &[u8]) {
+    for fail_at in 0..expected_events.len() {
+        let mut mounted = mount_bytes(initial.to_vec());
+        DEVICE.with_borrow_mut(|device| {
+            device.fail_event = Some(fail_at);
+            device.accept_failed_write = false;
+        });
+        assert_eq!(ext4::transaction_probe(&mut mounted, name, offset, source), Err(Status::Io),
+            "write failure event {fail_at}");
+        DEVICE.with_borrow_mut(|device| {
+            assert_eq!(device.events, expected_events[..=fail_at],
+                "write event prefix {fail_at}");
+            device.events.clear();
+            device.fail_event = None;
+        });
+        assert_eq!(ext4::transaction_probe(&mut mounted, name, offset, source), Ok(source.len()),
+            "write retry event {fail_at}");
+        ext4::sync(&mut mounted).unwrap();
+        DEVICE.with_borrow(|device| assert_eq!(device.bytes, expected_disk,
+            "write retry disk {fail_at}"));
+        ext4::unmount(&mounted).unwrap();
+    }
+}
+
+#[test]
+fn bounded_sparse_growth_partial_write_and_truncate_retry_contract() {
+    let Some(path) = fixture() else { return };
+    let name = b"system/sparse-boundary";
+    let unrelated = b"system/sparse-unrelated";
+    let grown_size = 3 * 4096 + 37;
+    let write_offset = 4093;
+    let source = vec![0x7b; 4107];
+    let shrink_size = 4096 + 5;
+    let max_file = 64 * 1024 * 1024;
+
+    let mut mounted = mount_fixture(&path);
+    ext4::create_file_probe(&mut mounted, name, 0o600).unwrap();
+    ext4::create_file_probe(&mut mounted, unrelated, 0o600).unwrap();
+    ext4::transaction_probe(&mut mounted, unrelated, 0, b"unrelated").unwrap();
+    ext4::sync(&mut mounted).unwrap();
+    let initial = DEVICE.with_borrow(|device| device.bytes.clone());
+    drop(mounted);
+
+    let mut mounted = mount_bytes(initial.clone());
+    assert_eq!(ext4::truncate_probe(&mut mounted, name, grown_size as u64), Ok(()));
+    assert_eq!(ext4::stat(&mounted, name).unwrap().size, grown_size as u64);
+    let mut holes = vec![0xa5; grown_size];
+    read_exact(&mounted, name, &mut holes);
+    assert!(holes.iter().all(|byte| *byte == 0), "grown sparse range was not zero-filled");
+    ext4::sync(&mut mounted).unwrap();
+    let grown_disk = DEVICE.with_borrow(|device| device.bytes.clone());
+    let growth_events = DEVICE.with_borrow(|device| device.events.clone());
+    retry_truncate_case(&initial, name, grown_size as u64, &growth_events, &grown_disk);
+    drop(mounted);
+
+    let mut mounted = mount_bytes(grown_disk.clone());
+    assert_eq!(ext4::transaction_probe(&mut mounted, name, write_offset,
+        &source), Ok(source.len()));
+    let mut expected = vec![0; grown_size];
+    expected[write_offset as usize..write_offset as usize + source.len()]
+        .copy_from_slice(&source);
+    let mut actual = vec![0xa5; grown_size];
+    read_exact(&mounted, name, &mut actual);
+    assert_eq!(actual, expected, "unaligned sparse overwrite changed the wrong bytes");
+    ext4::sync(&mut mounted).unwrap();
+    let written_disk = DEVICE.with_borrow(|device| device.bytes.clone());
+    let write_events = DEVICE.with_borrow(|device| device.events.clone());
+    retry_write_case(&grown_disk, name, write_offset, &source, &write_events, &written_disk);
+    drop(mounted);
+
+    let mut mounted = mount_bytes(written_disk.clone());
+    assert_eq!(ext4::truncate_probe(&mut mounted, name, shrink_size as u64), Ok(()));
+    expected.truncate(shrink_size);
+    let mut actual = vec![0xa5; shrink_size];
+    read_exact(&mounted, name, &mut actual);
+    assert_eq!(actual, expected[..shrink_size], "partial-block shrink lost retained data");
+    ext4::sync(&mut mounted).unwrap();
+    let shrunk_disk = DEVICE.with_borrow(|device| device.bytes.clone());
+    let shrink_events = DEVICE.with_borrow(|device| device.events.clone());
+    retry_truncate_case(&written_disk, name, shrink_size as u64, &shrink_events, &shrunk_disk);
+
+    let before_bounds = DEVICE.with_borrow(|device| (device.bytes.clone(), device.events.clone()));
+    assert_eq!(ext4::truncate_probe(&mut mounted, name, max_file + 1), Err(Status::Range));
+    assert_eq!(ext4::transaction_probe(&mut mounted, name, (max_file - 1) as u64,
+        &[0x42, 0x43]), Err(Status::Range));
+    DEVICE.with_borrow(|device| {
+        assert_eq!(device.bytes, before_bounds.0, "bounded refusal changed the disk");
+        assert_eq!(device.events, before_bounds.1, "bounded refusal started I/O");
+    });
+
+    assert_eq!(ext4::truncate_probe(&mut mounted, name, grown_size as u64), Ok(()));
+    let mut regrown = vec![0xa5; grown_size];
+    read_exact(&mounted, name, &mut regrown);
+    assert_eq!(&regrown[..shrink_size], &expected[..shrink_size]);
+    assert!(regrown[shrink_size..].iter().all(|byte| *byte == 0));
+    let mut unrelated_bytes = [0xa5; 9];
+    read_exact(&mounted, unrelated, &mut unrelated_bytes);
+    assert_eq!(&unrelated_bytes, b"unrelated");
+    ext4::sync(&mut mounted).unwrap();
+    ext4::unmount(&mounted).unwrap();
+    fsck(&path, "coordinator-bounded-sparse-truncate");
+}
+
 #[test]
 fn minimum_write_capacity_refusal_rolls_back_all_allocations() {
     let Some(path) = fixture() else { return };

@@ -474,9 +474,10 @@ request and its checkpointed byte count across a storage refusal; the identical
 request or sync resumes only the unfinished chunk and remaining suffix. A
 precommit refusal such as ENOSPC after completed chunks returns their durable
 byte count as a short write. A power cut can preserve a prefix of a split write;
-this is not whole-request atomicity. The C mutation limit is now 64 MiB;
-Linux verification of that expanded VFS boundary is pending. Writable namespace methods use
-the same retained planner through the public VFS table.
+this is not whole-request atomicity. The C mutation limit is now 64 MiB; both
+direct C probes and the Rust coordinator reject an overflowing result before
+starting a lease or transaction. Writable namespace methods use the same
+retained planner through the public VFS table.
 A bounded `JournalMutationStage`
 now gives synchronous ext4plus mutations an immutable backing reader and a
 copy-on-write overlay: the first partial write reads a complete 4 KiB home
@@ -515,6 +516,15 @@ then truncates the committed extension, requires the freed data block in the
 JBD2 revoke record, returns the free-space counter to its original value, and
 requires a second clean `e2fsck` result. This is a
 host integration proof over the same operation executor used by VFS and QEMU.
+
+The focused `ext4-sparse-truncate-test` target adds the narrower contract matrix:
+hole-backed growth reads as zero, an unaligned overwrite can cross a sparse
+boundary, a partial-block shrink zeroes only its discarded tail, and a later
+extension recreates zero-filled space. It retries the exact retained operation
+after each storage event emitted by the real fixture, checks unrelated-file and
+shared-handle state, and rejects requests beyond the 64 MiB result bound without
+starting I/O. The Rust/e2fsck leg is conditional on the generated Linux fixture;
+no QEMU or whole-milestone completion is inferred from this target.
 
 The stage is retained for the full Rust mount lifetime and both unmount phases
 refuse pending images or revocations, so no unclassified upstream mutation can
@@ -624,8 +634,10 @@ and exact restored block/inode counters with read-only mount and fsck. Its
 reports distinguish this case from the existing sparse maximum check and record
 QEMU elapsed time including boot and guest verification; no power-cut guarantee
 is inferred from an uncut dense-file pass.
-The changed C boundary/ownership host test passes; the corresponding Linux
-64 MiB sparse growth, tail, remount and reclamation fixture is pending.
+The focused C boundary/ownership host test and the corresponding coordinator
+case are part of the scoped regression target. Linux fixture and e2fsck evidence
+is reported only when that target is run with its generated fixture; this does
+not certify the complete writable ext4plus milestone.
 
 Successful writes publish their cursor and shared EOF while still owning the
 volume lease. A later writer cannot be followed by an older EOF update from

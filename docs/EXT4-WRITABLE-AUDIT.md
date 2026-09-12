@@ -79,8 +79,8 @@ are test locations, not a claim that this audit head has passed them.
 | read / pread | Implemented, bounded | offset read, lazy extent validation; pread preserves cursor; no concurrent-read proof |
 | aligned / unaligned write, overwrite | Partial | one staged transaction; initialized touched blocks are ordered data; no large-request splitting |
 | append | Refused as an atomic operation | seek-to-end followed by write exists; access enum has only read/write/read-write |
-| sparse extension / hole read | Partial | real sparse-extension fixture exists; large/fragmented extent and zero-tail coverage incomplete |
-| truncate grow / shrink | Partial | one transaction; freed blocks revoked; large frees exceed bound; boundary/rollback matrix incomplete |
+| sparse extension / hole read | Partial | hole-backed growth and zero reads are covered by the focused coordinator case; unaligned boundary writes, exact retries, and the 64 MiB/256 KiB bounds are exercised when the Linux fixture is available; no broad fragmented-scale claim |
+| truncate grow / shrink | Partial | grow, partial-block shrink, re-extension, revoke/reclaim, retained retries, shared EOF, and bounded refusal are covered by the focused case; broader large-free and power-cut coverage remains outside this scope |
 | create | Implemented, bounded | empty regular file; mode limited to 0777, default 0644 |
 | mkdir / rmdir | Partial | dot/dotdot and counts handled; removal explicitly requires one-block empty directory |
 | hard link | Implemented, bounded | regular-file path; same inode identity; bounded u16 links and transaction size |
@@ -114,9 +114,12 @@ are test locations, not a claim that this audit head has passed them.
   touching at most 32 data blocks, with unaligned first/last blocks included.
   Metadata can still exhaust the remaining stage capacity on complex extent
   changes; adaptive chunk sizing is not yet implemented.
-- Public C write and truncate cap resulting files at **16 MiB**
-  (`PHIPFS_MAX_FILE_BYTES`). Reads/stat/seek use 64-bit values; those do not prove
-  writable 64-bit file scale. Rust and C request limits are 256 KiB.
+- Public C and Rust mutation paths cap resulting files at **64 MiB**
+  (`PHIPIA_EXT4_MAX_MUTABLE_FILE_BYTES` / the matching coordinator bound).
+  Direct probes reject an overflowing offset or truncate size before starting a
+  lease or transaction. Reads/stat/seek use 64-bit values; those do not prove
+  writable 64-bit file scale. Rust and C request limits are 256 KiB, with writes
+  split into bounded transactions of at most 32 data blocks each.
 - Ring: at most 8,192 slots, bounded physical journal map, one descriptor per
   transaction, checksum-v3/64-bit tags; JBD2 magic escaping refused. Sequence
   overflow refused rather than treated as an indefinitely wrapping counter.

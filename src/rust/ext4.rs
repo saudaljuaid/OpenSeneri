@@ -32,7 +32,8 @@ const MAX_VALIDATED_ENTRIES: usize = 8_192;
 const MAX_PENDING_DIRECTORIES: usize = 512;
 const MAX_PROBE_WRITE_BYTES: usize = 64 * JOURNAL_BLOCK_BYTES;
 const TRANSACTION_WRITE_BYTES: usize = 32 * JOURNAL_BLOCK_BYTES;
-const MAX_SPLIT_ORPHAN_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_MUTABLE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SPLIT_ORPHAN_BYTES: u64 = MAX_MUTABLE_FILE_BYTES;
 
 /// A pointer-free identity copied from a validated ext4 superblock.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1237,7 +1238,10 @@ fn write_target(mounted: &mut Mounted, absolute: Vec<u8>, offset: u64, source: &
     if source.is_empty() || source.len() > MAX_PROBE_WRITE_BYTES {
         return Err(Status::Range);
     }
-    offset.checked_add(source.len() as u64).ok_or(Status::Range)?;
+    let end = offset.checked_add(source.len() as u64).ok_or(Status::Range)?;
+    if end > MAX_MUTABLE_FILE_BYTES {
+        return Err(Status::Range);
+    }
     if let Some(pending) = &mounted.pending_write {
         if pending.path != absolute || pending.source != source || pending.offset != offset || pending.append != append {
             return Err(Status::Invalid);
@@ -1529,6 +1533,9 @@ pub(crate) fn truncate_inode(mounted: &mut Mounted, inode: u64, size: u64) -> Re
 }
 
 fn truncate_target(mounted: &mut Mounted, absolute: Vec<u8>, size: u64) -> Result<(), Status> {
+    if size > MAX_MUTABLE_FILE_BYTES {
+        return Err(Status::Range);
+    }
     if let Some(pending) = &mounted.pending_reclaim {
         if pending.kind != PendingMutationKind::Truncate || pending.path != absolute
             || pending.argument != size { return Err(Status::Invalid); }

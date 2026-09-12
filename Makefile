@@ -429,7 +429,7 @@ DEPENDENCIES := $(C_OBJECTS:.o=.d) $(MONOCYPHER_OBJECTS:.o=.d) \
 # implicit and pattern rule search for a phony target, so declaring them phony
 # makes every scenario resolve to "nothing to be done" and pass without booting.
 # They never create a file of their own name, so they rerun regardless.
-.PHONY: all audio-wav-tests capture-boot-video capture-phipia capture-phipia-proof capture-networking clean contract-counts contract-scenarios dynamic-elf-tests ext4-images ext4-tests ext4-fsync-test fat32-images force-package-trust hooks https-tests \
+.PHONY: all audio-wav-tests capture-boot-video capture-phipia capture-phipia-proof capture-networking clean contract-counts contract-scenarios dynamic-elf-tests ext4-images ext4-tests ext4-fsync-test ext4-sparse-truncate-test fat32-images force-package-trust hooks https-tests \
 	iso kernel lint native-apps native-audio-proof native-dynamic-proof native-https-proof native-phip-proof native-sdl-proof port-tests qemu-port-tests reproducible-sdk run \
 	package-control-tests package-fetch-tests package-manager-tests package-repository-tests package-service-tests package-state-tests package-transaction-tests package-trust-asset-tests package-trust-tests package-upload-tests qemu-test-ext4-powercuts screenshot-proof sdk sdk-once smoke tls-tests toolchain verify wall-clock-tests zlib-tests
 
@@ -1266,6 +1266,28 @@ $(BUILD_DIR)/ext4-fsync-host-test: tools/ext4-fsync-host-test.c \
 
 ext4-fsync-test: $(BUILD_DIR)/ext4-fsync-host-test
 	$(BUILD_DIR)/ext4-fsync-host-test
+
+$(BUILD_DIR)/ext4-sparse-truncate-host-test: tools/ext4-sparse-truncate-host-test.c \
+		src/kernel/ext4_fs.c include/phipia/ext4_fs.h include/phipia/nvme.h \
+		include/phipia/fat32_fs.h include/phipia/slot_claim.h include/phipia/cpu.h
+	mkdir -p $(dir $@)
+	$(CC) -std=c11 -O2 -flto -ffunction-sections -fdata-sections \
+		-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion -Iinclude \
+		tools/ext4-sparse-truncate-host-test.c -Wl,--gc-sections -o $@
+
+ext4-sparse-truncate-test: $(BUILD_DIR)/ext4-sparse-truncate-host-test tools/ext4_image.py tools/ext4_host_test.py
+	$(BUILD_DIR)/ext4-sparse-truncate-host-test
+	PHIPIA_EXT4_RUST_FIXTURE='$(CURDIR)/$(BUILD_DIR)/ext4-rust-fixture.img' \
+		$(PYTHON) -u tools/ext4_host_test.py
+	if test -f '$(BUILD_DIR)/ext4-rust-fixture.img'; then \
+		PHIPIA_EXT4_RUST_FIXTURE='$(CURDIR)/$(BUILD_DIR)/ext4-rust-fixture.img' $(CARGO_TEST_ENV) \
+		CARGO_TARGET_DIR='$(CURDIR)/$(BUILD_DIR)/ext4-transaction-target' \
+		$(CARGO) test --manifest-path tools/ext4-transaction-tests/Cargo.toml \
+		--locked --offline --test coordinator \
+		bounded_sparse_growth_partial_write_and_truncate_retry_contract -- --nocapture; \
+	else \
+		echo "coordinator fixture unavailable; focused Rust sparse/truncate test skipped"; \
+	fi
 
 $(BUILD_DIR)/ext4-handle-claims-host-test: tools/ext4-handle-claims-host-test.c \
 		src/kernel/ext4_fs.c include/phipia/ext4_fs.h include/phipia/fat32_fs.h
