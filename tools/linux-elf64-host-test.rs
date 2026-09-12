@@ -7,7 +7,7 @@
 #[path = "../src/rust/linux_elf64.rs"]
 mod linux_elf64;
 
-static BUSYBOX: &[u8] = include_bytes!(env!("SAPOTE_BUSYBOX_BINARY"));
+static BUSYBOX: &[u8] = include_bytes!(env!("PHIPIA_BUSYBOX_BINARY"));
 
 fn changed(offset: usize, value: u8, expected: linux_elf64::Status) {
     let mut image = BUSYBOX.to_vec();

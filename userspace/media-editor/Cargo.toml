@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-3.0-only
+[workspace]
+resolver = "3"
+exclude = [
+    "image",
+]
+members = [
+    "crates/media-editor-core",
+    "crates/media-editor-model",
+    "crates/media-editor-abi",
+    "crates/media-editor-media",
+    "crates/media-editor-audio",
+    "crates/media-editor-io",
+    "crates/media-editor-render",
+    "crates/media-editor-rt",
+    "crates/media-editor-app",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+repository = "https://github.com/saudaljuaid/Phipia"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
+codegen-units = 1
+overflow-checks = true
+debug = true
+
+[profile.dev]
+panic = "abort"
+overflow-checks = true

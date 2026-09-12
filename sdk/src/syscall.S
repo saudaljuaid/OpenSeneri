@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 .section .text, "ax", @progbits
-.macro SAPOTE_STUB name, count
+.macro PHIPIA_STUB name, count
 .global \name
 .type \name, @function
 \name:
@@ -27,11 +27,11 @@
     ret
 .size \name, . - \name
 .endm
-SAPOTE_STUB sapote_syscall0, 0
-SAPOTE_STUB sapote_syscall1, 1
-SAPOTE_STUB sapote_syscall2, 2
-SAPOTE_STUB sapote_syscall3, 3
-SAPOTE_STUB sapote_syscall4, 4
-SAPOTE_STUB sapote_syscall5, 5
-SAPOTE_STUB sapote_syscall6, 6
+PHIPIA_STUB phipia_syscall0, 0
+PHIPIA_STUB phipia_syscall1, 1
+PHIPIA_STUB phipia_syscall2, 2
+PHIPIA_STUB phipia_syscall3, 3
+PHIPIA_STUB phipia_syscall4, 4
+PHIPIA_STUB phipia_syscall5, 5
+PHIPIA_STUB phipia_syscall6, 6
 .section .note.GNU-stack, "", @progbits

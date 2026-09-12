@@ -2,14 +2,16 @@
 
 # Networking
 
-Sapote 2.2.0 has a bounded IPv4 networking foundation for one modern
+Phipia 2.2.0 has a bounded IPv4 networking foundation for one modern
 `virtio-net-pci` device under QEMU. Packets cross the normal PCI claim, mapped
 BAR, MSI-X, split virtqueue, DMA-ownership, protocol, syscall or Terminal, and
 FAT32/NVMe paths. The deterministic peer is a host-side Ethernet endpoint; it
 does not inject results into private kernel helpers.
 
-This is not an Internet-security claim. Sapote has no IPv6, TLS, firewall,
-routing, Wi-Fi, physical-NIC support, or browser.
+This is not an Internet-security claim. Phipia has no IPv6, general-purpose
+transport TLS, firewall, routing, Wi-Fi, physical-NIC support, or browser. A
+separate bounded TLS 1.2/HTTPS SDK profile is documented in `TLS.md` and
+`HTTPS.md`.
 
 ## Device contract
 
@@ -54,8 +56,8 @@ Stale handles cannot alias a later device generation.
 - TCP provides eight connections, 8,192 receive bytes and one 1,460-byte
   retransmission segment per connection, four retransmissions, checked sequence
   and acknowledgement state, active and passive open, FIN close, RST handling
-  in both directions, polling, cancellation, and owner/generation isolation. It
-  is deliberately not a full RFC-complete congestion-control implementation.
+  in both directions, polling, cancellation, and owner/generation isolation.
+  Congestion control is limited to this bounded profile.
 - HTTP/1.1 accepts `http://` URLs only. It bounds headers to 4,096 bytes and 32
   fields, supports `Content-Length`, chunked transfer, and four redirects, and
   rejects conflicting framing, malformed chunks/status/header lines, redirect
@@ -63,24 +65,23 @@ Stale handles cannot alias a later device generation.
 
 ## Passive open
 
-Until 2.2.0 Sapote could only be a TCP client. It can now also be the side that
+Until 2.2.0 Phipia could only be a TCP client. It can now also be the side that
 waits. A socket enters `LISTEN` on one port with a declared backlog of at most
 four; a SYN arriving for that port with no connection already matching its
 four-tuple produces a child connection in `SYN_RECEIVED`, drawn from the same
 eight-slot table an outbound connection is drawn from, and `network_tcp_accept`
 hands it over once the peer's acknowledgement completes the handshake.
 
-Three properties are worth stating plainly, because each of them is a bound
-rather than a promise:
+Three bounds define listener behavior:
 
-- **A listener costs nothing while nobody accepts.** A handshake completes on
+- **A listener costs nothing before acceptance.** A handshake completes on
   any pump -- the peer's acknowledgement is an inbound segment like any other --
   but *retransmission and reaping* of half-open children happen only inside
   `network_tcp_accept`. A peer that opens a connection and vanishes therefore
   leaves nothing durable behind, and a listener whose peer's hardware address is
-  unknown makes progress only while an accept is outstanding. That is
-  deliberate; there is no background timer wheel in this release.
-- **Closing a listener refuses its children.** A child nobody accepted belongs
+  unknown makes progress only while an accept is outstanding. Listener work is
+  driven by `network_tcp_accept` rather than a background timer.
+- **Closing a listener refuses its unaccepted children.** Such a child belongs
   to the listener, and closing the listener resets those peers and reclaims
   their slots. A child already accepted is an independent connection with its
   own handle and is left alone.
@@ -93,7 +94,7 @@ completed connection is waiting, and never as connected or writable.
 
 The `network-tcp-listen` scenario proves both halves. Its first peer is
 accepted, sends bytes, receives bytes, closes, and is closed. Its second peer is
-deliberately never accepted: the listener is polled until it reports the waiting
+left unaccepted: the listener is polled until it reports the waiting
 connection as acceptable, then closed, and the peer reports the reset it
 received back over UDP. Nothing is left allocated afterwards.
 
@@ -136,13 +137,13 @@ immutable system volume are QEMU-tested.
 
 ## Public kernel and syscall bounds
 
-`include/sapote/network.h` is native ABI version 1. It exposes explicit owners,
+`include/phipia/network.h` is native ABI version 1. It exposes explicit owners,
 generation-authenticated handles, deadlines, readiness and cancellation. The
 global bounds are eight UDP sockets, eight TCP connections, 32 timers, eight
 poll handles per call, four queued datagrams per UDP socket, and 512 bytes per
 datagram.
 
-`include/sapote/network_syscall.h` is an experimental Sapote-private ABI version
+`include/phipia/network_syscall.h` is an experimental Phipia-private ABI version
 1 for future native processes. At most four authenticated process contexts may
 exist. A request transfers at most 4,096 bytes, random requests at most 256
 bytes, and any deadline at most 30 seconds. Before the first copy, every page of
@@ -165,8 +166,8 @@ dhcp
 ip 10.0.2.15 255.255.255.0 10.0.2.2 10.0.2.3
 arp
 ping 10.0.2.2 1
-resolve sapote.test
-http http://sapote.test/welcome.txt NETCAP.TXT
+resolve phipia.test
+http http://phipia.test/welcome.txt NETCAP.TXT
 netstat
 ```
 
@@ -179,9 +180,10 @@ packets, and IPv4 checksum failures.
 `random.c` mixes RDSEED and RDRAND when available with calibrated timing and
 monotonic state. Boot explicitly records `strong`, `hardware`, or `degraded`.
 The API never claims cryptographic strength when only the degraded source is
-available. DHCP/DNS/TCP identifiers still avoid fixed constants, but HTTPS and
-other cryptographic protocols remain prohibited until the TLS prerequisites are
-met.
+available. DHCP/DNS/TCP identifiers still avoid fixed constants. The bounded
+TLS client instead uses the fail-closed `RANDOM_STRONG` call, which bypasses the
+non-cryptographic generator and samples repetition-checked RDSEED/RDRAND output
+directly. Other cryptographic protocols remain outside this networking profile.
 
 ## Deterministic evidence
 
@@ -191,7 +193,7 @@ silence/timeouts, NAK, NXDOMAIN, truncation, CNAME, bad checksum, ARP conflict,
 TCP reset/retransmission, HTTP chunking/redirect/truncation/malformed framing,
 redirect loops, and malformed floods. Two modes reverse the roles: the guest
 announces a port over UDP and the peer opens a TCP connection *to* it, either to
-a port Sapote is listening on or to one it deliberately is not. It writes
+a port Phipia is listening on or to one with no listener. It writes
 classic PCAP with deterministic packet timestamps.
 
 `tools/network_packet_audit.py` independently reconstructs the captured
@@ -213,5 +215,4 @@ TCG on the v2.1.0 development host, not general throughput claims:
 
 The 22-second evidence interaction completed DHCP, ping, DNS, HTTP streaming,
 FAT32 synchronization, screen updates, keyboard/pointer input, and `netstat`
-without packet drops. Larger-body and multi-connection performance remains
-future work.
+without packet drops.

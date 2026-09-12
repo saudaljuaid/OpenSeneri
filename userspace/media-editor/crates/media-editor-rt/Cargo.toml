@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-only
+[package]
+name = "media-editor-rt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Media Editor's freestanding runtime on Phipia: entry, heap, panic path."
+
+[dependencies]
+media-editor-abi = { path = "../media-editor-abi" }
+
+[lints.rust]
+warnings = "deny"
+missing_docs = "deny"

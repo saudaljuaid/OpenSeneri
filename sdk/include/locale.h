@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-#ifndef SAPOTE_LOCALE_H
-#define SAPOTE_LOCALE_H
+#ifndef PHIPIA_LOCALE_H
+#define PHIPIA_LOCALE_H
 
 #define LC_ALL 0
 #define LC_COLLATE 1

@@ -1,37 +1,24 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /*
- * Thirteen bounded drivers for thirteen real devices, and the matrix that
- * binds them.
- *
- * Each driver is written from its own vendor's specification and states, in
- * code, what that specification promises: which register carries the identity,
- * which bit starts a reset and clears itself when the reset finishes, which
- * field is a manufacturer number that can only have one value. A driver that
- * reads something the specification does not allow refuses the device rather
- * than reporting whatever it found.
- *
- * The shape is deliberately the same for all ten. Configuration-space drivers
- * read the enumerated function's registers through the same mechanism PCI
- * discovery used and write nothing at all. Memory drivers claim the function
- * through the typed substrate, map exactly one BAR uncached, do their bounded
- * work, unmap and release. None of them enables bus mastering, so none of them
- * can reach memory: without an IOMMU that is the difference between a driver
- * that cannot corrupt the kernel and one that is merely not expected to.
+ * Bounded PCI drivers and their match table. Configuration-only drivers are
+ * read-only. MMIO drivers claim a function, map one BAR uncached, perform a
+ * bounded operation, then unmap and release it. These drivers do not enable
+ * bus mastering.
  */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/clock.h>
-#include <sapote/cpu.h>
-#include <sapote/dma.h>
-#include <sapote/driver.h>
-#include <sapote/interrupt_vector.h>
-#include <sapote/memory.h>
-#include <sapote/msix.h>
-#include <sapote/paging.h>
-#include <sapote/pci.h>
-#include <sapote/pci_resource.h>
+#include <phipia/clock.h>
+#include <phipia/cpu.h>
+#include <phipia/dma.h>
+#include <phipia/driver.h>
+#include <phipia/interrupt_vector.h>
+#include <phipia/memory.h>
+#include <phipia/msix.h>
+#include <phipia/paging.h>
+#include <phipia/pci.h>
+#include <phipia/pci_resource.h>
 
 /* PCI Code and ID Assignment Specification 1.19 section 1. */
 #define DRIVER_CLASS_MASS_STORAGE UINT8_C(0x01)
@@ -957,7 +944,7 @@ static enum driver_status probe_bochs_display(
 }
 
 /*
- * Intel 82441FX, the host bridge of the machine Sapote is tested on. Its
+ * Intel 82441FX, the host bridge of the machine Phipia is tested on. Its
  * programmable attribute map is what decides whether the legacy BIOS regions
  * read from ROM or from DRAM, and that is the first thing a memory
  * initialisation driver has to know. Nothing here writes: changing the
@@ -1007,7 +994,7 @@ static enum driver_status probe_intel_82441fx(
 /*
  * Intel 82371SB PIIX3, the ISA bridge. Its four route-control registers say
  * which ISA interrupt each PCI interrupt pin lands on, or that the pin is not
- * routed at all. Sapote retired the 8259 pair and routes through the I/O APIC,
+ * routed at all. Phipia retired the 8259 pair and routes through the I/O APIC,
  * so this driver reports the legacy routing rather than using it - and reports
  * it without touching it, because a bridge that is decoding the machine's
  * legacy I/O is not somewhere to write experimentally.

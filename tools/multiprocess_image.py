@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Construct and independently verify Sapote's bounded multiprocess executable.
+"""Construct and independently verify Phipia's bounded multiprocess executable.
 
 This is the third independent record of the same 256 bytes. The kernel carries
 the whole file as a table in ``src/kernel/multiprocess.c``; the freestanding

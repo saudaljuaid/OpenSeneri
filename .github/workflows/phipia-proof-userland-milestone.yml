@@ -1,0 +1,218 @@
+name: Phipia userspace evidence
+
+on:
+    pull_request:
+        branches: [main]
+    push:
+        tags: [v1.0.0]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: phipia-proof-userland-milestone-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    bounded-evidence:
+        name: phipia-userspace-evidence
+        runs-on: ubuntu-24.04
+        timeout-minutes: 240
+        steps:
+            - name: Check out source
+              uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+              with:
+                  persist-credentials: false
+            - name: Install build, trace, capture, and emulation tools
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  sudo sed -i '\|azure.archive.ubuntu.com|d' /etc/apt/apt-mirrors.txt
+                  sudo apt-get update
+                  sudo apt-get install --yes --no-install-recommends \
+                      binutils build-essential bzip2 clang curl ffmpeg file \
+                      grub-common grub-pc-bin lld make mtools qemu-system-x86 \
+                      qemu-user strace xorriso
+            - name: Install the Rust bare-metal target
+              run: rustup target add x86_64-unknown-none
+            - name: Verify source, parsers, kernel, and deterministic volume
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  make verify
+                  git diff --check
+                  test "$(sha256sum build/userspace/phipia-userland-no-cat-fat16.raw | awk '{print toupper($1)}')" = \
+                      F7DB823EE1CB7FF2A05E7020DB0F4502656B9950EFBBE79E23ED0EA755FC8478
+            - name: Rebuild and trace both measured profiles twice
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  rm -rf build/release-echo build/release-uname
+                  bash tools/build-busybox-proof.sh \
+                      build/release-echo/one build/release-echo/work-one
+                  bash tools/build-busybox-proof.sh \
+                      build/release-echo/two build/release-echo/work-two
+                  cmp build/release-echo/one/busybox \
+                      build/release-echo/two/busybox
+                  cmp build/release-echo/one/syscall-sequence.txt \
+                      build/release-echo/two/syscall-sequence.txt
+                  bash tools/build-busybox-uname-proof.sh \
+                      build/release-uname/one build/release-uname/work-one
+                  bash tools/build-busybox-uname-proof.sh \
+                      build/release-uname/two build/release-uname/work-two
+                  cmp build/release-uname/one/busybox \
+                      build/release-uname/two/busybox
+                  cmp build/release-uname/one/syscall-sequence.txt \
+                      build/release-uname/two/syscall-sequence.txt
+                  cmp build/release-echo/one/busybox \
+                      build/busybox-contract/busybox
+                  cmp build/release-uname/one/busybox \
+                      build/busybox-uname-contract/busybox
+            - name: Run every QEMU scenario
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  read -r expected_scenarios expected_assertions < <(
+                      make --no-print-directory -s contract-counts
+                  )
+                  scenario_count=$(
+                      make --no-print-directory -s contract-scenarios | wc -l
+                  )
+                  assertion_count=$(grep -c 'grep -F\|grep -E' Makefile)
+                  test "$scenario_count" -eq "$expected_scenarios"
+                  test "$assertion_count" -eq "$expected_assertions"
+                  make qemu-tests QEMU_ACCEL=tcg \
+                      | tee build/all-qemu-scenarios.txt
+                  test "$(grep -Ec '^QEMU scenario [a-z0-9-]+ passed$' \
+                      build/all-qemu-scenarios.txt)" -eq "$scenario_count"
+            - name: Capture authentic Phipia evidence
+              if: github.ref == 'refs/tags/v1.0.0'
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  make iso
+                  python3 tools/capture-phipia-proof.py \
+                      --iso build/phipia.iso \
+                      --userspace \
+                          build/userspace/phipia-userland-no-cat-fat16.raw \
+                      --interaction uname \
+                      --output build/release-captures
+                  python3 tools/compare-phipia-proof-screenshot.py \
+                      --mode terminal \
+                      assets/phipia-v2-phipia-proof-legacy-uname.png \
+                      build/release-captures/phipia-phipia-proof-terminal.png
+                  python3 tools/capture-boot-video.py \
+                      --iso build/phipia.iso \
+                      --userspace \
+                          build/userspace/phipia-userland-no-cat-fat16.raw \
+                      --ffmpeg ffmpeg \
+                      --interaction uname \
+                      --output build/phipia-phipia-proof-boot-20s.mp4
+                  ffprobe -v error -show_entries format=duration \
+                      -of default=noprint_wrappers=1:nokey=1 \
+                      build/phipia-phipia-proof-boot-20s.mp4 \
+                      | grep -Eq '^20(\.0+)?$'
+            - name: Assemble v1.0.0 release evidence
+              if: github.ref == 'refs/tags/v1.0.0'
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  release=evidence/Phipia-v1.0.0
+                  mkdir -p "$release"
+                  cp build/phipia.iso "$release/Phipia-v1.0.0.iso"
+                  cp build/phipia.elf "$release/phipia-v1.0.0.elf"
+                  cp build/userspace/phipia-userland-no-cat-fat16.raw \
+                      "$release/phipia-v1.0.0-userspace-fat16.raw"
+                  cp build/release-echo/one/busybox "$release/busybox-echo"
+                  cp build/release-uname/one/busybox "$release/busybox-uname"
+                  cp userspace/busybox/busybox.config \
+                      userspace/busybox/busybox-uname.config "$release/"
+                  cp userspace/busybox/BUSYBOX-LICENSE \
+                      userspace/busybox/MUSL-COPYRIGHT "$release/"
+                  cp userspace/busybox/source/busybox-1.38.0.tar.bz2 \
+                      userspace/busybox/source/musl-1.2.6.tar.gz "$release/"
+                  cp userspace/busybox/syscall-allowlist.txt \
+                      "$release/echo-syscall-contract.txt"
+                  cp build/release-echo/one/syscall-sequence.txt \
+                      "$release/echo-syscall-sequence.txt"
+                  cp userspace/busybox/uname-syscall-allowlist.txt \
+                      "$release/uname-syscall-allowlist.txt"
+                  cp build/release-uname/one/syscall-sequence.txt \
+                      "$release/uname-syscall-sequence.txt"
+                  cp build/release-echo/one/syscall-trace.txt \
+                      "$release/echo-host-syscall-trace.txt"
+                  cp build/release-uname/one/syscall-trace.txt \
+                      "$release/uname-host-syscall-trace.txt"
+                  cp build/release-echo/one/build-record.txt \
+                      "$release/echo-reproducible-build-record.txt"
+                  cp build/release-uname/one/build-record.txt \
+                      "$release/uname-reproducible-build-record.txt"
+                  cp tools/build-busybox-proof.sh \
+                      tools/build-busybox-uname-proof.sh \
+                      tools/check-exercised-instructions.py \
+                      tools/make-phipia-proof-userland.py "$release/"
+                  cp userspace/busybox/musl-vfprintf-scalar.h "$release/"
+                  cp build/tests/phipia-proof-userland/serial.log \
+                      "$release/stable-qemu-serial-transcript.log"
+                  cp build/tests/phipia-proof-userland-absent/serial.log \
+                      "$release/missing-volume-serial-transcript.log"
+                  cp build/all-qemu-scenarios.txt "$release/"
+                  cp build/release-captures/phipia-phipia-proof-terminal.png \
+                      "$release/phipia-proof-linux-uname.png"
+                  cp build/phipia-phipia-proof-boot-20s.mp4 \
+                      "$release/phipia-proof-boot-20s.mp4"
+                  {
+                      printf 'Phipia v1.0.0 bounded Phipia userspace volume\n'
+                      printf 'logical sectors / bytes: 4096 / 4096\n'
+                      printf 'FAT: LBA 1-2; root: LBA 3, 128 entries\n'
+                      printf 'BUSYBOX: clusters 2-10, 33584 bytes\n'
+                      printf 'UNAMEBOX: clusters 11-20, 38368 bytes\n'
+                      printf 'volume SHA-256: F7DB823EE1CB7FF2A05E7020DB0F4502656B9950EFBBE79E23ED0EA755FC8478\n'
+                  } >"$release/userspace-volume-layout.txt"
+                  {
+                      printf 'Positive: linux echo and linux uname each completed twice through Phipia.\n'
+                      printf 'Positive: CPL3, real SYSCALL, exact stdout, exit zero, and teardown were observed.\n'
+                      printf 'Negative: absent volume was refused and the later native echo remained usable.\n'
+                      printf 'Negative: missing profile, changed FAT16 metadata, payload digest, and ELF64 mutations were refused by host tests.\n'
+                      printf 'Negative: unexpected syscalls returned -ENOSYS and invalid pointers returned -EFAULT without partial output.\n'
+                      printf 'Negative: controlled lifecycle failures restored CR3, mappings, ownership, census, and active generation.\n'
+                  } >"$release/positive-negative-robustness-results.txt"
+                  read -r scenarios assertions < <(
+                      make --no-print-directory -s contract-counts
+                  )
+                  {
+                      printf 'Phipia v1.0.0 Phipia userspace verification\n'
+                      printf 'commit: %s\n' "$GITHUB_SHA"
+                      printf 'tree: %s\n' "$(git rev-parse 'HEAD^{tree}')"
+                      printf 'make verify: passed without warnings\n'
+                      printf 'QEMU scenarios: %s passed\n' "$scenarios"
+                      printf 'structural shell assertions: %s passed\n' "$assertions"
+                      printf 'BusyBox reproducibility: two clean builds per profile were byte-identical\n'
+                      printf 'instruction audits: kernel and exercised userspace paths contained no floating point, MMX, SSE, or AVX\n'
+                      printf 'Phipia: production shell dispatch ran echo and uname twice and restored the prompt\n'
+                      printf 'storage: deterministic read-only FAT16 over ordinary emulated NVMe\n'
+                      printf 'validation: CPU-owned bytes crossed Rust FAT16, SHA-256, and ELF64 boundaries before mapping\n'
+                      printf 'execution: fresh private CPL3 address spaces used the architectural x86_64 SYSCALL entry\n'
+                      printf 'teardown: every completed and refused launch released mappings, ownership, census, and generation\n'
+                      printf 'media: screenshot and 20-second video captured from this commit in QEMU\n'
+                      printf 'scope: bounded v1.0.0 profiles only; no POSIX, production, general Linux compatibility, or broad stable userspace ABI claim\n'
+                  } >"$release/verification-summary.txt"
+                  rm -f "$release/SHA256SUMS"
+                  manifest=$(mktemp "$RUNNER_TEMP/phipia-v1.0.0-sha256.XXXXXX")
+                  (
+                      cd "$release"
+                      find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+                          | sort -z | xargs -0 sha256sum >"$manifest"
+                  )
+                  mv "$manifest" "$release/SHA256SUMS"
+                  cat "$release/verification-summary.txt"
+                  cat "$release/SHA256SUMS"
+            - name: Upload v1.0.0 milestone evidence
+              if: github.ref == 'refs/tags/v1.0.0'
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: Phipia-v1.0.0-evidence-${{ github.sha }}
+                  path: evidence/Phipia-v1.0.0
+                  if-no-files-found: error
+                  retention-days: 30

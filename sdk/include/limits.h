@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-#ifndef SAPOTE_LIMITS_H
-#define SAPOTE_LIMITS_H
+#ifndef PHIPIA_LIMITS_H
+#define PHIPIA_LIMITS_H
 
 #define CHAR_BIT 8
 #define SCHAR_MIN (-128)

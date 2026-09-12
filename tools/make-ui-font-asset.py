@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pack Sapote's pre-rasterized, antialiased Inter UI atlas as SUF2.
+"""Pack Phipia's pre-rasterized, antialiased Inter UI atlas as SUF2.
 
 The committed atlas and metrics are the reproducible build inputs. Creating
 them from the pinned InterVariable.ttf is a developer-only step performed by

@@ -1,20 +1,20 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* One private static BusyBox process and its complete reverse-order teardown. */
 
-#include <sapote/linux_abi.h>
+#include <phipia/linux_abi.h>
 
-#include <sapote/console.h>
-#include <sapote/cpu.h>
-#include <sapote/dma.h>
-#include <sapote/filesystem.h>
-#include <sapote/fat32.h>
-#include <sapote/interrupt_vector.h>
-#include <sapote/linux_elf64.h>
-#include <sapote/linux_syscall.h>
-#include <sapote/memory.h>
-#include <sapote/msix.h>
-#include <sapote/paging.h>
-#include <sapote/pci_resource.h>
+#include <phipia/console.h>
+#include <phipia/cpu.h>
+#include <phipia/dma.h>
+#include <phipia/filesystem.h>
+#include <phipia/fat32.h>
+#include <phipia/interrupt_vector.h>
+#include <phipia/linux_elf64.h>
+#include <phipia/linux_syscall.h>
+#include <phipia/memory.h>
+#include <phipia/msix.h>
+#include <phipia/paging.h>
+#include <phipia/pci_resource.h>
 
 #define LINUX_ARGUMENT_BYTES 20U
 #define LINUX_INITIAL_STACK_WORDS 10U
@@ -214,7 +214,7 @@ static uint64_t next_generation = UINT64_C(1);
 static bool proof_active;
 static const uint8_t linux_argv_zero[] = "busybox";
 static const uint8_t linux_argv_one[] = "echo";
-static const uint8_t linux_argv_two[] = "SAPOTE";
+static const uint8_t linux_argv_two[] = "PHIPIA";
 
 static bool failure_in_range(
     enum linux_failure_point point,
@@ -326,7 +326,7 @@ static void report_control_failure(
     bool observed
 )
 {
-    console_write("Sapote: Linux ABI control failure ");
+    console_write("Phipia: Linux ABI control failure ");
     console_write(kind);
     console_write(" ordinal ");
     console_write_u64(ordinal);
@@ -740,7 +740,7 @@ static bool initial_stack_installed_valid(uint64_t vector_address)
     const uint8_t expected[LINUX_ARGUMENT_BYTES] = {
         'b', 'u', 's', 'y', 'b', 'o', 'x', 0,
         'e', 'c', 'h', 'o', 0,
-        'S', 'A', 'P', 'O', 'T', 'E', 0
+        'P', 'H', 'I', 'P', 'I', 'A', 0
     };
 
     if (!stack_read((uint8_t *)(void *)words, vector_address,
@@ -1099,7 +1099,7 @@ bool linux_abi_image_stack_foundation_self_test(size_t *completed_tests)
         return false;
     }
     *completed_tests = 0U;
-    if (sapote_linux_elf64_self_test() !=
+    if (phipia_linux_elf64_self_test() !=
             LINUX_ELF64_PARSER_ROBUSTNESS_CONTROLS ||
         (PAGING_LINUX_IMAGE_BASE & (PAGING_PAGE_SIZE - 1U)) != 0U ||
         (PAGING_LINUX_STACK_GUARD & (PAGING_PAGE_SIZE - 1U)) != 0U ||
@@ -1283,7 +1283,7 @@ static enum linux_abi_status linux_attempt(
         status = failure_status(failure_point);
         goto cleanup;
     }
-    if (sapote_linux_elf64_parse(runtime.elf_bytes,
+    if (phipia_linux_elf64_parse(runtime.elf_bytes,
             sizeof(runtime.elf_bytes), &runtime.image) !=
             LINUX_ELF64_STATUS_OK || !validated_placement(&runtime.image)) {
         status = LINUX_ABI_STATUS_ELF;

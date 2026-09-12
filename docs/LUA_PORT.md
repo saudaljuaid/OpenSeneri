@@ -3,7 +3,7 @@
 # Lua 5.4.7 port
 
 The port compiles the unmodified official Lua 5.4.7 source archive against the
-Sapote C SDK with `LUA_USE_C89` and without a jump table. It is packaged as
+Phipia C SDK with `LUA_USE_C89` and without a jump table. It is packaged as
 `LUA.APP`; there is no Lua-specific loader rule, digest profile, or kernel
 syscall.
 

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Process-local, typed, generation-protected native capability handles. */
 
-#include <sapote/native_handle.h>
+#include <phipia/native_handle.h>
 
 #define HANDLE_INDEX_MASK UINT64_C(0xFFFF)
 #define HANDLE_TYPE_SHIFT 16U
@@ -19,10 +19,11 @@ static void zero_bytes(void *pointer, size_t length)
 
 static bool valid_type(uint8_t type)
 {
-    return type >= SAPOTE_HANDLE_FILE && type <= SAPOTE_HANDLE_THREAD;
+    return type >= PHIPIA_HANDLE_FILE &&
+        type <= PHIPIA_HANDLE_PACKAGE_CONTROL;
 }
 
-static sapote_handle_t encode_handle(
+static phipia_handle_t encode_handle(
     size_t index,
     uint8_t type,
     uint32_t generation
@@ -34,7 +35,7 @@ static sapote_handle_t encode_handle(
 
 static enum native_handle_status decode_slot(
     struct native_handle_table *table,
-    sapote_handle_t handle,
+    phipia_handle_t handle,
     struct native_handle_slot **slot,
     size_t *slot_index
 )
@@ -49,7 +50,7 @@ static enum native_handle_status decode_slot(
     if (table == NULL || slot == NULL || slot_index == NULL) {
         return NATIVE_HANDLE_NULL_ARGUMENT;
     }
-    if (!table->initialized || handle == SAPOTE_HANDLE_INVALID ||
+    if (!table->initialized || handle == PHIPIA_HANDLE_INVALID ||
         encoded_index == 0U || encoded_index > table->limit ||
         reserved != 0U || generation == 0U || !valid_type(encoded_type)) {
         return NATIVE_HANDLE_STALE;
@@ -89,7 +90,7 @@ enum native_handle_status native_handle_install(
     struct native_handle_table *table,
     uint8_t type,
     const struct native_resource *resource,
-    sapote_handle_t *handle
+    phipia_handle_t *handle
 )
 {
     size_t slot_index = SIZE_MAX;
@@ -98,7 +99,7 @@ enum native_handle_status native_handle_install(
     if (table == NULL || resource == NULL || handle == NULL) {
         return NATIVE_HANDLE_NULL_ARGUMENT;
     }
-    *handle = SAPOTE_HANDLE_INVALID;
+    *handle = PHIPIA_HANDLE_INVALID;
     if (!table->initialized) {
         return NATIVE_HANDLE_BAD_LIMIT;
     }
@@ -132,7 +133,7 @@ enum native_handle_status native_handle_install(
 
 enum native_handle_status native_handle_resolve(
     struct native_handle_table *table,
-    sapote_handle_t handle,
+    phipia_handle_t handle,
     uint8_t expected_type,
     struct native_resource **resource
 )
@@ -168,8 +169,8 @@ enum native_handle_status native_handle_resolve(
 
 enum native_handle_status native_handle_duplicate(
     struct native_handle_table *table,
-    sapote_handle_t source,
-    sapote_handle_t *duplicate
+    phipia_handle_t source,
+    phipia_handle_t *duplicate
 )
 {
     struct native_handle_slot *source_slot;
@@ -181,7 +182,7 @@ enum native_handle_status native_handle_duplicate(
     if (duplicate == NULL) {
         return NATIVE_HANDLE_NULL_ARGUMENT;
     }
-    *duplicate = SAPOTE_HANDLE_INVALID;
+    *duplicate = PHIPIA_HANDLE_INVALID;
     status = decode_slot(table, source, &source_slot, &source_index);
     if (status != NATIVE_HANDLE_OK) {
         return status;
@@ -212,7 +213,7 @@ enum native_handle_status native_handle_duplicate(
 
 enum native_handle_status native_handle_close(
     struct native_handle_table *table,
-    sapote_handle_t handle,
+    phipia_handle_t handle,
     native_handle_close_fn close_resource,
     void *context
 )
@@ -267,7 +268,7 @@ enum native_handle_status native_handle_close_all(
     }
     for (size_t index = 0U; index < table->limit; ++index) {
         if (table->slots[index].active) {
-            const sapote_handle_t handle = encode_handle(index,
+            const phipia_handle_t handle = encode_handle(index,
                 table->slots[index].type, table->slots[index].generation);
 
             if (native_handle_close(table, handle, close_resource, context) !=
@@ -287,7 +288,7 @@ static bool test_close(
 {
     size_t *closed = context;
 
-    if (type != SAPOTE_HANDLE_FILE || resource == NULL || closed == NULL ||
+    if (type != PHIPIA_HANDLE_FILE || resource == NULL || closed == NULL ||
         resource->words[0] != UINT64_C(0x5341504F5445)) {
         return false;
     }
@@ -303,23 +304,28 @@ bool native_handle_self_test(size_t *completed_tests)
         { UINT64_C(0x5341504F5445), 0U, 0U, 0U }
     };
     struct native_resource *resolved;
-    sapote_handle_t first;
-    sapote_handle_t duplicate;
+    phipia_handle_t first;
+    phipia_handle_t duplicate;
     size_t closed = 0U;
 
     if (completed_tests == NULL) {
         return false;
     }
     *completed_tests = 0U;
+    if (!valid_type(PHIPIA_HANDLE_PACKAGE_CONTROL) ||
+        valid_type((uint8_t)(PHIPIA_HANDLE_PACKAGE_CONTROL + 1U))) {
+        return false;
+    }
+    ++*completed_tests;
     if (native_handle_table_initialize(&table, 2U) != NATIVE_HANDLE_OK ||
-        native_handle_install(&table, SAPOTE_HANDLE_FILE, &initial, &first) !=
+        native_handle_install(&table, PHIPIA_HANDLE_FILE, &initial, &first) !=
             NATIVE_HANDLE_OK ||
-        native_handle_resolve(&table, first, SAPOTE_HANDLE_FILE, &resolved) !=
+        native_handle_resolve(&table, first, PHIPIA_HANDLE_FILE, &resolved) !=
             NATIVE_HANDLE_OK || resolved->words[0] != initial.words[0]) {
         return false;
     }
     ++*completed_tests;
-    if (native_handle_resolve(&table, first, SAPOTE_HANDLE_TIMER, &resolved) !=
+    if (native_handle_resolve(&table, first, PHIPIA_HANDLE_TIMER, &resolved) !=
             NATIVE_HANDLE_WRONG_TYPE ||
         native_handle_duplicate(&table, first, &duplicate) !=
             NATIVE_HANDLE_OK || first == duplicate ||
@@ -329,7 +335,7 @@ bool native_handle_self_test(size_t *completed_tests)
     ++*completed_tests;
     if (native_handle_close(&table, first, test_close, &closed) !=
             NATIVE_HANDLE_OK || closed != 0U ||
-        native_handle_resolve(&table, first, SAPOTE_HANDLE_FILE, &resolved) !=
+        native_handle_resolve(&table, first, PHIPIA_HANDLE_FILE, &resolved) !=
             NATIVE_HANDLE_STALE ||
         native_handle_close(&table, first, test_close, &closed) !=
             NATIVE_HANDLE_STALE) {
@@ -339,7 +345,7 @@ bool native_handle_self_test(size_t *completed_tests)
     if (native_handle_close_all(&table, test_close, &closed) !=
             NATIVE_HANDLE_OK || closed != 1U || table.active_handles != 0U ||
         table.active_objects != 0U ||
-        native_handle_resolve(&table, duplicate, SAPOTE_HANDLE_FILE,
+        native_handle_resolve(&table, duplicate, PHIPIA_HANDLE_FILE,
             &resolved) != NATIVE_HANDLE_STALE) {
         return false;
     }

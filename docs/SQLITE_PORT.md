@@ -3,7 +3,7 @@
 # SQLite 3.46.0 port
 
 The official SQLite 3.46.0 amalgamation is compiled unchanged with
-`SQLITE_OS_OTHER=1` and the Sapote VFS in `ports/sqlite/sapote_vfs.c`.
+`SQLITE_OS_OTHER=1` and the Phipia VFS in `ports/sqlite/phipia_vfs.c`.
 Threading, loadable extensions, WAL, shared cache, UTF-16, and deprecated
 interfaces are disabled. The supported profile uses rollback journals and the
 single-process locking rules implemented by the VFS.

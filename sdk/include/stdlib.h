@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-#ifndef SAPOTE_STDLIB_H
-#define SAPOTE_STDLIB_H
+#ifndef PHIPIA_STDLIB_H
+#define PHIPIA_STDLIB_H
 
 #include <stddef.h>
 

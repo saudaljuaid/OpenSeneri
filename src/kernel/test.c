@@ -3,55 +3,64 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/acpi.h>
-#include <sapote/acpi_util.h>
-#include <sapote/abi/base.h>
-#include <sapote/apic.h>
-#include <sapote/apic_timer.h>
-#include <sapote/boot_ledger.h>
-#include <sapote/boot_plan.h>
-#include <sapote/clock.h>
-#include <sapote/console.h>
-#include <sapote/cpu.h>
-#include <sapote/device_substrate.h>
-#include <sapote/framebuffer.h>
-#include <sapote/filesystem.h>
-#include <sapote/fat32_fs.h>
-#include <sapote/font.h>
-#include <sapote/heap.h>
-#include <sapote/interrupts.h>
-#include <sapote/ioapic.h>
-#include <sapote/memory.h>
-#include <sapote/network.h>
-#include <sapote/native_process.h>
-#include <sapote/network_syscall.h>
-#include <sapote/audio.h>
-#include <sapote/nvidia.h>
-#include <sapote/driver.h>
-#include <sapote/multiprocess.h>
-#include <sapote/nvme.h>
-#include <sapote/paging.h>
-#include <sapote/pci.h>
-#include <sapote/pic.h>
-#include <sapote/pit.h>
-#include <sapote/pointer.h>
-#include <sapote/process.h>
-#include <sapote/keyboard.h>
-#include <sapote/linux_abi.h>
-#include <sapote/linux_cat.h>
-#include <sapote/linux_uname.h>
-#include <sapote/linux_userland.h>
-#include <sapote/screen.h>
-#include <sapote/shell.h>
-#include <sapote/pm_timer.h>
-#include <sapote/surface.h>
-#include <sapote/test.h>
-#include <sapote/thread.h>
-#include <sapote/timer.h>
-#include <sapote/tsc.h>
-#include <sapote/ui.h>
-#include <sapote/ui_font.h>
-#include <sapote/xhci.h>
+#include <phipia/acpi.h>
+#include <phipia/acpi_util.h>
+#include <phipia/abi/base.h>
+#include <phipia/apic.h>
+#include <phipia/apic_timer.h>
+#include <phipia/boot_ledger.h>
+#include <phipia/boot_plan.h>
+#include <phipia/clock.h>
+#include <phipia/console.h>
+#include <phipia/cpu.h>
+#include <phipia/device_substrate.h>
+#include <phipia/dma.h>
+#include <phipia/ext4_fs.h>
+#include <phipia/framebuffer.h>
+#include <phipia/filesystem.h>
+#include <phipia/fat32_fs.h>
+#include <phipia/font.h>
+#include <phipia/heap.h>
+#include <phipia/interrupts.h>
+#include <phipia/ioapic.h>
+#include <phipia/memory.h>
+#include <phipia/network.h>
+#include <phipia/native_process.h>
+#include <phipia/network_syscall.h>
+#include <phipia/audio.h>
+#include <phipia/nvidia.h>
+#include <phipia/driver.h>
+#include <phipia/multiprocess.h>
+#include <phipia/nvme.h>
+#include <phipia/paging.h>
+#include <phipia/package_service.h>
+#include <phipia/package_state.h>
+#include <phipia/pci.h>
+#include <phipia/pci_resource.h>
+#include <phipia/pic.h>
+#include <phipia/pit.h>
+#include <phipia/pointer.h>
+#include <phipia/process.h>
+#include <phipia/random.h>
+#include <phipia/keyboard.h>
+#include <phipia/linux_abi.h>
+#include <phipia/linux_cat.h>
+#include <phipia/linux_uname.h>
+#include <phipia/linux_userland.h>
+#include <phipia/screen.h>
+#include <phipia/shell.h>
+#include <phipia/pm_timer.h>
+#include <phipia/surface.h>
+#include <phipia/store.h>
+#include <phipia/taskbar.h>
+#include <phipia/test.h>
+#include <phipia/thread.h>
+#include <phipia/timer.h>
+#include <phipia/tsc.h>
+#include <phipia/ui.h>
+#include <phipia/ui_anim.h>
+#include <phipia/ui_font.h>
+#include <phipia/xhci.h>
 
 #define QEMU_EXIT_PORT UINT16_C(0x00F4)
 #define QEMU_FAILURE_VALUE UINT8_C(0x7F)
@@ -93,7 +102,7 @@
 
 _Static_assert(
     PAGING_TEST_HUGE_ADDRESS % PAGING_HUGE_PAGE_SIZE == 0U &&
-        PAGING_TEST_HUGE_ADDRESS < SAPOTE_EARLY_PHYSICAL_LIMIT,
+        PAGING_TEST_HUGE_ADDRESS < PHIPIA_EARLY_PHYSICAL_LIMIT,
     "the paging huge-leaf probe must stay aligned inside the identity map"
 );
 
@@ -136,6 +145,24 @@ static size_t literal_length(const char *text)
     }
 
     return length;
+}
+
+static bool package_text_equals(
+    const struct package_state_text *text,
+    const char *literal
+)
+{
+    size_t length = literal_length(literal);
+
+    if (text == NULL || text->bytes == NULL || text->length != length) {
+        return false;
+    }
+    for (size_t index = 0U; index < length; ++index) {
+        if (text->bytes[index] != (uint8_t)literal[index]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool token_equals(const char *token, size_t token_length, const char *literal)
@@ -307,8 +334,8 @@ static enum kernel_test_scenario scenario_from_value(
         return KERNEL_TEST_BOOT_LEDGER;
     }
 
-    if (token_equals(value, length, "redwood-proof")) {
-        return KERNEL_TEST_REDWOOD_PROOF;
+    if (token_equals(value, length, "phipia-proof")) {
+        return KERNEL_TEST_PHIPIA_PROOF;
     }
 
     if (token_equals(value, length, "device-substrate")) {
@@ -339,21 +366,21 @@ static enum kernel_test_scenario scenario_from_value(
         return KERNEL_TEST_LINUX_ABI_UNAME;
     }
 
-    if (token_equals(value, length, "redwood-proof-userland")) {
-        return KERNEL_TEST_REDWOOD_PROOF_USERLAND;
+    if (token_equals(value, length, "phipia-proof-userland")) {
+        return KERNEL_TEST_PHIPIA_PROOF_USERLAND;
     }
 
-    if (token_equals(value, length, "redwood-proof-userland-absent")) {
-        return KERNEL_TEST_REDWOOD_PROOF_USERLAND_ABSENT;
+    if (token_equals(value, length, "phipia-proof-userland-absent")) {
+        return KERNEL_TEST_PHIPIA_PROOF_USERLAND_ABSENT;
     }
 
-    if (token_equals(value, length, "redwood-proof-userland-interactive")) {
-        return KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE;
+    if (token_equals(value, length, "phipia-proof-userland-interactive")) {
+        return KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE;
     }
 
     if (token_equals(
-            value, length, "redwood-proof-userland-interactive-absent")) {
-        return KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE_ABSENT;
+            value, length, "phipia-proof-userland-interactive-absent")) {
+        return KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE_ABSENT;
     }
 
     if (token_equals(value, length, "fat32-system")) {
@@ -494,8 +521,8 @@ static enum kernel_test_scenario scenario_from_value(
     if (token_equals(value, length, "network-notes")) {
         return KERNEL_TEST_NETWORK_NOTES;
     }
-    if (token_equals(value, length, "network-studio")) {
-        return KERNEL_TEST_NETWORK_STUDIO;
+    if (token_equals(value, length, "network-media-editor")) {
+        return KERNEL_TEST_NETWORK_MEDIA_EDITOR;
     }
     if (token_equals(value, length, "network-persistence")) {
         return KERNEL_TEST_NETWORK_PERSISTENCE;
@@ -562,6 +589,24 @@ static enum kernel_test_scenario scenario_from_value(
     }
     if (token_equals(value, length, "native-relaunch")) {
         return KERNEL_TEST_NATIVE_RELAUNCH;
+    }
+    if (token_equals(value, length, "native-audio")) {
+        return KERNEL_TEST_NATIVE_AUDIO;
+    }
+    if (token_equals(value, length, "native-sdl")) {
+        return KERNEL_TEST_NATIVE_SDL;
+    }
+    if (token_equals(value, length, "native-dynamic")) {
+        return KERNEL_TEST_NATIVE_DYNAMIC;
+    }
+    if (token_equals(value, length, "native-https")) {
+        return KERNEL_TEST_NATIVE_HTTPS;
+    }
+    if (token_equals(value, length, "native-phip")) {
+        return KERNEL_TEST_NATIVE_PHIP;
+    }
+    if (token_equals(value, length, "ext4-recovery")) {
+        return KERNEL_TEST_EXT4_RECOVERY;
     }
 
     return KERNEL_TEST_INVALID;
@@ -641,7 +686,7 @@ static uint8_t scenario_exit_value(enum kernel_test_scenario scenario)
         return UINT8_C(0x2D);
     case KERNEL_TEST_BOOT_LEDGER:
         return UINT8_C(0x2E);
-    case KERNEL_TEST_REDWOOD_PROOF:
+    case KERNEL_TEST_PHIPIA_PROOF:
         return UINT8_C(0x2F);
     case KERNEL_TEST_DEVICE_SUBSTRATE:
         return UINT8_C(0x30);
@@ -657,13 +702,13 @@ static uint8_t scenario_exit_value(enum kernel_test_scenario scenario)
         return UINT8_C(0x36);
     case KERNEL_TEST_LINUX_ABI_UNAME:
         return UINT8_C(0x37);
-    case KERNEL_TEST_REDWOOD_PROOF_USERLAND:
+    case KERNEL_TEST_PHIPIA_PROOF_USERLAND:
         return UINT8_C(0x38);
-    case KERNEL_TEST_REDWOOD_PROOF_USERLAND_ABSENT:
+    case KERNEL_TEST_PHIPIA_PROOF_USERLAND_ABSENT:
         return UINT8_C(0x39);
-    case KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE:
+    case KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE:
         return UINT8_C(0x3A);
-    case KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE_ABSENT:
+    case KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE_ABSENT:
         return UINT8_C(0x3B);
     case KERNEL_TEST_FAT32_SYSTEM:
         return UINT8_C(0x3C);
@@ -726,7 +771,7 @@ static uint8_t scenario_exit_value(enum kernel_test_scenario scenario)
     case KERNEL_TEST_NETWORK_MISSING_LINUX_CAT: return UINT8_C(0x67);
     case KERNEL_TEST_NETWORK_FILES: return UINT8_C(0x68);
     case KERNEL_TEST_NETWORK_NOTES: return UINT8_C(0x69);
-    case KERNEL_TEST_NETWORK_STUDIO: return UINT8_C(0x6A);
+    case KERNEL_TEST_NETWORK_MEDIA_EDITOR: return UINT8_C(0x6A);
     case KERNEL_TEST_NETWORK_PERSISTENCE: return UINT8_C(0x6B);
     case KERNEL_TEST_NETWORK_SOCKET_ISOLATION: return UINT8_C(0x6C);
     case KERNEL_TEST_NETWORK_TCP_LISTEN: return UINT8_C(0x6D);
@@ -750,6 +795,12 @@ static uint8_t scenario_exit_value(enum kernel_test_scenario scenario)
     /* 0x7F is the invariant QEMU failure value. */
     case KERNEL_TEST_NATIVE_ABI_REFUSAL: return UINT8_C(0x80);
     case KERNEL_TEST_NATIVE_RELAUNCH: return UINT8_C(0x81);
+    case KERNEL_TEST_NATIVE_AUDIO: return UINT8_C(0x82);
+    case KERNEL_TEST_NATIVE_SDL: return UINT8_C(0x83);
+    case KERNEL_TEST_NATIVE_DYNAMIC: return UINT8_C(0x84);
+    case KERNEL_TEST_NATIVE_HTTPS: return UINT8_C(0x85);
+    case KERNEL_TEST_EXT4_RECOVERY: return UINT8_C(0x86);
+    case KERNEL_TEST_NATIVE_PHIP: return UINT8_C(0x87);
     default:
         return QEMU_FAILURE_VALUE;
     }
@@ -937,7 +988,7 @@ enum kernel_test_scenario kernel_test_select(
     const struct boot_information *context
 )
 {
-    static const char prefix[] = "sapote.test=";
+    static const char prefix[] = "phipia.test=";
     enum kernel_test_scenario selected = KERNEL_TEST_NONE;
     size_t offset = 0;
 
@@ -1182,7 +1233,7 @@ static void ioapic_level_scenario(void)
 
     /*
      * Read the entry off the hardware. An entry programmed edge triggered while
-     * Sapote's records called it level triggered would deliver every interrupt
+     * Phipia's records called it level triggered would deliver every interrupt
      * below and latch nothing, so this is the check that catches it.
      */
     if (ioapic_read_redirection(pit_active_vector(), &entry) !=
@@ -1706,14 +1757,8 @@ static void pm_timer_scenario(void)
 }
 
 /*
- * Retire the 8254 and prove the machine keeps its clocks.
- *
- * This is the mirror of the `retired` scenario, which proved the machine keeps
- * its timer after the 8259 pair is latched shut. Here the timer itself goes: the
- * PIT is proved working, retired, and then refuses every further mutation, and
- * both derived clocks are calibrated and cross-checked with it dead. Calibration
- * used to spin the PIT, so a retirement that broke that path would show up here
- * as a clock that will not calibrate at all rather than as one running slow.
+ * Retire the 8254, reject further PIT changes, then calibrate and cross-check
+ * both derived clocks without it.
  */
 static void pit_retired_scenario(void)
 {
@@ -2073,7 +2118,7 @@ static volatile uint8_t paging_scratch;
  * recorded in a table.
  *
  * `make verify` has always refused an RWX load segment, and until this
- * increment that assertion was the only thing standing behind Sapote's W^X
+ * increment that assertion was the only thing standing behind Phipia's W^X
  * claim - and it inspects the ELF file, not the machine the kernel runs on.
  * Everything below the rejections is the part a file check can never do: a
  * fresh frame is mapped writable, written, narrowed to read-only, and written
@@ -2138,23 +2183,23 @@ static void paging_scenario(const struct paging_device_windows *device_windows)
     }
 
     /* Every refusal, through the public interface, against the live tables. */
-    if (paging_map(PAGING_PROBE_ADDRESS + 1U, 0U, SAPOTE_PAGE_SIZE,
+    if (paging_map(PAGING_PROBE_ADDRESS + 1U, 0U, PHIPIA_PAGE_SIZE,
             PAGING_WRITE) != PAGING_STATUS_UNALIGNED_ADDRESS ||
         paging_map(PAGING_PROBE_ADDRESS, 0U, 0U, PAGING_WRITE) !=
             PAGING_STATUS_ZERO_LENGTH ||
-        paging_map(UINT64_C(0x0000800000000000), 0U, SAPOTE_PAGE_SIZE,
+        paging_map(UINT64_C(0x0000800000000000), 0U, PHIPIA_PAGE_SIZE,
             PAGING_WRITE) != PAGING_STATUS_NONCANONICAL_ADDRESS ||
-        paging_map(PAGING_PROBE_ADDRESS, 0U, SAPOTE_PAGE_SIZE,
+        paging_map(PAGING_PROBE_ADDRESS, 0U, PHIPIA_PAGE_SIZE,
             PAGING_WRITE | PAGING_EXECUTE) !=
             PAGING_STATUS_WRITABLE_AND_EXECUTABLE) {
         kernel_test_fail("a malformed mapping request was accepted");
     }
 
-    if (paging_map(text & ~(SAPOTE_PAGE_SIZE - 1U), 0U, SAPOTE_PAGE_SIZE,
+    if (paging_map(text & ~(PHIPIA_PAGE_SIZE - 1U), 0U, PHIPIA_PAGE_SIZE,
             PAGING_WRITE) != PAGING_STATUS_ALREADY_MAPPED ||
-        paging_unmap(PAGING_PROBE_ADDRESS, SAPOTE_PAGE_SIZE) !=
+        paging_unmap(PAGING_PROBE_ADDRESS, PHIPIA_PAGE_SIZE) !=
             PAGING_STATUS_NOT_MAPPED ||
-        paging_protect(PAGING_PROBE_ADDRESS, SAPOTE_PAGE_SIZE, PAGING_READ) !=
+        paging_protect(PAGING_PROBE_ADDRESS, PHIPIA_PAGE_SIZE, PAGING_READ) !=
             PAGING_STATUS_NOT_MAPPED) {
         kernel_test_fail("an impossible mapping change was accepted");
     }
@@ -2164,9 +2209,9 @@ static void paging_scenario(const struct paging_device_windows *device_windows)
      * so a 4 KiB change inside one is refused rather than silently applied to
      * the whole 2 MiB.
      */
-    if (paging_protect(PAGING_TEST_HUGE_ADDRESS, SAPOTE_PAGE_SIZE,
+    if (paging_protect(PAGING_TEST_HUGE_ADDRESS, PHIPIA_PAGE_SIZE,
             PAGING_READ) != PAGING_STATUS_HUGE_PAGE_PRESENT ||
-        paging_unmap(PAGING_TEST_HUGE_ADDRESS, SAPOTE_PAGE_SIZE) !=
+        paging_unmap(PAGING_TEST_HUGE_ADDRESS, PHIPIA_PAGE_SIZE) !=
             PAGING_STATUS_HUGE_PAGE_PRESENT) {
         kernel_test_fail("a 2 MiB mapping accepted a 4 KiB change");
     }
@@ -2180,9 +2225,9 @@ static void paging_scenario(const struct paging_device_windows *device_windows)
         kernel_test_fail("no frame was available for the probe page");
     }
 
-    if (paging_map(PAGING_PROBE_ADDRESS, frame, SAPOTE_PAGE_SIZE,
+    if (paging_map(PAGING_PROBE_ADDRESS, frame, PHIPIA_PAGE_SIZE,
             PAGING_WRITE) != PAGING_STATUS_OK ||
-        paging_map(PAGING_PROBE_ADDRESS, frame, SAPOTE_PAGE_SIZE,
+        paging_map(PAGING_PROBE_ADDRESS, frame, PHIPIA_PAGE_SIZE,
             PAGING_WRITE) != PAGING_STATUS_ALREADY_MAPPED) {
         kernel_test_fail("the probe page would not map exactly once");
     }
@@ -2201,7 +2246,7 @@ static void paging_scenario(const struct paging_device_windows *device_windows)
         kernel_test_fail("the probe page does not translate to its frame");
     }
 
-    if (paging_protect(PAGING_PROBE_ADDRESS, SAPOTE_PAGE_SIZE, PAGING_READ) !=
+    if (paging_protect(PAGING_PROBE_ADDRESS, PHIPIA_PAGE_SIZE, PAGING_READ) !=
         PAGING_STATUS_OK) {
         kernel_test_fail("the probe page would not narrow to read-only");
     }
@@ -2224,7 +2269,7 @@ static void paging_scenario(const struct paging_device_windows *device_windows)
      * kernel, so the check that matters is that the frame count is identical
      * after sixty-four cycles - and the paging state's own table count with it.
      */
-    if (paging_unmap(PAGING_PROBE_ADDRESS, SAPOTE_PAGE_SIZE) !=
+    if (paging_unmap(PAGING_PROBE_ADDRESS, PHIPIA_PAGE_SIZE) !=
         PAGING_STATUS_OK) {
         kernel_test_fail("the probe page would not unmap before the cycle");
     }
@@ -2236,9 +2281,9 @@ static void paging_scenario(const struct paging_device_windows *device_windows)
         uintptr_t cycle_frame;
 
         if (frame_allocate(&cycle_frame) != FRAME_STATUS_OK ||
-            paging_map(PAGING_PROBE_ADDRESS, cycle_frame, SAPOTE_PAGE_SIZE,
+            paging_map(PAGING_PROBE_ADDRESS, cycle_frame, PHIPIA_PAGE_SIZE,
                 PAGING_WRITE) != PAGING_STATUS_OK ||
-            paging_unmap(PAGING_PROBE_ADDRESS, SAPOTE_PAGE_SIZE) !=
+            paging_unmap(PAGING_PROBE_ADDRESS, PHIPIA_PAGE_SIZE) !=
                 PAGING_STATUS_OK ||
             frame_release(cycle_frame) != FRAME_STATUS_OK) {
             kernel_test_fail("a map and unmap cycle did not complete");
@@ -2259,9 +2304,9 @@ static void paging_scenario(const struct paging_device_windows *device_windows)
 
     /* Put the probe page back so the fault below has something to narrow. */
     if (frame_allocate(&frame) != FRAME_STATUS_OK ||
-        paging_map(PAGING_PROBE_ADDRESS, frame, SAPOTE_PAGE_SIZE,
+        paging_map(PAGING_PROBE_ADDRESS, frame, PHIPIA_PAGE_SIZE,
             PAGING_WRITE) != PAGING_STATUS_OK ||
-        paging_protect(PAGING_PROBE_ADDRESS, SAPOTE_PAGE_SIZE, PAGING_READ) !=
+        paging_protect(PAGING_PROBE_ADDRESS, PHIPIA_PAGE_SIZE, PAGING_READ) !=
             PAGING_STATUS_OK) {
         kernel_test_fail("the probe page would not come back read-only");
     }
@@ -2900,7 +2945,7 @@ static void pci_ecam_scenario(
     }
 
     /*
-     * A bus past what Sapote mapped is refused rather than folded back into the
+     * A bus past what Phipia mapped is refused rather than folded back into the
      * window, which is the failure that would read one bus as another.
      */
     address.segment = 0U;
@@ -3487,7 +3532,7 @@ static void shell_scenario(void)
     }
 
     after = shell_get_state();
-    console_write("Sapote: shell scenario ran ");
+    console_write("Phipia: shell scenario ran ");
     console_write_u64(after.commands);
     console_write(" commands and refused ");
     console_write_u64(after.unknown);
@@ -3648,7 +3693,7 @@ static void keyboard_scenario(void)
         kernel_test_fail("the keyboard lost events it never accounted for");
     }
 
-    console_write("Sapote: keyboard scenario queued ");
+    console_write("Phipia: keyboard scenario queued ");
     console_write_u64((uint64_t)after.queued);
     console_write(" and dropped ");
     console_write_u64(after.dropped - before.dropped);
@@ -3668,7 +3713,7 @@ static void screen_scenario(void)
         kernel_test_fail("the screen scenario has no console");
     }
 
-    if (sapote_font_geometry(&width, &height, &first, &count) !=
+    if (phipia_font_geometry(&width, &height, &first, &count) !=
         FONT_STATUS_OK) {
         kernel_test_fail("the font table would not describe itself");
     }
@@ -3765,7 +3810,7 @@ static void screen_scenario(void)
         }
     }
 
-    console_write("Sapote: screen scenario drew ");
+    console_write("Phipia: screen scenario drew ");
     console_write_u64((uint64_t)count);
     console_write(" glyphs and read every one back\n");
 }
@@ -4060,13 +4105,8 @@ static void write_combining_scenario(
 }
 
 /*
- * The address-space slot bound, proved directly rather than through the
- * scheduler. Sapote used to hold exactly one private hierarchy, so "another
- * one" was not a state the kernel could be in; this builds every slot at once,
- * checks that they are genuinely separate, that one more is refused, and that
- * a narrowing may only be undone while it is the newest - which is what stops
- * one process's teardown from freeing a page table another still has a leaf
- * in.
+ * Fill every address-space slot, verify isolation and overflow refusal, then
+ * check that narrowed aliases can only be released newest-first.
  */
 static void multiprocess_slots_scenario(void)
 {
@@ -4626,7 +4666,7 @@ void kernel_test_run(
     case KERNEL_TEST_BOOT_LEDGER:
         /* Deferred until kernel_main publishes the fully verified receipts. */
         return;
-    case KERNEL_TEST_REDWOOD_PROOF:
+    case KERNEL_TEST_PHIPIA_PROOF:
         /* Deferred until the ledger and UI are both installed and published. */
         return;
     case KERNEL_TEST_DEVICE_SUBSTRATE:
@@ -4650,10 +4690,10 @@ void kernel_test_run(
     case KERNEL_TEST_LINUX_ABI_UNAME:
         /* Deferred until the uname proof receipt is installed and published. */
         return;
-    case KERNEL_TEST_REDWOOD_PROOF_USERLAND:
-    case KERNEL_TEST_REDWOOD_PROOF_USERLAND_ABSENT:
-    case KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE:
-    case KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE_ABSENT:
+    case KERNEL_TEST_PHIPIA_PROOF_USERLAND:
+    case KERNEL_TEST_PHIPIA_PROOF_USERLAND_ABSENT:
+    case KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE:
+    case KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE_ABSENT:
     case KERNEL_TEST_FAT32_SYSTEM:
     case KERNEL_TEST_FAT32_DATA:
     case KERNEL_TEST_FAT32_NESTED:
@@ -4700,7 +4740,7 @@ void kernel_test_run(
     case KERNEL_TEST_NETWORK_MISSING_LINUX_CAT:
     case KERNEL_TEST_NETWORK_FILES:
     case KERNEL_TEST_NETWORK_NOTES:
-    case KERNEL_TEST_NETWORK_STUDIO:
+    case KERNEL_TEST_NETWORK_MEDIA_EDITOR:
     case KERNEL_TEST_NETWORK_PERSISTENCE:
     case KERNEL_TEST_NETWORK_SOCKET_ISOLATION:
     case KERNEL_TEST_NETWORK_TCP_LISTEN:
@@ -4722,7 +4762,13 @@ void kernel_test_run(
     case KERNEL_TEST_NATIVE_DIGEST_REFUSAL:
     case KERNEL_TEST_NATIVE_ABI_REFUSAL:
     case KERNEL_TEST_NATIVE_RELAUNCH:
-        /* Deferred until Sapote Redwood and the Boot Ledger are published. */
+    case KERNEL_TEST_NATIVE_AUDIO:
+    case KERNEL_TEST_NATIVE_SDL:
+    case KERNEL_TEST_NATIVE_DYNAMIC:
+    case KERNEL_TEST_NATIVE_HTTPS:
+    case KERNEL_TEST_NATIVE_PHIP:
+    case KERNEL_TEST_EXT4_RECOVERY:
+        /* Deferred until Phipia and the Boot Ledger are published. */
         return;
     case KERNEL_TEST_MULTIPROCESS_SLOTS:
         multiprocess_slots_scenario();
@@ -4732,7 +4778,7 @@ void kernel_test_run(
         interrupt_test_set_gate_present(14U, false);
         interrupt_trigger_page_fault();
     case KERNEL_TEST_INVALID:
-        kernel_test_fail("invalid or duplicate sapote.test argument");
+        kernel_test_fail("invalid or duplicate phipia.test argument");
     case KERNEL_TEST_NONE:
     default:
         kernel_test_fail("unreachable test scenario");
@@ -4748,12 +4794,351 @@ _Noreturn void kernel_test_complete_normal(void)
     kernel_test_pass();
 }
 
+_Noreturn void kernel_test_complete_ext4_recovery(void)
+{
+    static const uint8_t expected[] =
+        "Phipia deterministic ext4 fixture\n";
+    static const uint8_t transaction_byte = 'X';
+    const struct boot_ledger *ledger = boot_ledger_installed();
+    const struct boot_stage_receipt *nvme_proof;
+    const struct boot_stage_receipt *fat16_proof;
+    struct phipia_ext4_mount_diagnostic mount_diagnostic = {0};
+    struct phipia_ext4_recovery_report clean_remount = {0};
+    struct phipia_ext4_recovery_report recovery = {0};
+    const struct phipfs_drive_info drive = phipfs_drive(PHIPFS_VOLUME_SYSTEM);
+    struct phipfs_stat stat = {0};
+    phipfs_handle handle = 0U;
+    uint8_t bytes[sizeof(expected)] = {0};
+    uint8_t appended = 0U;
+    size_t read_bytes = 0U;
+    size_t written_bytes = 0U;
+    bool contents_match = true;
+    bool transaction_already_visible = false;
+    const bool power_cut = ext4_backend_test_power_cut_configured();
+    const uint64_t before = phipfs_completion_count(PHIPFS_VOLUME_SYSTEM);
+
+    if (active_scenario != KERNEL_TEST_EXT4_RECOVERY) {
+        kernel_test_fail("ext4 recovery completion used outside its scenario");
+    }
+    nvme_proof = boot_ledger_receipt_for(ledger,
+        BOOT_STAGE_NVME_READ_PROOF);
+    fat16_proof = boot_ledger_receipt_for(ledger,
+        BOOT_STAGE_FILESYSTEM_FILE_PROOF);
+    if (ledger == NULL || nvme_proof == NULL || fat16_proof == NULL ||
+        nvme_proof->result != BOOT_RECEIPT_SKIPPED ||
+        fat16_proof->result != BOOT_RECEIPT_SKIPPED ||
+        !boot_ledger_has_capability(ledger,
+            BOOT_CAPABILITY_NVME_FIXTURE_ABSENT) ||
+        !boot_ledger_has_capability(ledger,
+            BOOT_CAPABILITY_FILESYSTEM_FIXTURE_ABSENT) ||
+        boot_ledger_has_capability(ledger,
+            BOOT_CAPABILITY_NVME_READ_PROOF_COMPLETE) ||
+        boot_ledger_has_capability(ledger,
+            BOOT_CAPABILITY_FILESYSTEM_FILE_PROOF_COMPLETE)) {
+        kernel_test_fail("ext4 namespace proof skips are invalid");
+    }
+    if (!drive.present || !drive.mounted || drive.read_only || !drive.healthy) {
+        if (!ext4_backend_mount_diagnostic(PHIPFS_VOLUME_SYSTEM,
+                &mount_diagnostic)) {
+            kernel_test_fail("ext4 mount diagnostic is unavailable");
+        }
+        console_write("ST EXT4 RECOVERY mount status ");
+        console_write_u64((uint64_t)ext4_backend_last_mount_status(
+            PHIPFS_VOLUME_SYSTEM));
+        console_write(" begin ");
+        console_write_u64((uint64_t)mount_diagnostic.begin_status);
+        console_write(" rust ");
+        console_write_u64((uint64_t)(uint32_t)mount_diagnostic.rust_status);
+        console_write(" close ");
+        console_write_u64((uint64_t)mount_diagnostic.close_status);
+        console_write(" nvme ");
+        console_write_u64((uint64_t)(uint32_t)
+            mount_diagnostic.nvme_close_status);
+        console_write(" teardown ");
+        console_write_u64((uint64_t)(uint32_t)
+            mount_diagnostic.nvme_teardown_status);
+        console_write(" resources ");
+        console_write_u64((uint64_t)
+            mount_diagnostic.nvme_resource_mismatches);
+        console_putc('\n');
+        kernel_test_fail("ext4 recovered drive state is invalid");
+    }
+    if (drive.free_bytes == 0U || drive.free_bytes >= drive.total_bytes) {
+        kernel_test_fail("ext4 allocator capacity was not exported");
+    }
+    if (!ext4_backend_recovery_report(PHIPFS_VOLUME_SYSTEM, &recovery)) {
+        kernel_test_fail("ext4 recovery report is unavailable");
+    }
+    if (recovery.performed) {
+        if ((recovery.transactions == 0U &&
+                (recovery.replayed_blocks != 0U ||
+                 recovery.consumed_slots != 0U)) ||
+            (recovery.transactions != 0U &&
+                (recovery.transactions != 1U ||
+                 recovery.replayed_blocks == 0U ||
+                 recovery.consumed_slots != recovery.replayed_blocks + 2U))) {
+            kernel_test_fail("ext4 recovery report is inconsistent");
+        }
+    } else if (recovery.transactions != 0U || recovery.replayed_blocks != 0U ||
+        recovery.consumed_slots != 0U) {
+        kernel_test_fail("clean ext4 mount reported journal recovery");
+    }
+    if (phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "system/README.TXT", &stat) !=
+            PHIPFS_STATUS_OK || stat.directory || stat.read_only ||
+        (stat.size != sizeof(expected) - 1U && stat.size != UINT64_C(4097)) ||
+        phipfs_open(PHIPFS_VOLUME_SYSTEM, "system/README.TXT",
+            PHIPFS_ACCESS_READ, &handle) != PHIPFS_STATUS_OK ||
+        phipfs_pread(handle, bytes, sizeof(expected) - 1U, 0U, &read_bytes) !=
+            PHIPFS_STATUS_OK || read_bytes != sizeof(expected) - 1U) {
+        kernel_test_fail("ext4 recovered namespace could not be read");
+    }
+    transaction_already_visible = stat.size == UINT64_C(4097);
+    for (size_t index = 0U; index < read_bytes; ++index) {
+        if (bytes[index] != expected[index]) {
+            contents_match = false;
+        }
+    }
+    if (!contents_match ||
+        (transaction_already_visible &&
+            (phipfs_pread(handle, &appended, sizeof(appended), UINT64_C(4096),
+                &read_bytes) != PHIPFS_STATUS_OK || read_bytes != 1U ||
+             appended != transaction_byte)) ||
+        phipfs_close(handle) != PHIPFS_STATUS_OK ||
+        phipfs_close(handle) != PHIPFS_STATUS_STALE_HANDLE ||
+        phipfs_completion_count(PHIPFS_VOLUME_SYSTEM) <= before) {
+        kernel_test_fail("ext4 recovery read leaked or changed data");
+    }
+    if (phipfs_open(PHIPFS_VOLUME_SYSTEM, "system/README.TXT",
+            PHIPFS_ACCESS_WRITE, &handle) != PHIPFS_STATUS_OK ||
+        phipfs_pread(handle, &appended, sizeof(appended), 0U, &read_bytes) !=
+            PHIPFS_STATUS_ACCESS ||
+        phipfs_close(handle) != PHIPFS_STATUS_OK) {
+        kernel_test_fail("ext4 writable handle access enforcement failed");
+    }
+    if (phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK) {
+        kernel_test_fail("clean ext4 sync failed");
+    }
+    if (!power_cut && !transaction_already_visible) {
+        if (!ext4_backend_test_fail_storage_once(3U) ||
+            ext4_backend_transaction_probe(PHIPFS_VOLUME_SYSTEM,
+                "system/README.TXT", UINT64_C(4096), &transaction_byte,
+                sizeof(transaction_byte), &written_bytes) != PHIPFS_STATUS_IO ||
+            !ext4_backend_test_storage_failure_observed(
+                PHIPIA_EXT4_TEST_STORAGE_WRITE) ||
+            !ext4_backend_test_fail_storage_once(3U) ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_IO ||
+            !ext4_backend_test_storage_failure_observed(
+                PHIPIA_EXT4_TEST_STORAGE_FLUSH)) {
+            kernel_test_fail("ext4 pending allocation failure retry is invalid");
+        }
+    }
+    if (!transaction_already_visible &&
+        (ext4_backend_transaction_probe(PHIPFS_VOLUME_SYSTEM,
+            "system/README.TXT", UINT64_C(4096), &transaction_byte,
+            sizeof(transaction_byte), &written_bytes) != PHIPFS_STATUS_OK ||
+         written_bytes != sizeof(transaction_byte))) {
+        kernel_test_fail("ext4 private journal transaction probe failed");
+    }
+    if (!power_cut && !transaction_already_visible) {
+        if (!ext4_backend_test_fail_storage_once(1U) ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_IO ||
+            !ext4_backend_test_storage_failure_observed(
+                PHIPIA_EXT4_TEST_STORAGE_WRITE) ||
+            !ext4_backend_test_fail_storage_once(2U) ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_IO ||
+            !ext4_backend_test_storage_failure_observed(
+                PHIPIA_EXT4_TEST_STORAGE_FLUSH)) {
+            kernel_test_fail("ext4 sync retry is invalid");
+        }
+    }
+    if (phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+        phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "system/README.TXT", &stat) !=
+            PHIPFS_STATUS_OK || stat.size != UINT64_C(4097) ||
+        phipfs_open(PHIPFS_VOLUME_SYSTEM, "system/README.TXT",
+            PHIPFS_ACCESS_READ, &handle) != PHIPFS_STATUS_OK ||
+        phipfs_pread(handle, &appended, sizeof(appended), UINT64_C(4096),
+            &read_bytes) != PHIPFS_STATUS_OK || read_bytes != 1U ||
+        appended != transaction_byte ||
+        phipfs_close(handle) != PHIPFS_STATUS_OK) {
+        kernel_test_fail("ext4 private journal transaction probe failed");
+    }
+    if (!power_cut && !transaction_already_visible) {
+        if (phipfs_truncate(PHIPFS_VOLUME_SYSTEM,
+                "system/README.TXT", sizeof(expected) - 1U) !=
+                PHIPFS_STATUS_OK ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "system/README.TXT", &stat) !=
+                PHIPFS_STATUS_OK || stat.size != sizeof(expected) - 1U ||
+            phipfs_open(PHIPFS_VOLUME_SYSTEM, "system/README.TXT",
+                PHIPFS_ACCESS_READ, &handle) != PHIPFS_STATUS_OK ||
+            phipfs_pread(handle, &appended, sizeof(appended), UINT64_C(4096),
+                &read_bytes) != PHIPFS_STATUS_OK || read_bytes != 0U ||
+            phipfs_close(handle) != PHIPFS_STATUS_OK) {
+            kernel_test_fail("ext4 private truncate revocation probe failed");
+        }
+        written_bytes = 0U;
+        if (phipfs_open(PHIPFS_VOLUME_SYSTEM, "system/README.TXT",
+                PHIPFS_ACCESS_WRITE, &handle) != PHIPFS_STATUS_OK ||
+            phipfs_seek(handle, INT64_C(4096), PHIPFS_SEEK_START, NULL) !=
+                PHIPFS_STATUS_INVALID_ARGUMENT ||
+            phipfs_seek(handle, INT64_C(4096), PHIPFS_SEEK_START,
+                &stat.size) != PHIPFS_STATUS_OK || stat.size != UINT64_C(4096) ||
+            phipfs_write(handle, &transaction_byte, sizeof(transaction_byte),
+                &written_bytes) != PHIPFS_STATUS_OK ||
+            written_bytes != sizeof(transaction_byte) ||
+            phipfs_close(handle) != PHIPFS_STATUS_OK ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "system/README.TXT", &stat) !=
+                PHIPFS_STATUS_OK || stat.size != UINT64_C(4097)) {
+            kernel_test_fail("ext4 post-truncate marker re-arm failed");
+        }
+        if (phipfs_create_mode(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.TMP", UINT16_C(0555)) !=
+                PHIPFS_STATUS_OK ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/JRNLPROBE.TMP",
+                &stat) != PHIPFS_STATUS_OK || stat.directory || stat.size != 0U ||
+            stat.read_only || (stat.mode & UINT16_C(0777)) != UINT16_C(0555) ||
+            phipfs_open(PHIPFS_VOLUME_SYSTEM, "data/user/JRNLPROBE.TMP",
+                PHIPFS_ACCESS_READ_WRITE, &handle) != PHIPFS_STATUS_OK ||
+            phipfs_write(handle, &transaction_byte, sizeof(transaction_byte),
+                &written_bytes) != PHIPFS_STATUS_OK || written_bytes != 1U ||
+            phipfs_seek(handle, 0, PHIPFS_SEEK_START, &stat.size) !=
+                PHIPFS_STATUS_OK || stat.size != 0U ||
+            phipfs_read(handle, &appended, sizeof(appended), &read_bytes) !=
+                PHIPFS_STATUS_OK || read_bytes != 1U ||
+            appended != transaction_byte ||
+            phipfs_unlink(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.TMP") != PHIPFS_STATUS_BUSY ||
+            phipfs_rename(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.TMP", "data/user/JRNLPROBE.BUSY") !=
+                    PHIPFS_STATUS_BUSY ||
+            phipfs_close(handle) != PHIPFS_STATUS_OK ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+            phipfs_link(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.TMP", "data/user/JRNLPROBE.LNK") !=
+                    PHIPFS_STATUS_OK ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+            phipfs_unlink(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.TMP") != PHIPFS_STATUS_OK ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/JRNLPROBE.TMP",
+                &stat) != PHIPFS_STATUS_NOT_FOUND ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/JRNLPROBE.LNK",
+                &stat) != PHIPFS_STATUS_OK || stat.directory || stat.size != 1U ||
+            phipfs_rename(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.LNK", "data/user/JRNLPROBE.REN") !=
+                    PHIPFS_STATUS_OK ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/JRNLPROBE.LNK",
+                &stat) != PHIPFS_STATUS_NOT_FOUND ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/JRNLPROBE.REN",
+                &stat) != PHIPFS_STATUS_OK || stat.directory || stat.size != 1U ||
+            phipfs_unlink(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.REN") != PHIPFS_STATUS_OK ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/JRNLPROBE.REN",
+                &stat) != PHIPFS_STATUS_NOT_FOUND ||
+            phipfs_mkdir(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.DIR") != PHIPFS_STATUS_OK ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/JRNLPROBE.DIR",
+                &stat) != PHIPFS_STATUS_OK || !stat.directory ||
+            phipfs_rename(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.DIR", "data/user/JRNLPROBE.RDR") !=
+                    PHIPFS_STATUS_OK ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/JRNLPROBE.DIR",
+                &stat) != PHIPFS_STATUS_NOT_FOUND ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/JRNLPROBE.RDR",
+                &stat) != PHIPFS_STATUS_OK || !stat.directory ||
+            phipfs_create(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.RDR/CHILD.TMP") != PHIPFS_STATUS_OK ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+            phipfs_rmdir(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.RDR") != PHIPFS_STATUS_NOT_EMPTY ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.RDR/CHILD.TMP", &stat) !=
+                    PHIPFS_STATUS_OK || stat.directory ||
+            phipfs_unlink(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.RDR/CHILD.TMP") != PHIPFS_STATUS_OK ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+            phipfs_rmdir(PHIPFS_VOLUME_SYSTEM,
+                "data/user/JRNLPROBE.RDR") != PHIPFS_STATUS_OK ||
+            phipfs_sync(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+            phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "data/user/JRNLPROBE.RDR",
+                &stat) != PHIPFS_STATUS_NOT_FOUND) {
+            kernel_test_fail("ext4 VFS namespace journal proof failed");
+        }
+    }
+    if (phipfs_unmount(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+        phipfs_drive(PHIPFS_VOLUME_SYSTEM).mounted ||
+        !nvme_filesystem_session_resources_released() ||
+        heap_verify() != HEAP_STATUS_OK) {
+        kernel_test_fail("ext4 recovered mount did not release cleanly");
+    }
+    const struct heap_state heap_before_remount = heap_get_state();
+    const struct frame_allocator_stats frames_before_remount =
+        frame_allocator_get_stats();
+    if (phipfs_mount(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+        !ext4_backend_recovery_report(PHIPFS_VOLUME_SYSTEM, &clean_remount) ||
+        clean_remount.performed || clean_remount.transactions != 0U ||
+        clean_remount.replayed_blocks != 0U ||
+        clean_remount.consumed_slots != 0U ||
+        phipfs_stat_path(PHIPFS_VOLUME_SYSTEM, "system/README.TXT", &stat) !=
+            PHIPFS_STATUS_OK || stat.directory ||
+        stat.size != UINT64_C(4097) ||
+        phipfs_open(PHIPFS_VOLUME_SYSTEM, "system/README.TXT",
+            PHIPFS_ACCESS_READ, &handle) != PHIPFS_STATUS_OK ||
+        phipfs_pread(handle, &appended, sizeof(appended), UINT64_C(4096),
+            &read_bytes) != PHIPFS_STATUS_OK || read_bytes != 1U ||
+        appended != transaction_byte || phipfs_close(handle) != PHIPFS_STATUS_OK ||
+        phipfs_unmount(PHIPFS_VOLUME_SYSTEM) != PHIPFS_STATUS_OK ||
+        phipfs_drive(PHIPFS_VOLUME_SYSTEM).mounted ||
+        !nvme_filesystem_session_resources_released() ||
+        heap_verify() != HEAP_STATUS_OK ||
+        paging_verify() != PAGING_STATUS_OK) {
+        kernel_test_fail("clean ext4 remount or release failed");
+    }
+    const struct heap_state heap_after_remount = heap_get_state();
+    const struct frame_allocator_stats frames_after_remount =
+        frame_allocator_get_stats();
+    if (heap_after_remount.base_address != heap_before_remount.base_address ||
+        heap_after_remount.size != heap_before_remount.size ||
+        heap_after_remount.committed_bytes !=
+            heap_before_remount.committed_bytes ||
+        heap_after_remount.allocated_bytes !=
+            heap_before_remount.allocated_bytes ||
+        heap_after_remount.block_count != heap_before_remount.block_count ||
+        heap_after_remount.live_allocations !=
+            heap_before_remount.live_allocations ||
+        heap_after_remount.mapped_pages != heap_before_remount.mapped_pages ||
+        heap_after_remount.active != heap_before_remount.active ||
+        frames_after_remount.addressable_frames !=
+            frames_before_remount.addressable_frames ||
+        frames_after_remount.allocatable_frames !=
+            frames_before_remount.allocatable_frames ||
+        frames_after_remount.free_frames != frames_before_remount.free_frames ||
+        frames_after_remount.allocated_frames !=
+            frames_before_remount.allocated_frames ||
+        frames_after_remount.reserved_frames !=
+            frames_before_remount.reserved_frames ||
+        frames_after_remount.highest_allocatable_address !=
+            frames_before_remount.highest_allocatable_address) {
+        kernel_test_fail("clean ext4 remount changed the resource census");
+    }
+    console_write("ST EXT4 RECOVERY marker cleared transaction committed ");
+    console_write("appended exact truncate revoke rearm create mode hardlink unlink journal clean ");
+    console_write("transactions 0 replay 0 slots 0 ");
+    console_write("VFS writable remount clean resources exact\n");
+    kernel_test_pass();
+}
+
 _Noreturn void kernel_test_complete_native(void)
 {
     static const uint8_t expected[] = "native ABI v1\n";
     struct native_process_result result = { 0 };
-    struct sapfs_stat output;
-    sapfs_handle file;
+    struct phipfs_stat output;
+    phipfs_handle file;
     uint8_t bytes[sizeof(expected) - 1U];
     size_t read_bytes = 0U;
     bool content_matches = true;
@@ -4764,7 +5149,7 @@ _Noreturn void kernel_test_complete_native(void)
     }
     launch_status = native_process_launch("NATIVET.MAN", &result);
     if (launch_status != NATIVE_PROCESS_OK) {
-        console_write("Sapote: native launch refusal: ");
+        console_write("Phipia: native launch refusal: ");
         console_write(native_process_status_string(launch_status));
         console_putc('\n');
         kernel_test_fail("native application admission failed");
@@ -4775,7 +5160,7 @@ _Noreturn void kernel_test_complete_native(void)
         result.context_transition_samples == 0U ||
         result.context_cycles_with_fpu < result.context_cycles_without_fpu ||
         !native_process_resources_released()) {
-        console_write("Sapote: native result exit ");
+        console_write("Phipia: native result exit ");
         if (result.exit_status < 0) {
             console_putc('-');
             console_write_u64((uint64_t)(-(int64_t)result.exit_status));
@@ -4799,7 +5184,7 @@ _Noreturn void kernel_test_complete_native(void)
         console_putc('\n');
         kernel_test_fail("native application did not exit with a clean census");
     }
-    console_write("SAPOTE PERF context-switch transitions=");
+    console_write("PHIPIA PERF context-switch transitions=");
     console_write_u64(result.context_transition_samples);
     console_write(" without_fpu_cycles=");
     console_write_u64(result.context_cycles_without_fpu /
@@ -4808,31 +5193,31 @@ _Noreturn void kernel_test_complete_native(void)
     console_write_u64(result.context_cycles_with_fpu /
         result.context_transition_samples);
     console_putc('\n');
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "NATIVET/FOUND.TXT", &output) !=
-            SAPFS_STATUS_OK || output.directory || output.size != sizeof(bytes) ||
-        sapfs_open(SAPFS_VOLUME_DATA, "NATIVET/FOUND.TXT", SAPFS_ACCESS_READ,
-            &file) != SAPFS_STATUS_OK ||
-        sapfs_read(file, bytes, sizeof(bytes), &read_bytes) != SAPFS_STATUS_OK ||
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "NATIVET/FOUND.TXT", &output) !=
+            PHIPFS_STATUS_OK || output.directory || output.size != sizeof(bytes) ||
+        phipfs_open(PHIPFS_VOLUME_DATA, "NATIVET/FOUND.TXT", PHIPFS_ACCESS_READ,
+            &file) != PHIPFS_STATUS_OK ||
+        phipfs_read(file, bytes, sizeof(bytes), &read_bytes) != PHIPFS_STATUS_OK ||
         read_bytes != sizeof(bytes)) {
         kernel_test_fail("native Ring 3 file result is missing");
     }
     for (size_t index = 0U; index < sizeof(bytes); ++index) {
         content_matches = content_matches && bytes[index] == expected[index];
     }
-    if (sapfs_close(file) != SAPFS_STATUS_OK || !content_matches) {
+    if (phipfs_close(file) != PHIPFS_STATUS_OK || !content_matches) {
         kernel_test_fail("native Ring 3 file result is wrong");
     }
-    console_write("Sapote: native general loader, SDK, TLS, threads and FPU passed\n");
+    console_write("Phipia: native general loader, SDK, TLS, threads and FPU passed\n");
     kernel_test_pass();
 }
 
 _Noreturn void kernel_test_complete_native_lua(void)
 {
     static const uint8_t expected[] =
-        "input=sapote\nsum=5050\nmath=ok\n";
+        "input=phipia\nsum=5050\nmath=ok\n";
     struct native_process_result result;
-    struct sapfs_stat output;
-    sapfs_handle file;
+    struct phipfs_stat output;
+    phipfs_handle file;
     uint8_t bytes[sizeof(expected) - 1U];
     size_t read_bytes = 0U;
     bool content_matches = true;
@@ -4846,22 +5231,22 @@ _Noreturn void kernel_test_complete_native_lua(void)
         !native_process_resources_released()) {
         kernel_test_fail("Lua did not exit with a clean resource census");
     }
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "LUA/RESULT.TXT", &output) !=
-            SAPFS_STATUS_OK || output.directory || output.size != sizeof(bytes) ||
-        sapfs_open(SAPFS_VOLUME_DATA, "LUA/RESULT.TXT", SAPFS_ACCESS_READ,
-            &file) != SAPFS_STATUS_OK ||
-        sapfs_read(file, bytes, sizeof(bytes), &read_bytes) != SAPFS_STATUS_OK ||
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "LUA/RESULT.TXT", &output) !=
+            PHIPFS_STATUS_OK || output.directory || output.size != sizeof(bytes) ||
+        phipfs_open(PHIPFS_VOLUME_DATA, "LUA/RESULT.TXT", PHIPFS_ACCESS_READ,
+            &file) != PHIPFS_STATUS_OK ||
+        phipfs_read(file, bytes, sizeof(bytes), &read_bytes) != PHIPFS_STATUS_OK ||
         read_bytes != sizeof(bytes)) {
         kernel_test_fail("Lua result file is missing");
     }
     for (size_t index = 0U; index < sizeof(bytes); ++index) {
         content_matches = content_matches && bytes[index] == expected[index];
     }
-    if (sapfs_close(file) != SAPFS_STATUS_OK || !content_matches ||
-        sapfs_sync(SAPFS_VOLUME_DATA) != SAPFS_STATUS_OK) {
+    if (phipfs_close(file) != PHIPFS_STATUS_OK || !content_matches ||
+        phipfs_sync(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK) {
         kernel_test_fail("Lua result file is wrong or could not be synchronized");
     }
-    console_write("Sapote: upstream Lua used stdin, Data, math and stdout\n");
+    console_write("Phipia: upstream Lua used stdin, Data, math and stdout\n");
     kernel_test_pass();
 }
 
@@ -4870,20 +5255,20 @@ _Noreturn void kernel_test_complete_native_sqlite(void)
     static const uint8_t expected[] =
         "rows=3\nsum=66\nintegrity=ok\n";
     struct native_process_result result;
-    struct sapfs_stat database;
-    struct sapfs_stat journal;
-    struct sapfs_stat output;
-    sapfs_handle file;
+    struct phipfs_stat database;
+    struct phipfs_stat journal;
+    struct phipfs_stat output;
+    phipfs_handle file;
     uint8_t bytes[sizeof(expected) - 1U];
     size_t read_bytes = 0U;
     bool content_matches = true;
-    const enum sapfs_status before = sapfs_stat_path(SAPFS_VOLUME_DATA,
+    const enum phipfs_status before = phipfs_stat_path(PHIPFS_VOLUME_DATA,
         "SQLITE/PORT.DB", &database);
 
     if (active_scenario != KERNEL_TEST_NATIVE_SQLITE) {
         kernel_test_fail("SQLite completion used outside its scenario");
     }
-    if (before != SAPFS_STATUS_OK && before != SAPFS_STATUS_NOT_FOUND) {
+    if (before != PHIPFS_STATUS_OK && before != PHIPFS_STATUS_NOT_FOUND) {
         kernel_test_fail("SQLite database census failed before launch");
     }
     if (native_process_launch("SQLITE.MAN", &result) != NATIVE_PROCESS_OK ||
@@ -4892,36 +5277,36 @@ _Noreturn void kernel_test_complete_native_sqlite(void)
         !native_process_resources_released()) {
         kernel_test_fail("SQLite did not exit with a clean resource census");
     }
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "SQLITE/PORT.JRN", &journal) !=
-            SAPFS_STATUS_NOT_FOUND) {
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "SQLITE/PORT.JRN", &journal) !=
+            PHIPFS_STATUS_NOT_FOUND) {
         kernel_test_fail("SQLite left a rollback journal after clean close");
     }
-    if (before == SAPFS_STATUS_NOT_FOUND) {
-        if (sapfs_stat_path(SAPFS_VOLUME_DATA, "SQLITE/PORT.DB", &database) !=
-                SAPFS_STATUS_OK || database.directory || database.size == 0U ||
-            sapfs_unmount(SAPFS_VOLUME_DATA) != SAPFS_STATUS_OK) {
+    if (before == PHIPFS_STATUS_NOT_FOUND) {
+        if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "SQLITE/PORT.DB", &database) !=
+                PHIPFS_STATUS_OK || database.directory || database.size == 0U ||
+            phipfs_unmount(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK) {
             kernel_test_fail("SQLite first phase did not synchronize its database");
         }
-        console_write("Sapote: upstream SQLite synchronized reboot phase\n");
+        console_write("Phipia: upstream SQLite synchronized reboot phase\n");
         cpu_out8(UINT16_C(0x0064), UINT8_C(0xFE));
         kernel_test_fail("platform reset did not restart SQLite scenario");
     }
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "SQLITE/RESULT.TXT", &output) !=
-            SAPFS_STATUS_OK || output.directory || output.size != sizeof(bytes) ||
-        sapfs_open(SAPFS_VOLUME_DATA, "SQLITE/RESULT.TXT", SAPFS_ACCESS_READ,
-            &file) != SAPFS_STATUS_OK ||
-        sapfs_read(file, bytes, sizeof(bytes), &read_bytes) != SAPFS_STATUS_OK ||
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "SQLITE/RESULT.TXT", &output) !=
+            PHIPFS_STATUS_OK || output.directory || output.size != sizeof(bytes) ||
+        phipfs_open(PHIPFS_VOLUME_DATA, "SQLITE/RESULT.TXT", PHIPFS_ACCESS_READ,
+            &file) != PHIPFS_STATUS_OK ||
+        phipfs_read(file, bytes, sizeof(bytes), &read_bytes) != PHIPFS_STATUS_OK ||
         read_bytes != sizeof(bytes)) {
         kernel_test_fail("SQLite reboot result is missing");
     }
     for (size_t index = 0U; index < sizeof(bytes); ++index) {
         content_matches = content_matches && bytes[index] == expected[index];
     }
-    if (sapfs_close(file) != SAPFS_STATUS_OK || !content_matches ||
-        sapfs_sync(SAPFS_VOLUME_DATA) != SAPFS_STATUS_OK) {
+    if (phipfs_close(file) != PHIPFS_STATUS_OK || !content_matches ||
+        phipfs_sync(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK) {
         kernel_test_fail("SQLite reboot result is wrong or could not be synchronized");
     }
-    console_write("Sapote: upstream SQLite retained and verified three rows after reboot\n");
+    console_write("Phipia: upstream SQLite retained and verified three rows after reboot\n");
     kernel_test_pass();
 }
 
@@ -4949,7 +5334,7 @@ _Noreturn void kernel_test_complete_native_canvas(void)
         result.syscall_count < 20U || result.thread_switches < 10U ||
         !native_process_resources_released() ||
         ui_native_window_is_open(0U) || ui_native_window_is_open(1U)) {
-        console_write("Sapote: native Canvas run ");
+        console_write("Phipia: native Canvas run ");
         console_write(native_process_status_string(run_status));
         console_write(" generation ");
         console_write_u64(result.generation);
@@ -4976,17 +5361,17 @@ _Noreturn void kernel_test_complete_native_canvas(void)
         console_putc('\n');
         kernel_test_fail("Canvas windows did not exit with a clean census");
     }
-    console_write("Sapote: two native Canvas windows handled focus, input and partial damage\n");
+    console_write("Phipia: two native Canvas windows handled focus, input and partial damage\n");
     kernel_test_pass();
 }
 
 _Noreturn void kernel_test_complete_native_network(void)
 {
-    static const uint8_t expected[] = "hello from the Sapote network\n";
+    static const uint8_t expected[] = "hello from the Phipia network\n";
     struct native_process_result result = { 0 };
-    struct sapfs_stat output;
+    struct phipfs_stat output;
     struct network_state network;
-    sapfs_handle file;
+    phipfs_handle file;
     uint8_t bytes[sizeof(expected) - 1U];
     size_t read_bytes = 0U;
     bool matches = true;
@@ -5000,7 +5385,7 @@ _Noreturn void kernel_test_complete_native_network(void)
         !result.exited || result.faulted || result.exit_status != 0 ||
         !result.resources_released || result.syscall_count < 25U ||
         !native_process_resources_released()) {
-        console_write("Sapote: native network launch ");
+        console_write("Phipia: native network launch ");
         console_write(native_process_status_string(launch_status));
         console_write(" result exit ");
         if (result.exit_status < 0) {
@@ -5025,21 +5410,21 @@ _Noreturn void kernel_test_complete_native_network(void)
         network.timers != 0U) {
         kernel_test_fail("native network handles survived process teardown");
     }
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "NETAPP/HTTP.TXT", &output) !=
-            SAPFS_STATUS_OK || output.directory || output.size != sizeof(bytes) ||
-        sapfs_open(SAPFS_VOLUME_DATA, "NETAPP/HTTP.TXT", SAPFS_ACCESS_READ,
-            &file) != SAPFS_STATUS_OK ||
-        sapfs_read(file, bytes, sizeof(bytes), &read_bytes) != SAPFS_STATUS_OK ||
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "NETAPP/HTTP.TXT", &output) !=
+            PHIPFS_STATUS_OK || output.directory || output.size != sizeof(bytes) ||
+        phipfs_open(PHIPFS_VOLUME_DATA, "NETAPP/HTTP.TXT", PHIPFS_ACCESS_READ,
+            &file) != PHIPFS_STATUS_OK ||
+        phipfs_read(file, bytes, sizeof(bytes), &read_bytes) != PHIPFS_STATUS_OK ||
         read_bytes != sizeof(bytes)) {
         kernel_test_fail("native HTTP body is missing from Data");
     }
     for (size_t index = 0U; index < sizeof(bytes); ++index) {
         matches = matches && bytes[index] == expected[index];
     }
-    if (sapfs_close(file) != SAPFS_STATUS_OK || !matches) {
+    if (phipfs_close(file) != PHIPFS_STATUS_OK || !matches) {
         kernel_test_fail("native HTTP body framing or contents are wrong");
     }
-    console_write("Sapote: native DNS, TCP, UDP, timeout, reset and cancellation passed\n");
+    console_write("Phipia: native DNS, TCP, UDP, timeout, reset and cancellation passed\n");
     console_write("ST NETWORK production path bounded and recoverable\n");
     kernel_test_pass();
 }
@@ -5048,8 +5433,8 @@ _Noreturn void kernel_test_complete_native_rust(void)
 {
     static const uint8_t expected[] = "native Rust no_std ABI v1\n";
     struct native_process_result result;
-    struct sapfs_stat output;
-    sapfs_handle file;
+    struct phipfs_stat output;
+    phipfs_handle file;
     uint8_t bytes[sizeof(expected) - 1U];
     size_t read_bytes = 0U;
     bool matches = true;
@@ -5063,21 +5448,21 @@ _Noreturn void kernel_test_complete_native_rust(void)
         result.thread_switches == 0U || !native_process_resources_released()) {
         kernel_test_fail("Rust application did not exit with a clean census");
     }
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "RUSTAPP/RUST.TXT", &output) !=
-            SAPFS_STATUS_OK || output.directory || output.size != sizeof(bytes) ||
-        sapfs_open(SAPFS_VOLUME_DATA, "RUSTAPP/RUST.TXT", SAPFS_ACCESS_READ,
-            &file) != SAPFS_STATUS_OK ||
-        sapfs_read(file, bytes, sizeof(bytes), &read_bytes) != SAPFS_STATUS_OK ||
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "RUSTAPP/RUST.TXT", &output) !=
+            PHIPFS_STATUS_OK || output.directory || output.size != sizeof(bytes) ||
+        phipfs_open(PHIPFS_VOLUME_DATA, "RUSTAPP/RUST.TXT", PHIPFS_ACCESS_READ,
+            &file) != PHIPFS_STATUS_OK ||
+        phipfs_read(file, bytes, sizeof(bytes), &read_bytes) != PHIPFS_STATUS_OK ||
         read_bytes != sizeof(bytes)) {
         kernel_test_fail("Rust application output is missing");
     }
     for (size_t index = 0U; index < sizeof(bytes); ++index) {
         matches = matches && bytes[index] == expected[index];
     }
-    if (sapfs_close(file) != SAPFS_STATUS_OK || !matches) {
+    if (phipfs_close(file) != PHIPFS_STATUS_OK || !matches) {
         kernel_test_fail("Rust application output is wrong");
     }
-    console_write("Sapote: no_std Rust application used native ABI v1 services\n");
+    console_write("Phipia: no_std Rust application used native ABI v1 services\n");
     kernel_test_pass();
 }
 
@@ -5090,7 +5475,7 @@ _Noreturn void kernel_test_complete_native_crash(void)
         kernel_test_fail("native crash completion used outside its scenario");
     }
     if (native_process_launch("CRASH.MAN", &crash) != NATIVE_PROCESS_OK ||
-        !crash.exited || !crash.faulted || crash.exit_status != -SAPOTE_EFAULT ||
+        !crash.exited || !crash.faulted || crash.exit_status != -PHIPIA_EFAULT ||
         !crash.resources_released || crash.peak_handles < 6U ||
         crash.peak_pages < 20U || !native_process_resources_released()) {
         kernel_test_fail("faulted process did not release its live resources");
@@ -5100,7 +5485,7 @@ _Noreturn void kernel_test_complete_native_crash(void)
         !survivor.resources_released || !native_process_resources_released()) {
         kernel_test_fail("process after fault observed damaged or leaked state");
     }
-    console_write("Sapote: native crash contained; mappings handles threads windows FS x87 SSE reclaimed\n");
+    console_write("Phipia: native crash contained; mappings handles threads windows FS x87 SSE reclaimed\n");
     kernel_test_pass();
 }
 
@@ -5113,15 +5498,15 @@ _Noreturn void kernel_test_complete_native_admission_refusal(void)
     switch (active_scenario) {
     case KERNEL_TEST_NATIVE_ELF_REFUSAL:
         manifest = "BADELF.MAN";
-        diagnostic = "Sapote: native malformed ELF refused; resource census unchanged\n";
+        diagnostic = "Phipia: native malformed ELF refused; resource census unchanged\n";
         break;
     case KERNEL_TEST_NATIVE_DIGEST_REFUSAL:
         manifest = "BADDGST.MAN";
-        diagnostic = "Sapote: native manifest digest mismatch refused; resource census unchanged\n";
+        diagnostic = "Phipia: native manifest digest mismatch refused; resource census unchanged\n";
         break;
     case KERNEL_TEST_NATIVE_ABI_REFUSAL:
         manifest = "BADABI.MAN";
-        diagnostic = "Sapote: native unsupported ABI version refused; resource census unchanged\n";
+        diagnostic = "Phipia: native unsupported ABI version refused; resource census unchanged\n";
         break;
     default:
         kernel_test_fail("native admission completion used outside its scenario");
@@ -5153,7 +5538,402 @@ _Noreturn void kernel_test_complete_native_relaunch(void)
         !native_process_resources_released()) {
         kernel_test_fail("native relaunch did not reset generations and resources");
     }
-    console_write("Sapote: native relaunch advanced generation; both resource censuses clean\n");
+    console_write("Phipia: native relaunch advanced generation; both resource censuses clean\n");
+    kernel_test_pass();
+}
+
+static bool native_audio_census_equal(
+    const struct pci_resource_state *pci_before,
+    const struct dma_state *dma_before
+)
+{
+    const struct pci_resource_state pci_after = pci_resource_get_state();
+    const struct dma_state dma_after = dma_get_state();
+
+    return pci_before->active_claims == pci_after.active_claims &&
+        pci_before->active_mappings == pci_after.active_mappings &&
+        pci_before->arena_pages == pci_after.arena_pages &&
+        pci_before->mapped_pages == pci_after.mapped_pages &&
+        pci_before->bus_masters == pci_after.bus_masters &&
+        pci_before->active == pci_after.active &&
+        dma_before->active_allocations == dma_after.active_allocations &&
+        dma_before->cpu_owned_allocations == dma_after.cpu_owned_allocations &&
+        dma_before->device_owned_allocations ==
+            dma_after.device_owned_allocations &&
+        dma_before->active == dma_after.active;
+}
+
+_Noreturn void kernel_test_complete_native_audio(void)
+{
+    struct native_process_result refusal = { 0 };
+    struct native_process_result proof = { 0 };
+    struct pci_resource_state pci_before;
+    struct dma_state dma_before;
+
+    if (active_scenario != KERNEL_TEST_NATIVE_AUDIO) {
+        kernel_test_fail("native audio completion used outside its scenario");
+    }
+    pci_before = pci_resource_get_state();
+    dma_before = dma_get_state();
+    if (native_process_launch("AUDIONO.MAN", &refusal) != NATIVE_PROCESS_OK ||
+        !refusal.exited || refusal.faulted || refusal.exit_status != 0 ||
+        !refusal.resources_released || refusal.peak_handles != 0U ||
+        !native_process_resources_released() ||
+        !audio_native_resources_released() ||
+        !native_audio_census_equal(&pci_before, &dma_before)) {
+        kernel_test_fail(
+            "audio capability refusal changed the resource census");
+    }
+    pci_before = pci_resource_get_state();
+    dma_before = dma_get_state();
+    if (native_process_launch("AUDIO.MAN", &proof) != NATIVE_PROCESS_OK ||
+        !proof.exited || proof.faulted || proof.exit_status != 0 ||
+        !proof.resources_released || proof.peak_handles != 2U ||
+        proof.syscall_count < 20U || !native_process_resources_released() ||
+        !audio_native_resources_released() || !audio_resources_released() ||
+        !native_audio_census_equal(&pci_before, &dma_before)) {
+        kernel_test_fail("native audio proof did not leave a clean census");
+    }
+    console_write(
+        "Phipia: native audio ABI capability, mixing, cancellation and teardown passed\n");
+    kernel_test_pass();
+}
+
+_Noreturn void kernel_test_complete_native_sdl(void)
+{
+    static const char state_path[] = "SDLPROOF/SDL/D81F0C7A/STATE.BIN";
+    struct native_process_result first = { 0 };
+    struct native_process_result second = { 0 };
+    struct phipfs_stat state;
+    phipfs_handle file;
+    uint8_t bytes[4];
+    size_t read_bytes = 0U;
+
+    if (active_scenario != KERNEL_TEST_NATIVE_SDL) {
+        kernel_test_fail("native SDL completion used outside its scenario");
+    }
+    if (native_process_launch("SDLPROOF.MAN", &first) != NATIVE_PROCESS_OK ||
+        !first.exited || first.faulted || first.exit_status != 0 ||
+        !first.resources_released || first.peak_handles < 4U ||
+        first.syscall_count < 20U || first.thread_switches == 0U ||
+        !native_process_resources_released() ||
+        !audio_native_resources_released() ||
+        ui_native_window_is_open(0U) || ui_native_window_is_open(1U)) {
+        kernel_test_fail("first SDL process did not leave a clean census");
+    }
+    if (native_process_launch("SDLPROOF.MAN", &second) != NATIVE_PROCESS_OK ||
+        !second.exited || second.faulted || second.exit_status != 0 ||
+        !second.resources_released || second.generation <= first.generation ||
+        second.peak_handles < 4U || second.syscall_count < 20U ||
+        second.thread_switches == 0U ||
+        !native_process_resources_released() ||
+        !audio_native_resources_released() || !audio_resources_released() ||
+        ui_native_window_is_open(0U) || ui_native_window_is_open(1U)) {
+        kernel_test_fail("second SDL process did not leave a clean census");
+    }
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, state_path, &state) !=
+            PHIPFS_STATUS_OK || state.directory || state.size != sizeof(bytes) ||
+        phipfs_open(PHIPFS_VOLUME_DATA, state_path, PHIPFS_ACCESS_READ, &file) !=
+            PHIPFS_STATUS_OK ||
+        phipfs_read(file, bytes, sizeof(bytes), &read_bytes) != PHIPFS_STATUS_OK ||
+        read_bytes != sizeof(bytes) || phipfs_close(file) != PHIPFS_STATUS_OK ||
+        bytes[0] != 2U || bytes[1] != 0U || bytes[2] != 0U || bytes[3] != 0U) {
+        kernel_test_fail("SDL preference state did not survive process relaunch");
+    }
+    console_write(
+        "Phipia: SDL 2 window, input, partial damage, PCM and persistence passed\n");
+    kernel_test_pass();
+}
+
+_Noreturn void kernel_test_complete_native_dynamic(void)
+{
+    struct native_process_result proof = { 0 };
+    uint64_t first_generation;
+    uint64_t second_generation;
+
+    if (active_scenario != KERNEL_TEST_NATIVE_DYNAMIC) {
+        kernel_test_fail("native dynamic completion used outside its scenario");
+    }
+    if (native_process_spawn("DYNROOT.MAN", &first_generation) !=
+            NATIVE_PROCESS_OK ||
+        native_process_spawn("DYNROOT.MAN", &second_generation) !=
+            NATIVE_PROCESS_OK ||
+        first_generation == 0U || second_generation <= first_generation ||
+        native_process_run(&proof) != NATIVE_PROCESS_OK ||
+        !proof.exited || proof.faulted || proof.exit_status != 0 ||
+        proof.generation != second_generation ||
+        !proof.resources_released || proof.peak_handles != 0U ||
+        proof.syscall_count < 7U || proof.thread_switches == 0U ||
+        !native_process_resources_released()) {
+        kernel_test_fail(
+            "concurrent dynamic ELF proofs did not leave a clean census");
+    }
+    console_write(
+        "Phipia: dynamic ELF shared RX, private TLS and lifecycle passed\n");
+    kernel_test_pass();
+}
+
+_Noreturn void kernel_test_complete_native_https(void)
+{
+    static const uint8_t expected[] =
+        "hello from the Phipia HTTPS peer\n";
+    struct native_process_result proof = { 0 };
+    struct phipfs_stat output;
+    struct network_state network;
+    phipfs_handle file;
+    uint8_t bytes[sizeof(expected) - 1U];
+    size_t read_bytes = 0U;
+    bool matches = true;
+
+    if (active_scenario != KERNEL_TEST_NATIVE_HTTPS) {
+        kernel_test_fail("native HTTPS completion used outside its scenario");
+    }
+    if (random_get_state().capability != RANDOM_CAPABILITY_INITIALIZED) {
+        kernel_test_fail("native HTTPS did not retain strong hardware entropy");
+    }
+    if (native_process_launch("HTTPSAPP.MAN", &proof) != NATIVE_PROCESS_OK ||
+        !proof.exited || proof.faulted || proof.exit_status != 0 ||
+        !proof.resources_released || proof.syscall_count < 15U ||
+        proof.thread_switches == 0U || !native_process_resources_released()) {
+        kernel_test_fail("native HTTPS client did not leave a clean census");
+    }
+    network = network_get_state();
+    if (network.udp_sockets != 0U || network.tcp_connections != 0U ||
+        network.timers != 0U) {
+        kernel_test_fail("native HTTPS network resources survived teardown");
+    }
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "HTTPSAPP/HTTPS.TXT", &output) !=
+            PHIPFS_STATUS_OK || output.directory || output.size != sizeof(bytes) ||
+        phipfs_open(PHIPFS_VOLUME_DATA, "HTTPSAPP/HTTPS.TXT", PHIPFS_ACCESS_READ,
+            &file) != PHIPFS_STATUS_OK ||
+        phipfs_read(file, bytes, sizeof(bytes), &read_bytes) != PHIPFS_STATUS_OK ||
+        read_bytes != sizeof(bytes)) {
+        kernel_test_fail("authenticated HTTPS body is missing from Data");
+    }
+    for (size_t index = 0U; index < sizeof(bytes); ++index) {
+        matches = matches && bytes[index] == expected[index];
+    }
+    if (phipfs_close(file) != PHIPFS_STATUS_OK || !matches) {
+        kernel_test_fail("authenticated HTTPS body contents are wrong");
+    }
+    console_write("Phipia: HTTPS strong hardware entropy passed\n");
+    console_write(
+        "Phipia: HTTPS TLS 1.2 hostname time trust framing close and teardown passed\n");
+    console_write("ST NETWORK production path bounded and recoverable\n");
+    kernel_test_pass();
+}
+
+static bool native_phip_authority_is_canonical(
+    uint8_t *database,
+    size_t database_capacity,
+    struct package_service_report *service
+)
+{
+    struct package_state_database_view view;
+    struct package_state_package_view package;
+    struct package_state_file_view executable;
+    struct package_state_file_view manifest;
+    size_t database_bytes = 0U;
+
+    return package_service_snapshot(database, database_capacity,
+            &database_bytes, service) == PACKAGE_SERVICE_STATUS_OK &&
+        (service->generation == 1U || service->generation == 2U ||
+            service->generation == 3U) &&
+        service->live_file_handles == 0U &&
+        service->live_allocations == 0U && database_bytes != 0U &&
+        package_state_database_parse(database, database_bytes, &view) ==
+            PACKAGE_STATE_STATUS_OK &&
+        view.generation == service->generation && view.package_count == 1U &&
+        view.edge_count == 0U && view.file_count == 2U &&
+        package_state_database_package(&view, 0U, &package) ==
+            PACKAGE_STATE_STATUS_OK &&
+        package_state_database_file(&view, 0U, &executable) ==
+            PACKAGE_STATE_STATUS_OK &&
+        package_state_database_file(&view, 1U, &manifest) ==
+            PACKAGE_STATE_STATUS_OK &&
+        package_text_equals(&package.identifier, "org.libsdl.chess") &&
+        ((service->generation == 1U &&
+            package_text_equals(&package.version, "1.0.0")) ||
+         (service->generation == 2U &&
+            package_text_equals(&package.version, "2.0.0")) ||
+         (service->generation == 3U &&
+            package_text_equals(&package.version, "2.0.0"))) &&
+        package_text_equals(&executable.path, "bin/CHESS.APP") &&
+        package_text_equals(&manifest.path, "bin/CHESS.MAN") &&
+        executable.owner_index == 0U && executable.length != 0U &&
+        manifest.owner_index == 0U && manifest.length == UINT64_C(1024);
+}
+
+_Noreturn void kernel_test_complete_native_phip(void)
+{
+    static const uint8_t expected[] = "SDL chess release-2.32.10\n";
+    static const char damaged_manifest[] =
+        "pkgstate/gen/00000000/00000002/root/bin/CHESS.MAN";
+    static const char repaired_manifest[] =
+        "pkgstate/gen/00000000/00000003/root/bin/CHESS.MAN";
+    static const char state_path[] =
+        "SDLCHESS/SDL/8F0B0BEC/STATE.TXT";
+    static uint8_t database[4096U];
+    struct native_process_result proof = { 0 };
+    struct package_service_report service;
+    const struct phipfs_drive_info data = phipfs_drive(PHIPFS_VOLUME_DATA);
+    struct phipfs_stat authority;
+    struct phipfs_stat output;
+    phipfs_handle file;
+    uint8_t bytes[sizeof(expected) - 1U];
+    size_t read_bytes = 0U;
+    size_t database_bytes = 0U;
+    bool matches = true;
+    struct network_state network;
+    enum phipfs_status authority_status;
+    enum native_process_status launch_status;
+
+    if (active_scenario != KERNEL_TEST_NATIVE_PHIP) {
+        kernel_test_fail("native phip completion used outside its scenario");
+    }
+    if (random_get_state().capability != RANDOM_CAPABILITY_INITIALIZED) {
+        kernel_test_fail("native phip did not retain strong hardware entropy");
+    }
+    if (!data.present || !data.mounted || data.read_only || !data.healthy ||
+        data.total_bytes != UINT64_C(128) * UINT64_C(1024) * UINT64_C(1024) ||
+        data.free_bytes == 0U || data.free_bytes >= data.total_bytes) {
+        kernel_test_fail("native phip writable ext4 volume is unavailable");
+    }
+    authority_status = phipfs_stat_path(PHIPFS_VOLUME_DATA,
+        PACKAGE_SERVICE_AUTHORITY_PATH, &authority);
+    if (authority_status == PHIPFS_STATUS_NOT_FOUND) {
+        launch_status = native_process_launch("PHIP.MAN", &proof);
+        if (launch_status != NATIVE_PROCESS_OK ||
+            !proof.exited || proof.faulted || proof.exit_status != 0 ||
+            !proof.resources_released || proof.peak_handles < 3U ||
+            proof.syscall_count < 20U || proof.thread_switches == 0U ||
+            !native_process_resources_released()) {
+            console_write("ST PHIP DIAGNOSTIC launch ");
+            console_write_u64((uint64_t)launch_status);
+            console_write(" exited ");
+            console_write(proof.exited ? "yes" : "no");
+            console_write(" faulted ");
+            console_write(proof.faulted ? "yes" : "no");
+            console_write(" status ");
+            if (proof.exit_status < 0) {
+                console_putc('-');
+                console_write_u64((uint64_t)(-(int64_t)proof.exit_status));
+            } else {
+                console_write_u64((uint64_t)proof.exit_status);
+            }
+            console_write(" released ");
+            console_write(proof.resources_released ? "yes" : "no");
+            console_write(" handles ");
+            console_write_u64(proof.peak_handles);
+            console_write(" syscalls ");
+            console_write_u64(proof.syscall_count);
+            console_write(" last-syscall ");
+            console_write_hex(proof.last_syscall);
+            console_write(" failure-stage ");
+            console_write_u64(proof.failure_stage);
+            console_write(" switches ");
+            console_write_u64(proof.thread_switches);
+            console_putc('\n');
+            kernel_test_fail("native phip client did not leave a clean census");
+        }
+        if (!native_phip_authority_is_canonical(database, sizeof(database),
+                &service) || service.generation != 1U) {
+            kernel_test_fail("native phip installed authority is not canonical");
+        }
+        if (phipfs_sync(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK ||
+            phipfs_unmount(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK ||
+            !nvme_filesystem_session_resources_released() ||
+            !native_process_resources_released()) {
+            kernel_test_fail("native phip ext4 reboot barrier leaked resources");
+        }
+        console_write(
+            "Phipia: signed HTTPS package install synchronized reboot phase\n");
+        cpu_out8(UINT16_C(0x0064), UINT8_C(0xFE));
+        kernel_test_fail("platform reset did not restart QEMU");
+    }
+    if (authority_status != PHIPFS_STATUS_OK || authority.directory ||
+        authority.size == 0U) {
+        kernel_test_fail("native phip reboot authority is unavailable");
+    }
+    network = network_get_state();
+    if (network.udp_sockets != 0U || network.tcp_connections != 0U ||
+        network.timers != 0U) {
+        kernel_test_fail("native phip network resources survived teardown");
+    }
+    if (!native_phip_authority_is_canonical(database, sizeof(database),
+            &service)) {
+        kernel_test_fail("native phip reboot authority is not canonical");
+    }
+    if (service.generation == 1U) {
+        if (native_process_launch("PHIP.MAN", &proof) != NATIVE_PROCESS_OK ||
+            !proof.exited || proof.faulted || proof.exit_status != 0 ||
+            !proof.resources_released || proof.peak_handles < 3U ||
+            proof.syscall_count < 20U || proof.thread_switches == 0U ||
+            !native_process_resources_released() ||
+            !native_phip_authority_is_canonical(database, sizeof(database),
+                &service) || service.generation != 2U ||
+            phipfs_sync(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK ||
+            phipfs_unmount(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK ||
+            !nvme_filesystem_session_resources_released()) {
+            kernel_test_fail("native phip ext4 update did not commit cleanly");
+        }
+        console_write(
+            "Phipia: signed HTTPS package update synchronized reboot phase\n");
+        cpu_out8(UINT16_C(0x0064), UINT8_C(0xFE));
+        kernel_test_fail("platform reset did not restart QEMU");
+    }
+    if (service.generation != 2U ||
+        native_process_launch("PHIP.MAN", &proof) != NATIVE_PROCESS_OK ||
+        !proof.exited || proof.faulted || proof.exit_status != 21 ||
+        !proof.resources_released || !native_process_resources_released() ||
+        !native_phip_authority_is_canonical(database, sizeof(database),
+            &service) || service.generation != 2U) {
+        kernel_test_fail("native phip signed rollback was not refused cleanly");
+    }
+    if (phipfs_truncate(PHIPFS_VOLUME_DATA, damaged_manifest, UINT64_C(1)) !=
+            PHIPFS_STATUS_OK ||
+        phipfs_sync(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK ||
+        package_service_snapshot(database, sizeof(database), &database_bytes,
+            &service) != PACKAGE_SERVICE_STATUS_INCOMPLETE ||
+        database_bytes != 0U || service.journal_present ||
+        service.live_file_handles != 0U || service.live_allocations != 0U) {
+        kernel_test_fail("native phip damaged generation was not quarantined");
+    }
+    console_write(
+        "Phipia: damaged package generation quarantined before repair passed\n");
+    if (native_process_launch("PHIPREP.MAN", &proof) != NATIVE_PROCESS_OK ||
+        !proof.exited || proof.faulted || proof.exit_status != 0 ||
+        !proof.resources_released || proof.peak_handles < 3U ||
+        proof.syscall_count < 20U || proof.thread_switches == 0U ||
+        !native_process_resources_released() ||
+        !native_phip_authority_is_canonical(database, sizeof(database),
+            &service) || service.generation != 3U ||
+        native_process_launch_installed(repaired_manifest, &proof) !=
+            NATIVE_PROCESS_OK ||
+        !proof.exited || proof.faulted || proof.exit_status != 0 ||
+        !proof.resources_released || proof.syscall_count < 12U ||
+        proof.thread_switches == 0U || !native_process_resources_released() ||
+        phipfs_stat_path(PHIPFS_VOLUME_DATA, state_path, &output) !=
+            PHIPFS_STATUS_OK || output.directory ||
+        output.size != sizeof(bytes) ||
+        phipfs_open(PHIPFS_VOLUME_DATA, state_path,
+            PHIPFS_ACCESS_READ, &file) != PHIPFS_STATUS_OK ||
+        phipfs_read(file, bytes, sizeof(bytes), &read_bytes) !=
+            PHIPFS_STATUS_OK || read_bytes != sizeof(bytes)) {
+        kernel_test_fail("native phip authenticated repair did not launch");
+    }
+    for (size_t index = 0U; index < sizeof(bytes); ++index) {
+        matches = matches && bytes[index] == expected[index];
+    }
+    if (phipfs_close(file) != PHIPFS_STATUS_OK || !matches ||
+        phipfs_sync(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK ||
+        phipfs_unmount(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK ||
+        !nvme_filesystem_session_resources_released()) {
+        kernel_test_fail("native phip upstream SDL launch did not cleanly sync");
+    }
+    console_write(
+        "Phipia: damaged SDL package repaired authenticated and launched from writable ext4 passed\n");
+    console_write("ST NETWORK production path bounded and recoverable\n");
     kernel_test_pass();
 }
 
@@ -5316,19 +6096,19 @@ _Noreturn void kernel_test_complete_boot_ledger(
     kernel_test_pass();
 }
 
-static uint32_t redwood_proof_pixel(uint32_t x, uint32_t y)
+static uint32_t phipia_proof_pixel(uint32_t x, uint32_t y)
 {
     uint32_t pixel = 0U;
     struct surface *surface = screen_surface();
 
     if (surface == NULL ||
         surface_read_pixel(surface, x, y, &pixel) != SURFACE_STATUS_OK) {
-        kernel_test_fail("Sapote Redwood cached-surface pixel read failed");
+        kernel_test_fail("Phipia cached-surface pixel read failed");
     }
     return pixel;
 }
 
-static void redwood_proof_process_ui(const char *failure)
+static void phipia_proof_process_ui(const char *failure)
 {
     enum ui_status status = ui_process_events();
 
@@ -5340,7 +6120,22 @@ static void redwood_proof_process_ui(const char *failure)
     }
 }
 
-static void redwood_proof_inject_pointer(
+static void phipia_proof_settle_ui(const char *failure)
+{
+    if (!ui_animation_active()) {
+        return;
+    }
+    if (timer_sleep_ns(UI_ANIM_DEFAULT_OPEN_NS + UI_ANIM_FRAME_NS) !=
+            TIMER_STATUS_OK) {
+        kernel_test_fail(failure);
+    }
+    phipia_proof_process_ui(failure);
+    if (ui_animation_active()) {
+        kernel_test_fail(failure);
+    }
+}
+
+static void phipia_proof_inject_pointer(
     uint8_t flags,
     int32_t delta_x,
     int32_t delta_y,
@@ -5364,10 +6159,10 @@ static void redwood_proof_inject_pointer(
     if (status != POINTER_STATUS_OK) {
         kernel_test_fail(failure);
     }
-    redwood_proof_process_ui(failure);
+    phipia_proof_process_ui(failure);
 }
 
-static void redwood_proof_move_pointer(
+static void phipia_proof_move_pointer(
     uint32_t target_x,
     uint32_t target_y,
     const char *failure
@@ -5393,88 +6188,79 @@ static void redwood_proof_move_pointer(
         } else if (delta_y < -127) {
             delta_y = -127;
         }
-        redwood_proof_inject_pointer(0U, delta_x, delta_y, failure);
+        phipia_proof_inject_pointer(0U, delta_x, delta_y, failure);
     }
-    kernel_test_fail("Sapote Redwood cursor did not reach its dock target");
+    kernel_test_fail("Phipia cursor did not reach its UI target");
 }
 
-static void redwood_proof_click_dock_item(
-    const struct ui_dock_item *item,
+static void phipia_proof_click_taskbar_item(
+    size_t item_index,
     enum ui_panel_id expected_panel
 )
 {
-    const size_t item_index =
-        (size_t)(item - ui_get_state()->layout.dock_items);
-    const uint32_t target_x = item->bounds.x + item->bounds.width / 2U;
-    const uint32_t target_y = item->bounds.y + item->bounds.height / 2U;
+    struct ui_rect bounds;
+    struct taskbar_counters counters;
     const struct ui_state *ui;
-    const struct ui_dock_item *current_item;
     uint32_t title_width;
 
-    redwood_proof_move_pointer(target_x, target_y,
-        "Sapote Redwood real pointer movement failed");
-    ui = ui_get_state();
-    if (ui->hover != item->id) {
-        kernel_test_fail("Sapote Redwood dock hover state is incorrect");
+    if (taskbar_app_bounds(item_index, &bounds) != TASKBAR_STATUS_OK ||
+            bounds.width == 0U || bounds.height == 0U) {
+        kernel_test_fail("Phipia taskbar application bounds are unavailable");
+    }
+    counters = taskbar_get_counters();
+    const uint32_t target_x = bounds.x + bounds.width / 2U;
+    const uint32_t target_y = bounds.y + bounds.height / 2U;
+    phipia_proof_move_pointer(target_x, target_y,
+        "Phipia real pointer movement failed");
+    if (taskbar_get_counters().hover_changes <= counters.hover_changes) {
+        kernel_test_fail("Phipia taskbar hover state is incorrect");
     }
 
-    redwood_proof_inject_pointer(UINT8_C(0x01), 0, 0,
-        "Sapote Redwood pointer press failed");
+    phipia_proof_inject_pointer(UINT8_C(0x01), 0, 0,
+        "Phipia pointer press failed");
+    phipia_proof_inject_pointer(0U, 0, 0,
+        "Phipia pointer release failed");
     ui = ui_get_state();
-    if (ui->pressed != item->id) {
-        kernel_test_fail("Sapote Redwood dock pressed state is incorrect");
-    }
-
-    redwood_proof_inject_pointer(0U, 0, 0,
-        "Sapote Redwood pointer release failed");
-    ui = ui_get_state();
-    current_item = &ui->layout.dock_items[item_index];
-    if (ui->pressed != UI_ELEMENT_NONE ||
-        ui->active_panel != expected_panel ||
-        current_item->icon_bounds.width == 0U ||
-        current_item->icon_bounds.height == 0U ||
-        redwood_proof_pixel(current_item->icon_bounds.x +
-            current_item->icon_bounds.width / 2U,
-            current_item->icon_bounds.y +
-            current_item->icon_bounds.height / 2U) == 0U) {
-        kernel_test_fail("Sapote Redwood dock activation is incorrect");
+    if (ui->active_panel != expected_panel ||
+            phipia_proof_pixel(target_x, target_y) == 0U) {
+        kernel_test_fail("Phipia taskbar activation is incorrect");
     }
     if (ui_font_text_width(ui_panel_name(expected_panel), &title_width) !=
             UI_FONT_STATUS_OK || title_width == 0U) {
-        kernel_test_fail("Sapote Redwood panel title width is unavailable");
+        kernel_test_fail("Phipia panel title width is unavailable");
     }
 }
 
-static void redwood_proof_click_point(
+static void phipia_proof_click_point(
     uint32_t target_x,
     uint32_t target_y,
     const char *failure
 )
 {
-    redwood_proof_move_pointer(target_x, target_y, failure);
-    redwood_proof_inject_pointer(UINT8_C(0x01), 0, 0, failure);
-    redwood_proof_inject_pointer(0U, 0, 0, failure);
+    phipia_proof_move_pointer(target_x, target_y, failure);
+    phipia_proof_inject_pointer(UINT8_C(0x01), 0, 0, failure);
+    phipia_proof_inject_pointer(0U, 0, 0, failure);
 }
 
-_Noreturn void kernel_test_complete_redwood_proof(void)
+_Noreturn void kernel_test_complete_phipia_proof(void)
 {
     static const enum ui_element_id ids[UI_DOCK_ITEM_COUNT] = {
         UI_ELEMENT_DOCK_FILES, UI_ELEMENT_DOCK_TERMINAL,
-        UI_ELEMENT_DOCK_NOTES, UI_ELEMENT_DOCK_STUDIO,
+        UI_ELEMENT_DOCK_NOTES, UI_ELEMENT_DOCK_MEDIA_EDITOR,
         UI_ELEMENT_DOCK_CAMERA, UI_ELEMENT_DOCK_CANVAS,
         UI_ELEMENT_DOCK_STORE,
         UI_ELEMENT_DOCK_SETTINGS
     };
     static const enum ui_action actions[UI_DOCK_ITEM_COUNT] = {
         UI_ACTION_OPEN_FILES, UI_ACTION_OPEN_TERMINAL,
-        UI_ACTION_OPEN_NOTES, UI_ACTION_OPEN_STUDIO,
+        UI_ACTION_OPEN_NOTES, UI_ACTION_OPEN_MEDIA_EDITOR,
         UI_ACTION_OPEN_CAMERA, UI_ACTION_OPEN_CANVAS,
         UI_ACTION_OPEN_STORE,
         UI_ACTION_OPEN_SETTINGS
     };
     static const enum ui_panel_id panels[UI_DOCK_ITEM_COUNT] = {
-        UI_PANEL_FILES, UI_PANEL_TERMINAL, UI_PANEL_NOTES, UI_PANEL_STUDIO,
-        UI_PANEL_CAMERA, UI_PANEL_NONE, UI_PANEL_STORE, UI_PANEL_SETTINGS
+        UI_PANEL_FILES, UI_PANEL_TERMINAL, UI_PANEL_NOTES, UI_PANEL_MEDIA_EDITOR,
+        UI_PANEL_CAMERA, UI_PANEL_PAINT, UI_PANEL_STORE, UI_PANEL_SETTINGS
     };
     const struct boot_ledger *ledger = boot_ledger_installed();
     const struct boot_stage_receipt *font;
@@ -5493,13 +6279,13 @@ _Noreturn void kernel_test_complete_redwood_proof(void)
     struct ui_proof proof;
     enum ui_status proof_status;
 
-    if (active_scenario != KERNEL_TEST_REDWOOD_PROOF) {
-        kernel_test_fail("Sapote Redwood completion used outside its scenario");
+    if (active_scenario != KERNEL_TEST_PHIPIA_PROOF) {
+        kernel_test_fail("Phipia completion used outside its scenario");
     }
     if (ledger == NULL || !ledger->validated || !ledger->executed ||
         ledger->status != BOOT_LEDGER_STATUS_OK || ledger->degraded ||
         !boot_ledger_fingerprint_valid(ledger)) {
-        kernel_test_fail("Sapote Redwood installed ledger is invalid");
+        kernel_test_fail("Phipia installed ledger is invalid");
     }
     font = boot_ledger_receipt_for(ledger, BOOT_STAGE_UI_FONT);
     layout = boot_ledger_receipt_for(ledger, BOOT_STAGE_UI_LAYOUT);
@@ -5508,7 +6294,7 @@ _Noreturn void kernel_test_complete_redwood_proof(void)
     activation = boot_ledger_receipt_for(ledger,
         BOOT_STAGE_DESKTOP_ACTIVATION);
     proof_receipt = boot_ledger_receipt_for(ledger,
-        BOOT_STAGE_REDWOOD_INSTALLED_PROOF);
+        BOOT_STAGE_PHIPIA_INSTALLED_PROOF);
     wc = boot_ledger_receipt_for(ledger, BOOT_STAGE_FRAMEBUFFER_WC);
     if (font == NULL || layout == NULL || construction == NULL ||
         activation == NULL || proof_receipt == NULL || wc == NULL ||
@@ -5518,13 +6304,13 @@ _Noreturn void kernel_test_complete_redwood_proof(void)
         activation->result != BOOT_RECEIPT_RAN ||
         proof_receipt->result != BOOT_RECEIPT_RAN ||
         wc->result != BOOT_RECEIPT_RAN) {
-        kernel_test_fail("Sapote Redwood required stage receipt is missing");
+        kernel_test_fail("Phipia required stage receipt is missing");
     }
     if (wc->sequence >= construction->sequence ||
         wc->sequence >= activation->sequence ||
         construction->sequence >= activation->sequence ||
         activation->sequence >= proof_receipt->sequence) {
-        kernel_test_fail("Sapote Redwood desktop present preceded its WC proof");
+        kernel_test_fail("Phipia desktop present preceded its WC proof");
     }
     if (!boot_ledger_has_capability(ledger,
             BOOT_CAPABILITY_UI_FONT_VERIFIED) ||
@@ -5533,30 +6319,30 @@ _Noreturn void kernel_test_complete_redwood_proof(void)
         !boot_ledger_has_capability(ledger,
             BOOT_CAPABILITY_DESKTOP_SHELL_ACTIVATED) ||
         !boot_ledger_has_capability(ledger,
-            BOOT_CAPABILITY_REDWOOD_INSTALLED_PROOF_COMPLETE)) {
-        kernel_test_fail("Sapote Redwood installed capability is missing");
+            BOOT_CAPABILITY_PHIPIA_INSTALLED_PROOF_COMPLETE)) {
+        kernel_test_fail("Phipia installed capability is missing");
     }
     if (!ui->active || !ui->pointer_present || !ui->ledger_pass ||
         !pointer_is_present() || ui->layout.surface.width != 1024U ||
         ui->layout.surface.height != 768U) {
-        kernel_test_fail("Sapote Redwood installed UI state is incomplete");
+        kernel_test_fail("Phipia installed UI state is incomplete");
     }
     for (size_t index = 0U; index < UI_DOCK_ITEM_COUNT; ++index) {
         const struct ui_dock_item *item = &ui->layout.dock_items[index];
 
         if (item->id != ids[index] || item->action != actions[index] ||
             item->panel != panels[index]) {
-            kernel_test_fail("Sapote Redwood dock typed action is incorrect");
+            kernel_test_fail("Phipia dock typed action is incorrect");
         }
     }
 
-    const uint32_t wallpaper_probe = redwood_proof_pixel(512U, 250U);
+    const uint32_t wallpaper_probe = phipia_proof_pixel(512U, 250U);
     if (wallpaper_probe == 0U) {
-        kernel_test_fail("Sapote Redwood wallpaper probe is empty");
+        kernel_test_fail("Phipia wallpaper probe is empty");
     }
-    if (redwood_proof_pixel(ui->layout.menu_bar.x,
+    if (phipia_proof_pixel(ui->layout.menu_bar.x,
             ui->layout.menu_bar.y) == wallpaper_probe) {
-        kernel_test_fail("Sapote Redwood menu bar is not integrated");
+        kernel_test_fail("Phipia menu bar is not integrated");
     }
     /*
      * The native 3D shelf has a centre-hot blended specular line rather than
@@ -5568,161 +6354,185 @@ _Noreturn void kernel_test_complete_redwood_proof(void)
         ui->layout.dock_items[0U].icon_bounds.height;
     if (dock_rim_y == 0U || dock_rim_y + 1U >=
             ui->layout.surface.height) {
-        kernel_test_fail("Sapote Redwood dock rim geometry is invalid");
+        kernel_test_fail("Phipia dock rim geometry is invalid");
     }
-    dock_rim = redwood_proof_pixel(dock_rim_x, dock_rim_y);
+    dock_rim = phipia_proof_pixel(dock_rim_x, dock_rim_y);
     if (dock_rim == 0U ||
-        dock_rim == redwood_proof_pixel(dock_rim_x, dock_rim_y - 1U) ||
-        dock_rim == redwood_proof_pixel(dock_rim_x, dock_rim_y + 1U)) {
-        kernel_test_fail("Sapote Redwood dock rim is not integrated");
+        dock_rim == phipia_proof_pixel(dock_rim_x, dock_rim_y - 1U) ||
+        dock_rim == phipia_proof_pixel(dock_rim_x, dock_rim_y + 1U)) {
+        kernel_test_fail("Phipia dock rim is not integrated");
     }
 
-    trail_under = redwood_proof_pixel(20U, 100U);
-    redwood_proof_move_pointer(20U, 100U,
-        "Sapote Redwood cursor trail probe movement failed");
+    trail_under = phipia_proof_pixel(20U, 100U);
+    phipia_proof_move_pointer(20U, 100U,
+        "Phipia cursor trail probe movement failed");
     ui = ui_get_state();
     trail_probe = ui->pointer;
-    if (redwood_proof_pixel((uint32_t)trail_probe.x,
-            (uint32_t)trail_probe.y) != ui->theme.ink) {
-        kernel_test_fail("Sapote Redwood cursor trail probe is not visible");
+    if (phipia_proof_pixel((uint32_t)trail_probe.x,
+            (uint32_t)trail_probe.y) == trail_under) {
+        kernel_test_fail("Phipia cursor trail probe is not visible");
     }
 
-    /* Exercise the public launcher as a person would: open it from the menu,
-     * select its second bounded page, then filter and launch Canvas. */
-    redwood_proof_click_point(ui->layout.surface.width - 19U, 12U,
-        "Sapote Redwood application search did not open");
+    /* Exercise the launcher a person can actually see: open the taskbar's
+     * search box, launch Store as the best match, reopen it, then filter and
+     * launch Paint. */
     {
-        uint32_t launcher_width = ui->layout.surface.width > 700U ? 620U :
-            ui->layout.surface.width - 80U;
-        uint32_t launcher_height = ui->layout.surface.height > 630U ? 440U :
-            ui->layout.surface.height - 160U;
-        const uint32_t maximum_height = ui->layout.dock.y - 44U;
-        uint32_t launcher_x;
-
-        if (launcher_width > ui->layout.surface.width - 40U) {
-            launcher_width = ui->layout.surface.width - 40U;
-        }
-        if (launcher_height > maximum_height) {
-            launcher_height = maximum_height;
-        }
-        launcher_x = (ui->layout.surface.width - launcher_width) / 2U;
-        redwood_proof_click_point(
-            launcher_x + (launcher_width - 36U) / 2U + 24U,
-            42U + launcher_height - 22U,
-            "Sapote Redwood application page did not activate");
-    }
-    {
-        struct keyboard_event launcher_key = {
+        struct ui_rect first_app;
+        const struct ui_rect bar = taskbar_bounds();
+        struct keyboard_event search_key = {
             .scancode = 0x1CU, .pressed = true, .shift = false,
             .control = false, .character = '\0'
         };
+        uint32_t search_x;
+        uint32_t search_y;
 
-        if (ui_handle_keyboard(&launcher_key) != UI_STATUS_OK) {
-            kernel_test_fail("Sapote Redwood paged launcher activation failed");
+        if (taskbar_app_bounds(0U, &first_app) != TASKBAR_STATUS_OK ||
+                first_app.x <= bar.x + 48U || bar.height == 0U) {
+            kernel_test_fail("Phipia taskbar search geometry is unavailable");
         }
-        redwood_proof_process_ui(
-            "Sapote Redwood paged launcher activation draw failed");
-        if (ui_get_state()->active_panel != UI_PANEL_STORE) {
-            kernel_test_fail("Sapote Redwood launcher page chose wrong app");
+        search_x = bar.x + 48U + (first_app.x - (bar.x + 48U)) / 2U;
+        search_y = bar.y + bar.height / 2U;
+        phipia_proof_click_point(search_x, search_y,
+            "Phipia taskbar search did not open");
+        if (!taskbar_search_panel_open()) {
+            kernel_test_fail("Phipia taskbar search is not open");
         }
-        redwood_proof_click_point(ui->layout.surface.width - 19U, 12U,
-            "Sapote Redwood application search did not reopen");
-        static const char query[] = "canvas";
-        for (size_t index = 0U; index < sizeof(query) - 1U; ++index) {
-            launcher_key.scancode = 0U;
-            launcher_key.character = query[index];
-            if (ui_handle_keyboard(&launcher_key) != UI_STATUS_OK) {
-                kernel_test_fail("Sapote Redwood application filter failed");
+        static const char store_query[] = "store";
+        for (size_t index = 0U; index < sizeof(store_query) - 1U; ++index) {
+            search_key.scancode = 0U;
+            search_key.character = store_query[index];
+            if (ui_handle_keyboard(&search_key) != UI_STATUS_OK) {
+                kernel_test_fail("Phipia Store search failed");
             }
         }
-        redwood_proof_process_ui(
-            "Sapote Redwood application filter draw failed");
-        launcher_key.scancode = 0x1CU;
-        launcher_key.character = '\0';
-        if (ui_handle_keyboard(&launcher_key) != UI_STATUS_OK) {
-            kernel_test_fail("Sapote Redwood filtered launch failed");
+        phipia_proof_process_ui("Phipia Store search draw failed");
+        search_key.scancode = 0x1CU;
+        search_key.character = '\0';
+        if (ui_handle_keyboard(&search_key) != UI_STATUS_OK) {
+            kernel_test_fail("Phipia Store search activation failed");
         }
-        redwood_proof_process_ui(
-            "Sapote Redwood filtered launch draw failed");
+        phipia_proof_process_ui("Phipia Store search activation draw failed");
+        if (ui_get_state()->active_panel != UI_PANEL_STORE) {
+            kernel_test_fail("Phipia search chose the wrong Store app");
+        }
+        phipia_proof_settle_ui(
+            "Phipia Store search animation did not settle");
+        {
+            struct ui_rect action;
+            char manifest[13U];
+
+            if (store_primary_action_bounds(&action) != STORE_STATUS_OK ||
+                    action.width == 0U || action.height == 0U) {
+                kernel_test_fail("Phipia Store package action is unavailable");
+            }
+            phipia_proof_click_point(action.x + action.width / 2U,
+                action.y + action.height / 2U,
+                "Phipia Store package action did not activate");
+            if (!ui_application_launch_dequeue(manifest, sizeof(manifest)) ||
+                    manifest[0] != 'P' || manifest[1] != 'H' ||
+                    manifest[2] != 'I' || manifest[3] != 'P' ||
+                    manifest[4] != '.' || manifest[5] != 'M' ||
+                    manifest[6] != 'A' || manifest[7] != 'N' ||
+                    manifest[8] != '\0') {
+                kernel_test_fail(
+                    "Phipia Store did not queue its signed package client");
+            }
+            console_serial_write(
+                "ST PHIPIA STORE signed package action passed\n");
+        }
+        phipia_proof_click_point(search_x, search_y,
+            "Phipia taskbar search did not reopen");
+        if (!taskbar_search_panel_open()) {
+            kernel_test_fail("Phipia taskbar search did not reopen");
+        }
+        static const char paint_query[] = "paint";
+        for (size_t index = 0U; index < sizeof(paint_query) - 1U; ++index) {
+            search_key.scancode = 0U;
+            search_key.character = paint_query[index];
+            if (ui_handle_keyboard(&search_key) != UI_STATUS_OK) {
+                kernel_test_fail("Phipia Paint search failed");
+            }
+        }
+        phipia_proof_process_ui("Phipia Paint search draw failed");
+        search_key.scancode = 0x1CU;
+        search_key.character = '\0';
+        if (ui_handle_keyboard(&search_key) != UI_STATUS_OK) {
+            kernel_test_fail("Phipia Paint search activation failed");
+        }
+        phipia_proof_process_ui("Phipia Paint search activation draw failed");
         char manifest[13U];
-        if (!ui_application_launch_dequeue(manifest, sizeof(manifest)) ||
-                manifest[0] != 'C' || manifest[1] != 'A' ||
-                manifest[2] != 'N' || manifest[3] != 'V' ||
-                manifest[4] != 'A' || manifest[5] != 'S' ||
-                manifest[6] != '.' || manifest[7] != 'M' ||
-                manifest[8] != 'A' || manifest[9] != 'N' ||
-                manifest[10] != '\0') {
-            kernel_test_fail("Sapote Redwood filtered Canvas launch is wrong");
+        if (ui_get_state()->active_panel != UI_PANEL_PAINT ||
+                ui_application_launch_dequeue(manifest, sizeof(manifest))) {
+            kernel_test_fail("Phipia search chose the wrong Paint app");
         }
+        phipia_proof_settle_ui(
+            "Phipia Paint search animation did not settle");
     }
 
     for (size_t index = 0U; index < UI_DOCK_ITEM_COUNT; ++index) {
-        const enum ui_panel_id expected_panel =
-            actions[index] == UI_ACTION_OPEN_CANVAS ?
-                ui->active_panel : panels[index];
+        const enum ui_panel_id expected_panel = panels[index];
 
-        redwood_proof_click_dock_item(&ui->layout.dock_items[index],
-            expected_panel);
-        if (actions[index] == UI_ACTION_OPEN_CANVAS) {
-            char manifest[13U];
-
-            if (!ui_application_launch_dequeue(manifest,
-                    sizeof(manifest)) || manifest[0] != 'C' ||
-                manifest[1] != 'A' || manifest[2] != 'N' ||
-                manifest[3] != 'V' || manifest[4] != 'A' ||
-                manifest[5] != 'S' || manifest[6] != '.' ||
-                manifest[7] != 'M' || manifest[8] != 'A' ||
-                manifest[9] != 'N' || manifest[10] != '\0') {
-                kernel_test_fail("Sapote Redwood Canvas launch request is wrong");
-            }
-        }
+        phipia_proof_click_taskbar_item(index, expected_panel);
+        console_serial_write("ST PHIPIA TASKBAR app ");
+        console_serial_write_u64(index);
+        console_serial_write(" active\n");
+        phipia_proof_settle_ui(
+            "Phipia taskbar application animation did not settle");
+        console_serial_write("ST PHIPIA TASKBAR app ");
+        console_serial_write_u64(index);
+        console_serial_write(" settled\n");
         ui = ui_get_state();
     }
+    console_serial_write("ST PHIPIA TASKBAR applications passed\n");
     if (trail_probe.x < 0 || trail_probe.y < 0 ||
-        redwood_proof_pixel((uint32_t)trail_probe.x,
+        phipia_proof_pixel((uint32_t)trail_probe.x,
             (uint32_t)trail_probe.y) != trail_under ||
-        redwood_proof_pixel((uint32_t)ui->pointer.x,
-            (uint32_t)ui->pointer.y) != ui->theme.ink ||
         ui->renders.cursor_moves <= initial_renders.cursor_moves ||
         ui->renders.damage_rectangles <= initial_renders.damage_rectangles) {
-        kernel_test_fail("Sapote Redwood cursor damage left a trail");
+        kernel_test_fail("Phipia cursor damage left a trail");
     }
 
     struct keyboard_event keyboard = {
         .scancode = 0x01U, .pressed = true, .shift = false, .character = '\0'
     };
     if (ui_handle_keyboard(&keyboard) != UI_STATUS_OK) {
-        kernel_test_fail("Sapote Redwood keyboard panel close failed");
+        kernel_test_fail("Phipia keyboard panel close failed");
     }
-    redwood_proof_process_ui("Sapote Redwood keyboard panel close draw failed");
+    phipia_proof_process_ui("Phipia keyboard panel close draw failed");
+    phipia_proof_settle_ui(
+        "Phipia keyboard panel close animation did not settle");
+    console_serial_write("ST PHIPIA TASKBAR close passed\n");
     keyboard.scancode = 0x0FU;
     if (ui_handle_keyboard(&keyboard) != UI_STATUS_OK) {
-        kernel_test_fail("Sapote Redwood keyboard focus-next failed");
+        kernel_test_fail("Phipia keyboard focus-next failed");
     }
-    redwood_proof_process_ui("Sapote Redwood keyboard focus-next draw failed");
+    phipia_proof_process_ui("Phipia keyboard focus-next draw failed");
     if (ui_get_state()->focus != UI_ELEMENT_DOCK_TERMINAL) {
-        kernel_test_fail("Sapote Redwood keyboard focus-next chose wrong item");
+        kernel_test_fail("Phipia keyboard focus-next chose wrong item");
     }
     keyboard.shift = true;
     if (ui_handle_keyboard(&keyboard) != UI_STATUS_OK) {
-        kernel_test_fail("Sapote Redwood keyboard focus-previous failed");
+        kernel_test_fail("Phipia keyboard focus-previous failed");
     }
-    redwood_proof_process_ui("Sapote Redwood keyboard focus-previous draw failed");
+    phipia_proof_process_ui("Phipia keyboard focus-previous draw failed");
     if (ui_get_state()->focus != UI_ELEMENT_DOCK_FILES) {
-        kernel_test_fail("Sapote Redwood keyboard focus-previous chose wrong item");
+        kernel_test_fail("Phipia keyboard focus-previous chose wrong item");
     }
     keyboard.scancode = 0x1CU;
     keyboard.shift = false;
     if (ui_handle_keyboard(&keyboard) != UI_STATUS_OK) {
-        kernel_test_fail("Sapote Redwood keyboard activation failed");
+        kernel_test_fail("Phipia keyboard activation failed");
     }
-    redwood_proof_process_ui("Sapote Redwood keyboard activation draw failed");
+    phipia_proof_process_ui("Phipia keyboard activation draw failed");
+    phipia_proof_settle_ui(
+        "Phipia keyboard activation animation did not settle");
     if (ui_get_state()->active_panel != UI_PANEL_FILES) {
-        kernel_test_fail("Sapote Redwood keyboard activation chose wrong panel");
+        kernel_test_fail("Phipia keyboard activation chose wrong panel");
     }
+    console_serial_write("ST PHIPIA TASKBAR keyboard passed\n");
 
     if (!boot_plan_pointer_absence_self_test()) {
-        kernel_test_fail("Sapote Redwood pointer-absence synthetic plan failed");
+        kernel_test_fail("Phipia pointer-absence synthetic plan failed");
     }
     proof_status = ui_verify_installed(&proof);
     if (proof_status != UI_STATUS_OK) {
@@ -5732,15 +6542,15 @@ _Noreturn void kernel_test_complete_redwood_proof(void)
         proof.dock_items != UI_DOCK_ITEM_COUNT ||
         proof.ledger_fingerprint != ledger->fingerprint ||
         proof.render_hash == 0U) {
-        kernel_test_fail("Sapote Redwood final installed shape is inconsistent");
+        kernel_test_fail("Phipia final installed shape is inconsistent");
     }
     if (proof.events == 0U || proof.panels < 3U ||
         proof.cursor_moves == 0U || proof.damage_rectangles == 0U ||
         proof.glyphs == 0U) {
-        kernel_test_fail("Sapote Redwood final interaction counters are incomplete");
+        kernel_test_fail("Phipia final interaction counters are incomplete");
     }
 
-    console_write("ST REDWOOD_PROOF geometry ");
+    console_write("ST PHIPIA_PROOF geometry ");
     console_write_u64(proof.width);
     console_putc('x');
     console_write_u64(proof.height);
@@ -5908,7 +6718,7 @@ _Noreturn void kernel_test_complete_nvme(void)
 _Noreturn void kernel_test_complete_filesystem(void)
 {
     static const uint8_t expected_name[FAT16_CANONICAL_NAME_BYTES] =
-        {'S', 'A', 'P', 'O', 'T', 'E', ' ', ' ', 'B', 'I', 'N'};
+        {'P', 'H', 'I', 'P', 'I', 'A', ' ', ' ', 'B', 'I', 'N'};
     const struct boot_ledger *ledger = boot_ledger_installed();
     const struct boot_stage_receipt *foundation;
     const struct boot_stage_receipt *receipt;
@@ -6234,7 +7044,7 @@ static bool inject_keyboard_ctrl_d(void)
     return true;
 }
 
-static bool focus_redwood_proof_terminal(void)
+static bool focus_phipia_proof_terminal(void)
 {
     if (ui_get_state()->active_panel == UI_PANEL_TERMINAL) {
         return true;
@@ -6247,13 +7057,13 @@ static bool focus_redwood_proof_terminal(void)
             return false;
         }
         shell_process_keyboard_events();
-        redwood_proof_process_ui(
+        phipia_proof_process_ui(
             "interactive terminal focus-next processing failed");
         if (!inject_keyboard_byte(UINT8_C(0x8F))) {
             return false;
         }
         shell_process_keyboard_events();
-        redwood_proof_process_ui(
+        phipia_proof_process_ui(
             "interactive terminal focus release processing failed");
     }
     if (ui_get_state()->focus != UI_ELEMENT_DOCK_TERMINAL) {
@@ -6263,18 +7073,18 @@ static bool focus_redwood_proof_terminal(void)
         return false;
     }
     shell_process_keyboard_events();
-    redwood_proof_process_ui(
+    phipia_proof_process_ui(
         "interactive terminal activation processing failed");
     if (!inject_keyboard_byte(UINT8_C(0x9C))) {
         return false;
     }
     shell_process_keyboard_events();
-    redwood_proof_process_ui(
+    phipia_proof_process_ui(
         "interactive terminal activation release processing failed");
     return ui_get_state()->active_panel == UI_PANEL_TERMINAL;
 }
 
-static bool installed_redwood_proof_ready(void)
+static bool installed_phipia_proof_ready(void)
 {
     const struct boot_ledger *ledger = boot_ledger_installed();
 
@@ -6282,7 +7092,7 @@ static bool installed_redwood_proof_ready(void)
         ledger->status == BOOT_LEDGER_STATUS_OK && !ledger->degraded &&
         boot_ledger_fingerprint_valid(ledger) &&
         boot_ledger_has_capability(ledger,
-            BOOT_CAPABILITY_REDWOOD_INSTALLED_PROOF_COMPLETE) &&
+            BOOT_CAPABILITY_PHIPIA_INSTALLED_PROOF_COMPLETE) &&
         boot_ledger_has_capability(ledger,
             BOOT_CAPABILITY_LINUX_SYSCALL_CPU_FOUNDATION_AVAILABLE) &&
         boot_ledger_has_capability(ledger,
@@ -6293,7 +7103,7 @@ static bool installed_redwood_proof_ready(void)
             BOOT_CAPABILITY_LINUX_CAT_IMAGE_STDIN_FOUNDATION_AVAILABLE);
 }
 
-_Noreturn void kernel_test_complete_redwood_proof_userland(void)
+_Noreturn void kernel_test_complete_phipia_proof_userland(void)
 {
     const struct shell_state before = shell_get_state();
     const uint32_t echo_before =
@@ -6303,20 +7113,20 @@ _Noreturn void kernel_test_complete_redwood_proof_userland(void)
     struct linux_abi_proof_result echo;
     struct linux_uname_abi_proof_result uname;
 
-    if (active_scenario != KERNEL_TEST_REDWOOD_PROOF_USERLAND ||
-        !installed_redwood_proof_ready() || !shell_is_active()) {
-        kernel_test_fail("Sapote Redwood userspace prerequisites are incomplete");
+    if (active_scenario != KERNEL_TEST_PHIPIA_PROOF_USERLAND ||
+        !installed_phipia_proof_ready() || !shell_is_active()) {
+        kernel_test_fail("Phipia userspace prerequisites are incomplete");
     }
     cpu_interrupt_enable();
     console_write("\n");
-    console_write("sap> ");
+    console_write("phip> ");
     if (!feed_shell_line("linux unsupported") ||
         !feed_shell_line("echo native") ||
         !feed_shell_line("linux echo") ||
         !feed_shell_line("linux uname") ||
         !feed_shell_line("linux echo") ||
         !feed_shell_line("linux uname")) {
-        kernel_test_fail("Sapote Redwood shell input injection was refused");
+        kernel_test_fail("Phipia shell input injection was refused");
     }
     echo = linux_abi_get_proof_result();
     uname = linux_uname_abi_get_proof_result();
@@ -6337,27 +7147,27 @@ _Noreturn void kernel_test_complete_redwood_proof_userland(void)
         !uname.real_syscall_instruction || !uname.uts_copy_valid ||
         !uname.stdout_valid || !uname.exit_zero || !uname.teardown_complete ||
         !linux_userland_resources_released() || !cpu_interrupts_enabled()) {
-        kernel_test_fail("Sapote Redwood userspace relaunch contract failed");
+        kernel_test_fail("Phipia userspace relaunch contract failed");
     }
-    console_write("\nST REDWOOD_PROOF_USERLAND shell production echo 2 uname 2 ");
+    console_write("\nST PHIPIA_PROOF_USERLAND shell production echo 2 uname 2 ");
     console_write("invalid-profile recovered CPL3 SYSCALL stdout exact exit 0 ");
     console_write("teardown clean prompt restored\n");
     kernel_test_pass();
 }
 
-_Noreturn void kernel_test_complete_redwood_proof_userland_absent(void)
+_Noreturn void kernel_test_complete_phipia_proof_userland_absent(void)
 {
     const struct shell_state before = shell_get_state();
     const uint32_t echo_before =
         linux_userland_completed(LINUX_USERLAND_PROFILE_ECHO);
 
-    if (active_scenario != KERNEL_TEST_REDWOOD_PROOF_USERLAND_ABSENT ||
-        !installed_redwood_proof_ready() || !shell_is_active()) {
+    if (active_scenario != KERNEL_TEST_PHIPIA_PROOF_USERLAND_ABSENT ||
+        !installed_phipia_proof_ready() || !shell_is_active()) {
         kernel_test_fail("absent-volume userspace prerequisites are incomplete");
     }
     cpu_interrupt_enable();
     console_write("\n");
-    console_write("sap> ");
+    console_write("phip> ");
     if (!feed_shell_line("linux echo") ||
         !feed_shell_line("echo still usable") ||
         shell_get_state().commands != before.commands + 2U ||
@@ -6367,12 +7177,12 @@ _Noreturn void kernel_test_complete_redwood_proof_userland_absent(void)
         !linux_userland_resources_released() || !cpu_interrupts_enabled()) {
         kernel_test_fail("absent userspace volume did not recover cleanly");
     }
-    console_write("\nST REDWOOD_PROOF_USERLAND_ABSENT concise refusal prompt usable ");
+    console_write("\nST PHIPIA_PROOF_USERLAND_ABSENT concise refusal prompt usable ");
     console_write("teardown clean\n");
     kernel_test_pass();
 }
 
-_Noreturn void kernel_test_complete_redwood_proof_userland_interactive(void)
+_Noreturn void kernel_test_complete_phipia_proof_userland_interactive(void)
 {
     const struct shell_state before = shell_get_state();
     const uint32_t cat_before =
@@ -6381,18 +7191,18 @@ _Noreturn void kernel_test_complete_redwood_proof_userland_interactive(void)
     uint64_t second_generation;
     struct linux_cat_abi_proof_result proof;
 
-    if (active_scenario != KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE ||
-        !installed_redwood_proof_ready() || !shell_is_active() ||
+    if (active_scenario != KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE ||
+        !installed_phipia_proof_ready() || !shell_is_active() ||
         !keyboard_is_initialized()) {
         kernel_test_fail("interactive userspace prerequisites are incomplete");
     }
     cpu_interrupt_enable();
     shell_process_keyboard_events();
-    if (!focus_redwood_proof_terminal()) {
+    if (!focus_phipia_proof_terminal()) {
         kernel_test_fail("interactive scenario could not focus Terminal");
     }
     console_write("\n");
-    console_write("sap> ");
+    console_write("phip> ");
 
     if (!inject_keyboard_text("linux cat\n") ||
         !linux_userland_foreground_waiting()) {
@@ -6437,13 +7247,13 @@ _Noreturn void kernel_test_complete_redwood_proof_userland_interactive(void)
         !cpu_interrupts_enabled()) {
         kernel_test_fail("interactive cat proof is inconsistent");
     }
-    console_write("\nST REDWOOD_PROOF_USERLAND_INTERACTIVE cat 2 keyboard IRQ ");
+    console_write("\nST PHIPIA_PROOF_USERLAND_INTERACTIVE cat 2 keyboard IRQ ");
     console_write("read SYSCALL copy-out resume write SYSCALL stdout exact ");
     console_write("EOF exit 0 teardown clean fresh generation prompt restored\n");
     kernel_test_pass();
 }
 
-_Noreturn void kernel_test_complete_redwood_proof_userland_interactive_absent(
+_Noreturn void kernel_test_complete_phipia_proof_userland_interactive_absent(
     void
 )
 {
@@ -6455,18 +7265,18 @@ _Noreturn void kernel_test_complete_redwood_proof_userland_interactive_absent(
     struct linux_abi_proof_result echo;
 
     if (active_scenario !=
-            KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE_ABSENT ||
-        !installed_redwood_proof_ready() || !shell_is_active() ||
+            KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE_ABSENT ||
+        !installed_phipia_proof_ready() || !shell_is_active() ||
         !keyboard_is_initialized()) {
         kernel_test_fail("interactive absent-profile prerequisites incomplete");
     }
     cpu_interrupt_enable();
     shell_process_keyboard_events();
-    if (!focus_redwood_proof_terminal()) {
+    if (!focus_phipia_proof_terminal()) {
         kernel_test_fail("absent scenario could not focus Terminal");
     }
     console_write("\n");
-    console_write("sap> ");
+    console_write("phip> ");
     if (!inject_keyboard_text("linux cat\n") ||
         linux_userland_foreground_waiting() ||
         !linux_userland_resources_released() ||
@@ -6486,7 +7296,7 @@ _Noreturn void kernel_test_complete_redwood_proof_userland_interactive_absent(
         !linux_userland_resources_released() || !cpu_interrupts_enabled()) {
         kernel_test_fail("missing cat profile recovery proof is inconsistent");
     }
-    console_write("\nST REDWOOD_PROOF_USERLAND_INTERACTIVE_ABSENT cat missing ");
+    console_write("\nST PHIPIA_PROOF_USERLAND_INTERACTIVE_ABSENT cat missing ");
     console_write("echo valid keyboard IRQ refusal recoverable teardown clean ");
     console_write("prompt usable\n");
     kernel_test_pass();
@@ -6499,24 +7309,24 @@ static bool fat32_read_file(
     size_t *file_bytes
 )
 {
-    sapfs_handle handle;
-    struct sapfs_stat stat;
+    phipfs_handle handle;
+    struct phipfs_stat stat;
     size_t read_bytes = 0U;
-    enum sapfs_status status;
+    enum phipfs_status status;
 
     if (path == NULL || buffer == NULL || file_bytes == NULL ||
-        sapfs_stat_path(SAPFS_VOLUME_DATA, path, &stat) != SAPFS_STATUS_OK ||
+        phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat) != PHIPFS_STATUS_OK ||
         stat.directory || stat.size > capacity ||
-        sapfs_open(SAPFS_VOLUME_DATA, path, SAPFS_ACCESS_READ, &handle) !=
-            SAPFS_STATUS_OK) {
+        phipfs_open(PHIPFS_VOLUME_DATA, path, PHIPFS_ACCESS_READ, &handle) !=
+            PHIPFS_STATUS_OK) {
         return false;
     }
-    status = sapfs_read(handle, buffer, capacity, &read_bytes);
-    if (sapfs_close(handle) != SAPFS_STATUS_OK) {
+    status = phipfs_read(handle, buffer, capacity, &read_bytes);
+    if (phipfs_close(handle) != PHIPFS_STATUS_OK) {
         return false;
     }
     *file_bytes = read_bytes;
-    return status == SAPFS_STATUS_OK && read_bytes == stat.size;
+    return status == PHIPFS_STATUS_OK && read_bytes == stat.size;
 }
 
 static bool fat32_file_equals(
@@ -6548,16 +7358,16 @@ static bool fat32_file_equals(
 static void fat32_feed(const char *line)
 {
     if (!feed_shell_line(line)) {
-        kernel_test_fail("Sapote Redwood refused a FAT32 command line");
+        kernel_test_fail("Phipia refused a FAT32 command line");
     }
 }
 
 static void fat32_require_base(bool data_required)
 {
-    struct sapfs_drive_info system = sapfs_drive(SAPFS_VOLUME_SYSTEM);
-    struct sapfs_drive_info data = sapfs_drive(SAPFS_VOLUME_DATA);
+    struct phipfs_drive_info system = phipfs_drive(PHIPFS_VOLUME_SYSTEM);
+    struct phipfs_drive_info data = phipfs_drive(PHIPFS_VOLUME_DATA);
 
-    if (!installed_redwood_proof_ready() || !shell_is_active() ||
+    if (!installed_phipia_proof_ready() || !shell_is_active() ||
         !system.present || !system.healthy || !system.mounted ||
         !system.read_only || system.volume_id != FAT32_SYSTEM_VOLUME_ID ||
         (data_required && (!data.present || !data.healthy || !data.mounted ||
@@ -6605,7 +7415,7 @@ static void fat32_data_scenario(void)
 static void fat32_nested_scenario(void)
 {
     static const uint8_t expected[] = "nested\n";
-    struct sapfs_stat stat;
+    struct phipfs_stat stat;
 
     fat32_require_base(true);
     fat32_feed("mkdir projects");
@@ -6617,8 +7427,8 @@ static void fat32_nested_scenario(void)
     fat32_feed("cd ..");
     if (!fat32_file_equals("projects/cuts/notes.txt", expected,
             sizeof(expected) - 1U) ||
-        sapfs_stat_path(SAPFS_VOLUME_DATA, "projects/cuts", &stat) !=
-            SAPFS_STATUS_OK || !stat.directory) {
+        phipfs_stat_path(PHIPFS_VOLUME_DATA, "projects/cuts", &stat) !=
+            PHIPFS_STATUS_OK || !stat.directory) {
         kernel_test_fail("nested FAT32 traversal changed");
     }
     console_write("\nST FAT32 NESTED dot dotdot traversal enumeration exact\n");
@@ -6626,7 +7436,7 @@ static void fat32_nested_scenario(void)
 
 static void fat32_growth_scenario(void)
 {
-    struct sapfs_stat stat;
+    struct phipfs_stat stat;
     uint8_t buffer[1024];
     size_t bytes = 0U;
 
@@ -6636,8 +7446,8 @@ static void fat32_growth_scenario(void)
         fat32_feed("append growth.bin \"0123456789012345678901234567890123456789012345678901234567890123456789\"");
     }
     fat32_feed("stat growth.bin");
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "growth.bin", &stat) !=
-            SAPFS_STATUS_OK || stat.size != 568U || stat.cluster_count != 2U ||
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "growth.bin", &stat) !=
+            PHIPFS_STATUS_OK || stat.size != 568U || stat.cluster_count != 2U ||
         !fat32_read_file("growth.bin", buffer, sizeof(buffer), &bytes) ||
         bytes != stat.size) {
         kernel_test_fail("multi-cluster FAT32 growth changed");
@@ -6661,7 +7471,7 @@ static void fat32_random_scenario(void)
 
 static void fat32_truncate_scenario(void)
 {
-    struct sapfs_stat stat;
+    struct phipfs_stat stat;
     uint8_t buffer[800];
     size_t bytes = 0U;
 
@@ -6670,8 +7480,8 @@ static void fat32_truncate_scenario(void)
     fat32_feed("truncate trim.bin 648");
     fat32_feed("writeat trim.bin 0 \"prefix\"");
     fat32_feed("truncate trim.bin 100");
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "trim.bin", &stat) !=
-            SAPFS_STATUS_OK || stat.size != 100U || stat.cluster_count != 1U) {
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "trim.bin", &stat) !=
+            PHIPFS_STATUS_OK || stat.size != 100U || stat.cluster_count != 1U) {
         kernel_test_fail("FAT32 truncation did not release its tail");
     }
     fat32_feed("truncate trim.bin 700");
@@ -6690,27 +7500,27 @@ static void fat32_truncate_scenario(void)
 static void fat32_rename_scenario(void)
 {
     static const uint8_t expected[] = "move me\n";
-    struct sapfs_stat stat;
+    struct phipfs_stat stat;
 
     fat32_require_base(true);
     fat32_feed("mkdir a");
     fat32_feed("mkdir b");
     fat32_feed("mkdir a/child");
-    if (sapfs_rename(SAPFS_VOLUME_DATA, "a", "a/child/a") !=
-            SAPFS_STATUS_PATH) {
+    if (phipfs_rename(PHIPFS_VOLUME_DATA, "a", "a/child/a") !=
+            PHIPFS_STATUS_PATH) {
         kernel_test_fail("FAT32 accepted a directory move into itself");
     }
     fat32_feed("write a/note.txt \"move me\"");
     fat32_feed("mv a/note.txt b/moved.txt");
     fat32_feed("mv b archive");
     fat32_feed("touch conflict.txt");
-    if (sapfs_rename(SAPFS_VOLUME_DATA, "conflict.txt",
-            "archive/moved.txt") != SAPFS_STATUS_EXISTS) {
+    if (phipfs_rename(PHIPFS_VOLUME_DATA, "conflict.txt",
+            "archive/moved.txt") != PHIPFS_STATUS_EXISTS) {
         kernel_test_fail("FAT32 rename conflict was not rejected");
     }
     fat32_feed("ls archive");
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "a/note.txt", &stat) !=
-            SAPFS_STATUS_NOT_FOUND ||
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "a/note.txt", &stat) !=
+            PHIPFS_STATUS_NOT_FOUND ||
         !fat32_file_equals("archive/moved.txt", expected,
             sizeof(expected) - 1U)) {
         kernel_test_fail("FAT32 rename or move changed ownership");
@@ -6720,22 +7530,22 @@ static void fat32_rename_scenario(void)
 
 static void fat32_delete_scenario(void)
 {
-    struct sapfs_stat first;
-    struct sapfs_stat second;
+    struct phipfs_stat first;
+    struct phipfs_stat second;
 
     fat32_require_base(true);
     fat32_feed("write first.bin \"one\"");
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "first.bin", &first) !=
-            SAPFS_STATUS_OK) {
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "first.bin", &first) !=
+            PHIPFS_STATUS_OK) {
         kernel_test_fail("FAT32 deletion setup failed");
     }
     fat32_feed("rm first.bin");
     fat32_feed("write second.bin \"two\"");
     fat32_feed("mkdir kept");
     fat32_feed("write kept/live.txt \"live\"");
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "second.bin", &second) !=
-            SAPFS_STATUS_OK || first.first_cluster != second.first_cluster ||
-        sapfs_rmdir(SAPFS_VOLUME_DATA, "kept") != SAPFS_STATUS_NOT_EMPTY) {
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "second.bin", &second) !=
+            PHIPFS_STATUS_OK || first.first_cluster != second.first_cluster ||
+        phipfs_rmdir(PHIPFS_VOLUME_DATA, "kept") != PHIPFS_STATUS_NOT_EMPTY) {
         kernel_test_fail("FAT32 deletion did not reuse or protect ownership");
     }
     fat32_feed("rm kept/live.txt");
@@ -6745,22 +7555,22 @@ static void fat32_delete_scenario(void)
 
 static void fat32_full_scenario(void)
 {
-    struct sapfs_stat stat;
+    struct phipfs_stat stat;
 
     fat32_require_base(true);
-    if (sapfs_drive(SAPFS_VOLUME_DATA).free_bytes != 0U) {
+    if (phipfs_drive(PHIPFS_VOLUME_DATA).free_bytes != 0U) {
         kernel_test_fail("full FAT32 fixture retained free clusters");
     }
     fat32_feed("write recovery.txt \"blocked\"");
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "recovery.txt", &stat) !=
-            SAPFS_STATUS_OK || stat.size != 0U) {
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "recovery.txt", &stat) !=
+            PHIPFS_STATUS_OK || stat.size != 0U) {
         kernel_test_fail("full-volume refusal exposed partial contents");
     }
     fat32_feed("rm tiny.bin");
     fat32_feed("write recovery.txt \"recovered\"");
     fat32_feed("sync");
-    if (sapfs_stat_path(SAPFS_VOLUME_DATA, "recovery.txt", &stat) !=
-            SAPFS_STATUS_OK || stat.size != 10U) {
+    if (phipfs_stat_path(PHIPFS_VOLUME_DATA, "recovery.txt", &stat) !=
+            PHIPFS_STATUS_OK || stat.size != 10U) {
         kernel_test_fail("full FAT32 volume did not recover after deletion");
     }
     console_write("\nST FAT32 FULL refusal no leak deletion recovered\n");
@@ -6768,7 +7578,7 @@ static void fat32_full_scenario(void)
 
 static void fat32_unavailable_scenario(bool corrupt)
 {
-    struct sapfs_drive_info data = sapfs_drive(SAPFS_VOLUME_DATA);
+    struct phipfs_drive_info data = phipfs_drive(PHIPFS_VOLUME_DATA);
     const uint32_t before =
         linux_userland_completed(LINUX_USERLAND_PROFILE_ECHO);
 
@@ -6790,26 +7600,26 @@ static void fat32_unavailable_scenario(bool corrupt)
 static void fat32_persistence_scenario(void)
 {
     static const uint8_t expected[] = "first cut\nsecond line\n";
-    struct sapfs_stat stat;
-    enum sapfs_status status;
+    struct phipfs_stat stat;
+    enum phipfs_status status;
 
     fat32_require_base(true);
-    status = sapfs_stat_path(SAPFS_VOLUME_DATA, "projects/notes.txt", &stat);
-    if (status == SAPFS_STATUS_NOT_FOUND) {
+    status = phipfs_stat_path(PHIPFS_VOLUME_DATA, "projects/notes.txt", &stat);
+    if (status == PHIPFS_STATUS_NOT_FOUND) {
         fat32_feed("mkdir projects");
         fat32_feed("write projects/notes.txt \"first cut\"");
         fat32_feed("append projects/notes.txt \"second line\"");
         fat32_feed("sync");
         if (!fat32_file_equals("projects/notes.txt", expected,
                 sizeof(expected) - 1U) ||
-            sapfs_unmount(SAPFS_VOLUME_DATA) != SAPFS_STATUS_OK) {
+            phipfs_unmount(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK) {
             kernel_test_fail("clean persistence write phase failed");
         }
         console_write("\nST FAT32 PERSISTENCE synchronized reboot phase\n");
         cpu_out8(UINT16_C(0x0064), UINT8_C(0xFE));
         kernel_test_fail("platform reset did not restart QEMU");
     }
-    if (status != SAPFS_STATUS_OK ||
+    if (status != PHIPFS_STATUS_OK ||
         !fat32_file_equals("projects/notes.txt", expected,
             sizeof(expected) - 1U)) {
         kernel_test_fail("clean reboot did not retain FAT32 contents");
@@ -6850,16 +7660,16 @@ static void fat32_cache_scenario(void)
 
 static void fat32_immutable_scenario(void)
 {
-    sapfs_handle handle;
+    phipfs_handle handle;
     const uint32_t before =
         linux_userland_completed(LINUX_USERLAND_PROFILE_ECHO);
 
     fat32_require_base(true);
     fat32_feed("linux echo");
-    if (sapfs_create(SAPFS_VOLUME_SYSTEM, "ATTACK.TXT") !=
-            SAPFS_STATUS_READ_ONLY ||
-        sapfs_open(SAPFS_VOLUME_SYSTEM, "BUSYBOX", SAPFS_ACCESS_WRITE,
-            &handle) != SAPFS_STATUS_READ_ONLY ||
+    if (phipfs_create(PHIPFS_VOLUME_SYSTEM, "ATTACK.TXT") !=
+            PHIPFS_STATUS_READ_ONLY ||
+        phipfs_open(PHIPFS_VOLUME_SYSTEM, "BUSYBOX", PHIPFS_ACCESS_WRITE,
+            &handle) != PHIPFS_STATUS_READ_ONLY ||
         linux_userland_completed(LINUX_USERLAND_PROFILE_ECHO) != before + 1U) {
         kernel_test_fail("immutable FAT32 system volume accepted a write");
     }
@@ -6868,37 +7678,37 @@ static void fat32_immutable_scenario(void)
 
 static void fat32_handles_scenario(void)
 {
-    sapfs_handle handles[SAPFS_MAX_HANDLES];
-    sapfs_handle extra;
+    phipfs_handle handles[PHIPFS_MAX_HANDLES];
+    phipfs_handle extra;
     size_t bytes = 0U;
     uint8_t byte = 0U;
 
     fat32_require_base(true);
     fat32_feed("write handle.txt \"generation\"");
-    if (sapfs_open(SAPFS_VOLUME_DATA, "handle.txt", SAPFS_ACCESS_READ,
-            &handles[0]) != SAPFS_STATUS_OK ||
-        sapfs_write(handles[0], &byte, 1U, &bytes) != SAPFS_STATUS_ACCESS ||
-        sapfs_read(handles[0], NULL, 1U, &bytes) !=
-            SAPFS_STATUS_INVALID_ARGUMENT ||
-        sapfs_unlink(SAPFS_VOLUME_DATA, "handle.txt") != SAPFS_STATUS_BUSY ||
-        sapfs_close(handles[0]) != SAPFS_STATUS_OK ||
-        sapfs_close(handles[0]) != SAPFS_STATUS_STALE_HANDLE ||
-        sapfs_read(handles[0], &byte, 1U, &bytes) !=
-            SAPFS_STATUS_STALE_HANDLE) {
+    if (phipfs_open(PHIPFS_VOLUME_DATA, "handle.txt", PHIPFS_ACCESS_READ,
+            &handles[0]) != PHIPFS_STATUS_OK ||
+        phipfs_write(handles[0], &byte, 1U, &bytes) != PHIPFS_STATUS_ACCESS ||
+        phipfs_read(handles[0], NULL, 1U, &bytes) !=
+            PHIPFS_STATUS_INVALID_ARGUMENT ||
+        phipfs_unlink(PHIPFS_VOLUME_DATA, "handle.txt") != PHIPFS_STATUS_BUSY ||
+        phipfs_close(handles[0]) != PHIPFS_STATUS_OK ||
+        phipfs_close(handles[0]) != PHIPFS_STATUS_STALE_HANDLE ||
+        phipfs_read(handles[0], &byte, 1U, &bytes) !=
+            PHIPFS_STATUS_STALE_HANDLE) {
         kernel_test_fail("FAT32 handle generation controls changed");
     }
-    for (size_t index = 0U; index < SAPFS_MAX_HANDLES; ++index) {
-        if (sapfs_open(SAPFS_VOLUME_DATA, "handle.txt", SAPFS_ACCESS_READ,
-                &handles[index]) != SAPFS_STATUS_OK) {
+    for (size_t index = 0U; index < PHIPFS_MAX_HANDLES; ++index) {
+        if (phipfs_open(PHIPFS_VOLUME_DATA, "handle.txt", PHIPFS_ACCESS_READ,
+                &handles[index]) != PHIPFS_STATUS_OK) {
             kernel_test_fail("FAT32 handle table filled early");
         }
     }
-    if (sapfs_open(SAPFS_VOLUME_DATA, "handle.txt", SAPFS_ACCESS_READ,
-            &extra) != SAPFS_STATUS_NO_HANDLES) {
+    if (phipfs_open(PHIPFS_VOLUME_DATA, "handle.txt", PHIPFS_ACCESS_READ,
+            &extra) != PHIPFS_STATUS_NO_HANDLES) {
         kernel_test_fail("FAT32 handle table exceeded its fixed bound");
     }
-    for (size_t index = 0U; index < SAPFS_MAX_HANDLES; ++index) {
-        if (sapfs_close(handles[index]) != SAPFS_STATUS_OK) {
+    for (size_t index = 0U; index < PHIPFS_MAX_HANDLES; ++index) {
+        if (phipfs_close(handles[index]) != PHIPFS_STATUS_OK) {
             kernel_test_fail("FAT32 handle teardown leaked ownership");
         }
     }
@@ -6912,7 +7722,7 @@ _Noreturn void kernel_test_complete_fat32(void)
         kernel_test_fail("FAT32 completion used outside its scenario");
     }
     cpu_interrupt_enable();
-    console_write("\nsap> ");
+    console_write("\nphip> ");
     switch (active_scenario) {
     case KERNEL_TEST_FAT32_SYSTEM: fat32_system_scenario(); break;
     case KERNEL_TEST_FAT32_DATA: fat32_data_scenario(); break;
@@ -6942,7 +7752,7 @@ _Noreturn void kernel_test_complete_fat32(void)
 #define NETWORK_TEST_HTTP UINT32_C(0x0A000214)
 
 static const uint8_t network_welcome[] =
-    "hello from the Sapote network\n";
+    "hello from the Phipia network\n";
 
 static void network_require_device(void)
 {
@@ -7006,7 +7816,7 @@ static void network_syscall_http_download_scenario(void)
     const uint64_t response_address = request_address + UINT64_C(256);
     const uint64_t url_address = request_address + UINT64_C(512);
     const uint64_t path_address = request_address + UINT64_C(640);
-    static const char url[] = "http://sapote.test/welcome.txt";
+    static const char url[] = "http://phipia.test/welcome.txt";
     static const char destination[] = "HTTPLEN.TXT";
     uintptr_t executable_frame = 0U;
     uintptr_t data_frame = 0U;
@@ -7210,7 +8020,7 @@ static void network_tcp_connect_close(bool expect_reset)
 #define NETWORK_TEST_LISTEN_PORT UINT16_C(7777)
 #define NETWORK_TEST_CLOSED_PORT UINT16_C(7778)
 
-static const uint8_t network_listen_request[] = "SAPOTE LISTEN\n";
+static const uint8_t network_listen_request[] = "PHIPIA LISTEN\n";
 static const uint8_t network_refusal_notice[] = "REFUSED";
 
 static network_handle network_announce_port(
@@ -7222,10 +8032,10 @@ static network_handle network_announce_port(
     network_handle knock;
     uint8_t message[6];
 
-    message[0] = (uint8_t)'S';
-    message[1] = (uint8_t)'A';
-    message[2] = (uint8_t)'P';
-    message[3] = (uint8_t)'L';
+    message[0] = (uint8_t)'P';
+    message[1] = (uint8_t)'H';
+    message[2] = (uint8_t)'I';
+    message[3] = (uint8_t)'P';
     message[4] = (uint8_t)(announced >> 8U);
     message[5] = (uint8_t)announced;
     if (network_udp_open(NETWORK_TEST_OWNER, &knock) != NETWORK_STATUS_OK ||
@@ -7549,7 +8359,7 @@ static void network_download(const char *destination)
 
     network_require_dhcp();
     if (network_http_download(NETWORK_TEST_OWNER,
-            "http://sapote.test/welcome.txt", destination, false,
+            "http://phipia.test/welcome.txt", destination, false,
             UINT64_C(15000000000), &result) != NETWORK_STATUS_OK ||
         !result.synchronized || result.status_code != 200U ||
         !fat32_file_equals(destination, network_welcome,
@@ -7611,8 +8421,13 @@ _Noreturn void kernel_test_complete_network(void)
     case KERNEL_TEST_NETWORK_DHCP_TIMEOUT: {
         enum network_status status = network_start_dhcp(UINT64_C(1000000000));
 
-        if (status != NETWORK_STATUS_TIMEOUT ||
-            network_get_state().configuration.configured) {
+        if (status != NETWORK_STATUS_TIMEOUT) {
+            console_serial_write("ST DHCP silent-peer status ");
+            console_serial_write(network_status_string(status));
+            console_serial_write("\n");
+            kernel_test_fail("DHCP silent peer did not time out");
+        }
+        if (network_get_state().configuration.configured) {
             kernel_test_fail("DHCP timeout invented a lease");
         }
         break;
@@ -7654,7 +8469,7 @@ _Noreturn void kernel_test_complete_network(void)
         uint32_t address;
 
         network_require_dhcp();
-        if (network_resolve("sapote.test", &address,
+        if (network_resolve("phipia.test", &address,
                 NETWORK_DEFAULT_OPERATION_TIMEOUT_NS) != NETWORK_STATUS_OK ||
             address != NETWORK_TEST_HTTP) {
             kernel_test_fail("DNS resolution did not return fixture address");
@@ -7666,7 +8481,7 @@ _Noreturn void kernel_test_complete_network(void)
         enum network_status status;
 
         network_require_dhcp();
-        status = network_resolve("sapote.test", &address,
+        status = network_resolve("phipia.test", &address,
             UINT64_C(1000000000));
         if (status != NETWORK_STATUS_TIMEOUT &&
             status != NETWORK_STATUS_DNS_FAILURE &&
@@ -7704,32 +8519,32 @@ _Noreturn void kernel_test_complete_network(void)
     }
     case KERNEL_TEST_NETWORK_HTTP_CHUNKED:
         network_http_download_scenario(
-            "http://sapote.test/welcome.txt", "HTTPCHNK.TXT", true, 0U);
+            "http://phipia.test/welcome.txt", "HTTPCHNK.TXT", true, 0U);
         break;
     case KERNEL_TEST_NETWORK_HTTP_REDIRECT:
         network_http_download_scenario(
-            "http://sapote.test/start", "HTTPREDR.TXT", false, 1U);
+            "http://phipia.test/start", "HTTPREDR.TXT", false, 1U);
         break;
     case KERNEL_TEST_NETWORK_HTTP_MALFORMED: {
         struct network_http_result result;
-        struct sapfs_stat stat;
+        struct phipfs_stat stat;
 
         fat32_require_base(true);
         network_require_dhcp();
         if (network_http_download(NETWORK_TEST_OWNER,
-                "http://sapote.test/welcome.txt", "BADHTTP.TXT", false,
+                "http://phipia.test/welcome.txt", "BADHTTP.TXT", false,
                 UINT64_C(5000000000), &result) == NETWORK_STATUS_OK ||
-            sapfs_stat_path(SAPFS_VOLUME_DATA, "BADHTTP.TXT", &stat) !=
-                SAPFS_STATUS_NOT_FOUND) {
+            phipfs_stat_path(PHIPFS_VOLUME_DATA, "BADHTTP.TXT", &stat) !=
+                PHIPFS_STATUS_NOT_FOUND) {
             kernel_test_fail("malformed HTTP response was accepted");
         }
         break;
     }
     case KERNEL_TEST_NETWORK_HTTP_NESTED:
         fat32_require_base(true);
-        if (sapfs_mkdir(SAPFS_VOLUME_DATA, "DOWNLDS") != SAPFS_STATUS_OK &&
-            sapfs_stat_path(SAPFS_VOLUME_DATA, "DOWNLDS",
-                &(struct sapfs_stat){0}) != SAPFS_STATUS_OK) {
+        if (phipfs_mkdir(PHIPFS_VOLUME_DATA, "DOWNLDS") != PHIPFS_STATUS_OK &&
+            phipfs_stat_path(PHIPFS_VOLUME_DATA, "DOWNLDS",
+                &(struct phipfs_stat){0}) != PHIPFS_STATUS_OK) {
             kernel_test_fail("download directory was not available");
         }
         network_download("DOWNLDS/WELCOME.TXT");
@@ -7746,7 +8561,7 @@ _Noreturn void kernel_test_complete_network(void)
         fat32_require_base(true);
         network_require_dhcp();
         status = network_http_download(NETWORK_TEST_OWNER,
-            "http://sapote.test/welcome.txt", "full.txt", false,
+            "http://phipia.test/welcome.txt", "full.txt", false,
             UINT64_C(5000000000), &result);
         if (status != NETWORK_STATUS_TOO_LARGE &&
             status != NETWORK_STATUS_FILESYSTEM) {
@@ -7784,14 +8599,14 @@ _Noreturn void kernel_test_complete_network(void)
         break;
     }
     case KERNEL_TEST_NETWORK_SYSTEM_IMMUTABLE: {
-        sapfs_handle handle;
+        phipfs_handle handle;
 
         fat32_require_base(true);
         network_http_download_scenario(
-            "http://sapote.test/welcome.txt", "IMMUTABL.TXT",
+            "http://phipia.test/welcome.txt", "IMMUTABL.TXT",
             false, 0U);
-        if (sapfs_open(SAPFS_VOLUME_SYSTEM, "BUSYBOX", SAPFS_ACCESS_WRITE,
-                &handle) != SAPFS_STATUS_READ_ONLY) {
+        if (phipfs_open(PHIPFS_VOLUME_SYSTEM, "BUSYBOX", PHIPFS_ACCESS_WRITE,
+                &handle) != PHIPFS_STATUS_READ_ONLY) {
             kernel_test_fail("networking weakened the immutable system volume");
         }
         break;
@@ -7819,13 +8634,13 @@ _Noreturn void kernel_test_complete_network(void)
         network_linux_cat_twice();
         break;
     case KERNEL_TEST_NETWORK_FILES: {
-        struct sapfs_list_entry entries[4];
+        struct phipfs_list_entry entries[4];
         size_t count = 0U;
 
         fat32_require_base(true);
         network_require_dhcp();
-        if (sapfs_list(SAPFS_VOLUME_DATA, ".", entries, 4U, &count) !=
-                SAPFS_STATUS_OK || ui_flush() != UI_STATUS_OK) {
+        if (phipfs_list(PHIPFS_VOLUME_DATA, ".", entries, 4U, &count) !=
+                PHIPFS_STATUS_OK || ui_flush() != UI_STATUS_OK) {
             kernel_test_fail("networking regressed Files");
         }
         break;
@@ -7838,29 +8653,29 @@ _Noreturn void kernel_test_complete_network(void)
             kernel_test_fail("networking regressed Notes");
         }
         break;
-    case KERNEL_TEST_NETWORK_STUDIO:
+    case KERNEL_TEST_NETWORK_MEDIA_EDITOR:
         fat32_require_base(true);
         network_require_dhcp();
         if (!ui_is_active() || ui_flush() != UI_STATUS_OK) {
-            kernel_test_fail("networking regressed SapStudio");
+            kernel_test_fail("networking regressed Media Editor");
         }
         break;
     case KERNEL_TEST_NETWORK_PERSISTENCE: {
-        struct sapfs_stat stat;
-        enum sapfs_status status;
+        struct phipfs_stat stat;
+        enum phipfs_status status;
 
         fat32_require_base(true);
-        status = sapfs_stat_path(SAPFS_VOLUME_DATA, "network.txt", &stat);
-        if (status == SAPFS_STATUS_NOT_FOUND) {
+        status = phipfs_stat_path(PHIPFS_VOLUME_DATA, "network.txt", &stat);
+        if (status == PHIPFS_STATUS_NOT_FOUND) {
             network_download("network.txt");
-            if (sapfs_unmount(SAPFS_VOLUME_DATA) != SAPFS_STATUS_OK) {
+            if (phipfs_unmount(PHIPFS_VOLUME_DATA) != PHIPFS_STATUS_OK) {
                 kernel_test_fail("network download did not unmount cleanly");
             }
             console_write("\nST NETWORK PERSISTENCE synchronized reboot phase\n");
             cpu_out8(UINT16_C(0x0064), UINT8_C(0xFE));
             kernel_test_fail("platform reset did not restart QEMU");
         }
-        if (status != SAPFS_STATUS_OK ||
+        if (status != PHIPFS_STATUS_OK ||
             !fat32_file_equals("network.txt", network_welcome,
                 sizeof(network_welcome) - 1U)) {
             kernel_test_fail("network download did not persist after reboot");
@@ -8079,6 +8894,22 @@ _Noreturn void kernel_test_complete_audio(void)
         !proof.controller_reset || !proof.rings_running ||
         !proof.audio_function_group_found ||
         !proof.device_wrote_response_ring ||
+        proof.sample_rate != AUDIO_PCM_SAMPLE_RATE ||
+        proof.channels != AUDIO_PCM_CHANNELS ||
+        proof.bits_per_sample != AUDIO_PCM_BITS_PER_SAMPLE ||
+        proof.pcm_frames != AUDIO_PCM_FRAMES ||
+        proof.pcm_bytes != AUDIO_PCM_BYTES ||
+        proof.bdl_entries != AUDIO_PCM_BDL_ENTRIES ||
+        proof.stream_format != UINT16_C(0x0011) || proof.pcm_hash == 0U ||
+        proof.playback_converter == 0U || proof.playback_pin == 0U ||
+        proof.playback_stream_tag != AUDIO_PCM_STREAM_TAG ||
+        !proof.output_route_found || !proof.pcm_profile_supported ||
+        !proof.pcm_device_owned_during_run ||
+        !proof.bdl_device_owned_during_run || !proof.stream_reset ||
+        !proof.stream_started || !proof.link_position_advanced ||
+        !proof.stream_status_observed || proof.service_iterations == 0U ||
+        proof.period_completions == 0U ||
+        !proof.stream_stopped_before_reset ||
         !proof.bus_master_withdrawn_before_release ||
         !proof.teardown_complete || !proof.resource_census_equal ||
         !audio_resources_released()) {
@@ -8313,11 +9144,7 @@ _Noreturn void kernel_test_complete_nvidia(void)
             !probe.teardown_complete || !probe.resource_census_equal) {
             kernel_test_fail("the NVIDIA probe is inconsistent");
         }
-        /*
-         * Absence is the answer this machine gives, and it has to be given
-         * honestly: no function present means no register was read, no claim
-         * was taken, and no identity was invented.
-         */
+        /* With no NVIDIA function present, no register or resource is touched. */
         if (!probe.any_function_present) {
             /*
              * Absence has to be a refusal rather than an empty machine. This
@@ -8543,8 +9370,8 @@ const char *kernel_test_scenario_name(enum kernel_test_scenario scenario)
         return "device-windows";
     case KERNEL_TEST_BOOT_LEDGER:
         return "boot-ledger";
-    case KERNEL_TEST_REDWOOD_PROOF:
-        return "redwood-proof";
+    case KERNEL_TEST_PHIPIA_PROOF:
+        return "phipia-proof";
     case KERNEL_TEST_DEVICE_SUBSTRATE:
         return "device-substrate";
     case KERNEL_TEST_XHCI:
@@ -8559,14 +9386,14 @@ const char *kernel_test_scenario_name(enum kernel_test_scenario scenario)
         return "linux-abi";
     case KERNEL_TEST_LINUX_ABI_UNAME:
         return "linux-abi-uname";
-    case KERNEL_TEST_REDWOOD_PROOF_USERLAND:
-        return "redwood-proof-userland";
-    case KERNEL_TEST_REDWOOD_PROOF_USERLAND_ABSENT:
-        return "redwood-proof-userland-absent";
-    case KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE:
-        return "redwood-proof-userland-interactive";
-    case KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE_ABSENT:
-        return "redwood-proof-userland-interactive-absent";
+    case KERNEL_TEST_PHIPIA_PROOF_USERLAND:
+        return "phipia-proof-userland";
+    case KERNEL_TEST_PHIPIA_PROOF_USERLAND_ABSENT:
+        return "phipia-proof-userland-absent";
+    case KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE:
+        return "phipia-proof-userland-interactive";
+    case KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE_ABSENT:
+        return "phipia-proof-userland-interactive-absent";
     case KERNEL_TEST_FAT32_SYSTEM:
         return "fat32-system";
     case KERNEL_TEST_FAT32_DATA:
@@ -8659,8 +9486,8 @@ const char *kernel_test_scenario_name(enum kernel_test_scenario scenario)
         return "network-files";
     case KERNEL_TEST_NETWORK_NOTES:
         return "network-notes";
-    case KERNEL_TEST_NETWORK_STUDIO:
-        return "network-studio";
+    case KERNEL_TEST_NETWORK_MEDIA_EDITOR:
+        return "network-media-editor";
     case KERNEL_TEST_NETWORK_PERSISTENCE:
         return "network-persistence";
     case KERNEL_TEST_NETWORK_SOCKET_ISOLATION:
@@ -8705,6 +9532,18 @@ const char *kernel_test_scenario_name(enum kernel_test_scenario scenario)
         return "native-abi-refusal";
     case KERNEL_TEST_NATIVE_RELAUNCH:
         return "native-relaunch";
+    case KERNEL_TEST_NATIVE_AUDIO:
+        return "native-audio";
+    case KERNEL_TEST_NATIVE_SDL:
+        return "native-sdl";
+    case KERNEL_TEST_NATIVE_DYNAMIC:
+        return "native-dynamic";
+    case KERNEL_TEST_NATIVE_HTTPS:
+        return "native-https";
+    case KERNEL_TEST_NATIVE_PHIP:
+        return "native-phip";
+    case KERNEL_TEST_EXT4_RECOVERY:
+        return "ext4-recovery";
     case KERNEL_TEST_INVALID:
         return "invalid";
     default:

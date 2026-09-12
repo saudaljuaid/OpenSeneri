@@ -3,39 +3,23 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/font.h>
-#include <sapote/framebuffer.h>
-#include <sapote/screen.h>
-#include <sapote/surface.h>
+#include <phipia/font.h>
+#include <phipia/framebuffer.h>
+#include <phipia/screen.h>
+#include <phipia/surface.h>
 
 /*
- * Text on the framebuffer.
- *
- * The whole layer is one idea: a character is a small bitmap, and drawing one
- * is copying its rows into a rectangle of pixels. Everything else here is
- * bookkeeping about where the next rectangle goes.
- *
- * Two decisions are worth stating because neither is forced.
- *
- * The first is that drawing goes through a cached surface. Reading the
- * device framebuffer to scroll means one device read per pixel, while moving
- * the same pixels in ordinary write-back RAM avoids that cost. Verification
- * still reads
- * the framebuffer after present, because asking the surface whether it agrees
- * with itself would turn the strongest proof in this stack into no proof.
- *
- * The second is that an unknown byte is drawn rather than refused. A console
- * exists to carry the message that explains what went wrong; one that stops on
- * an unexpected character will eventually swallow exactly the message somebody
- * needed.
+ * Bitmap text rendered through a cached surface. Scrolling stays in write-back
+ * memory, while presentation checks still read the device framebuffer.
+ * Unknown bytes use a replacement glyph so console output can continue.
  */
 
 /* What an uncovered byte is drawn as. Present in ASCII, so always available. */
 #define REPLACEMENT_CHARACTER '?'
 
 /*
- * Black on white is the deliberate classic Sapote console contract. It keeps
- * the shell legible while matching Sapote Redwood's one-bit computer-era chrome.
+ * Black on white is the deliberate classic Phipia console contract. It keeps
+ * the shell legible while matching Phipia's one-bit computer-era chrome.
  */
 #define SCREEN_BACKGROUND_RED UINT8_C(0xFF)
 #define SCREEN_BACKGROUND_GREEN UINT8_C(0xFF)
@@ -113,7 +97,7 @@ static enum screen_status paint_cell(
         code = (uint32_t)REPLACEMENT_CHARACTER;
     }
 
-    if (sapote_font_glyph(code, glyph_rows, sizeof(glyph_rows)) !=
+    if (phipia_font_glyph(code, glyph_rows, sizeof(glyph_rows)) !=
         FONT_STATUS_OK) {
         return SCREEN_STATUS_DRAW_FAILURE;
     }
@@ -310,7 +294,7 @@ enum screen_status screen_initialize(void)
         return SCREEN_STATUS_NO_FRAMEBUFFER;
     }
 
-    if (sapote_font_geometry(&width, &height, &first, &count) !=
+    if (phipia_font_geometry(&width, &height, &first, &count) !=
         FONT_STATUS_OK) {
         return SCREEN_STATUS_BAD_FONT;
     }
@@ -882,7 +866,7 @@ enum screen_status screen_verify_cell(
         code = (uint32_t)REPLACEMENT_CHARACTER;
     }
 
-    if (sapote_font_glyph(code, glyph_rows, sizeof(glyph_rows)) !=
+    if (phipia_font_glyph(code, glyph_rows, sizeof(glyph_rows)) !=
         FONT_STATUS_OK) {
         return SCREEN_STATUS_DRAW_FAILURE;
     }

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /*
- * The installed Sapote Boot Ledger plan.
+ * The installed Phipia Boot Ledger plan.
  *
  * Every function that performs migrated boot work is private to this file and
  * can only be reached through a typed descriptor. kernel_main constructs,
@@ -10,66 +10,67 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/acpi.h>
-#include <sapote/apic.h>
-#include <sapote/apic_timer.h>
-#include <sapote/boot.h>
-#include <sapote/boot_ledger.h>
-#include <sapote/boot_plan.h>
-#include <sapote/boot_stages.h>
-#include <sapote/clock.h>
-#include <sapote/console.h>
-#include <sapote/cpu.h>
-#include <sapote/device_substrate.h>
-#include <sapote/dma.h>
-#include <sapote/framebuffer.h>
-#include <sapote/filesystem.h>
-#include <sapote/elf64.h>
-#include <sapote/heap.h>
-#include <sapote/interrupts.h>
-#include <sapote/interrupt_vector.h>
-#include <sapote/font.h>
-#include <sapote/logo.h>
-#include <sapote/ioapic.h>
-#include <sapote/keyboard.h>
-#include <sapote/linux_abi.h>
-#include <sapote/linux_cat.h>
-#include <sapote/linux_syscall.h>
-#include <sapote/linux_uname.h>
-#include <sapote/memory.h>
-#include <sapote/msix.h>
-#include <sapote/network.h>
-#include <sapote/network_syscall.h>
-#include <sapote/nvidia.h>
-#include <sapote/nvme.h>
-#include <sapote/audio.h>
-#include <sapote/driver.h>
-#include <sapote/multiprocess.h>
-#include <sapote/paging.h>
-#include <sapote/pci.h>
-#include <sapote/pci_resource.h>
-#include <sapote/pointer.h>
-#include <sapote/process.h>
-#include <sapote/pm_timer.h>
-#include <sapote/random.h>
-#include <sapote/screen.h>
-#include <sapote/self_test.h>
-#include <sapote/shell.h>
-#include <sapote/surface.h>
-#include <sapote/test.h>
-#include <sapote/thread.h>
-#include <sapote/timer.h>
-#include <sapote/tsc.h>
-#include <sapote/ui.h>
-#include <sapote/ui_font.h>
-#include <sapote/xhci.h>
+#include <phipia/acpi.h>
+#include <phipia/apic.h>
+#include <phipia/apic_timer.h>
+#include <phipia/boot.h>
+#include <phipia/boot_ledger.h>
+#include <phipia/boot_plan.h>
+#include <phipia/boot_stages.h>
+#include <phipia/clock.h>
+#include <phipia/console.h>
+#include <phipia/cpu.h>
+#include <phipia/device_substrate.h>
+#include <phipia/dma.h>
+#include <phipia/framebuffer.h>
+#include <phipia/filesystem.h>
+#include <phipia/elf64.h>
+#include <phipia/heap.h>
+#include <phipia/interrupts.h>
+#include <phipia/interrupt_vector.h>
+#include <phipia/font.h>
+#include <phipia/logo.h>
+#include <phipia/ioapic.h>
+#include <phipia/keyboard.h>
+#include <phipia/linux_abi.h>
+#include <phipia/linux_cat.h>
+#include <phipia/linux_syscall.h>
+#include <phipia/linux_uname.h>
+#include <phipia/memory.h>
+#include <phipia/msix.h>
+#include <phipia/network.h>
+#include <phipia/network_syscall.h>
+#include <phipia/nvidia.h>
+#include <phipia/nvme.h>
+#include <phipia/audio.h>
+#include <phipia/driver.h>
+#include <phipia/multiprocess.h>
+#include <phipia/paging.h>
+#include <phipia/pci.h>
+#include <phipia/pci_resource.h>
+#include <phipia/pointer.h>
+#include <phipia/process.h>
+#include <phipia/pm_timer.h>
+#include <phipia/random.h>
+#include <phipia/screen.h>
+#include <phipia/self_test.h>
+#include <phipia/shell.h>
+#include <phipia/surface.h>
+#include <phipia/test.h>
+#include <phipia/thread.h>
+#include <phipia/timer.h>
+#include <phipia/tsc.h>
+#include <phipia/ui.h>
+#include <phipia/wall_clock.h>
+#include <phipia/ui_font.h>
+#include <phipia/xhci.h>
 
-static bool test_uses_redwood_proof_userland(enum kernel_test_scenario scenario)
+static bool test_uses_phipia_proof_userland(enum kernel_test_scenario scenario)
 {
-    return scenario == KERNEL_TEST_REDWOOD_PROOF_USERLAND ||
-        scenario == KERNEL_TEST_REDWOOD_PROOF_USERLAND_ABSENT ||
-        scenario == KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE ||
-        scenario == KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE_ABSENT;
+    return scenario == KERNEL_TEST_PHIPIA_PROOF_USERLAND ||
+        scenario == KERNEL_TEST_PHIPIA_PROOF_USERLAND_ABSENT ||
+        scenario == KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE ||
+        scenario == KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE_ABSENT;
 }
 
 static bool test_uses_fat32_volumes(enum kernel_test_scenario scenario)
@@ -79,7 +80,7 @@ static bool test_uses_fat32_volumes(enum kernel_test_scenario scenario)
         (scenario >= KERNEL_TEST_NETWORK_NIC_DISCOVERY &&
             scenario <= KERNEL_TEST_NETWORK_SOCKET_ISOLATION) ||
         (scenario >= KERNEL_TEST_NATIVE &&
-            scenario <= KERNEL_TEST_NATIVE_RELAUNCH);
+            scenario <= KERNEL_TEST_NATIVE_PHIP);
 }
 
 static void stage_failed(
@@ -132,7 +133,7 @@ static void report_optional_window_refusal(
     enum paging_status status
 )
 {
-    console_write("Sapote: ");
+    console_write("Phipia: ");
     console_write(paging_device_window_kind_string(kind));
     console_write(" unavailable: ");
     console_write(paging_status_string(status));
@@ -178,7 +179,7 @@ static enum paging_status construct_device_windows(
         const uint64_t base = mcfg->allocations[0].base_address;
 
         if (base == 0U ||
-            base > SAPOTE_EARLY_PHYSICAL_LIMIT - PAGING_ECAM_WINDOW_SIZE) {
+            base > PHIPIA_EARLY_PHYSICAL_LIMIT - PAGING_ECAM_WINDOW_SIZE) {
             report_optional_window_refusal(PAGING_DEVICE_WINDOW_PCI_ECAM,
                 PAGING_STATUS_DEVICE_WINDOW_UNSUPPORTED_RANGE);
         } else if ((base & (PAGING_HUGE_PAGE_SIZE - 1U)) != 0U) {
@@ -214,7 +215,7 @@ static enum paging_status construct_device_windows(
             const uint64_t framebuffer_end =
                 framebuffer->address + framebuffer->size;
 
-            if (framebuffer_end > SAPOTE_EARLY_PHYSICAL_LIMIT) {
+            if (framebuffer_end > PHIPIA_EARLY_PHYSICAL_LIMIT) {
                 report_optional_window_refusal(
                     PAGING_DEVICE_WINDOW_FRAMEBUFFER,
                     PAGING_STATUS_DEVICE_WINDOW_UNSUPPORTED_RANGE);
@@ -276,7 +277,7 @@ static void execute_interrupt_foundation(
 
     if (status != INTERRUPT_STATUS_OK) {
         if (status == INTERRUPT_STATUS_CPU_TABLE_FAILURE) {
-            console_write("Sapote: CPU table detail: ");
+            console_write("Phipia: CPU table detail: ");
             console_write(cpu_status_string(cpu_tables_validate()));
             console_putc('\n');
         }
@@ -285,9 +286,9 @@ static void execute_interrupt_foundation(
         return;
     }
 
-    console_write("Sapote: kernel online\n");
-    console_write("Sapote: descriptor tables verified\n");
-    console_write("Sapote: interrupt foundation online\n");
+    console_write("Phipia: kernel online\n");
+    console_write("Phipia: descriptor tables verified\n");
+    console_write("Phipia: interrupt foundation online\n");
     boot_stage_result_succeed(descriptor, result);
 }
 
@@ -319,6 +320,8 @@ static void execute_pure_self_tests(
         failure = "ACPI PM timer arithmetic self-test failed";
     } else if (!clock_self_test()) {
         failure = "monotonic clock self-test failed";
+    } else if (!wall_clock_self_test()) {
+        failure = "wall clock conversion self-test failed";
     } else if (!timer_self_test()) {
         failure = "deadline timer table self-test failed";
     } else if (!paging_self_test()) {
@@ -345,9 +348,9 @@ static void execute_pure_self_tests(
         failure = ui_font_self_test_failure();
     } else if (!ui_self_test()) {
         failure = ui_self_test_failure();
-    } else if (sapote_logo_self_test() != 1) {
+    } else if (phipia_logo_self_test() != 1) {
         failure = "logo decoder self-test failed";
-    } else if (sapote_font_self_test() != 1) {
+    } else if (phipia_font_self_test() != 1) {
         failure = "font reader self-test failed";
     }
 
@@ -356,7 +359,7 @@ static void execute_pure_self_tests(
         return;
     }
 
-    console_write("Sapote: parser rejection tests passed\n");
+    console_write("Phipia: parser rejection tests passed\n");
     boot_stage_result_succeed(descriptor, result);
 }
 
@@ -464,11 +467,11 @@ static void execute_interrupt_controllers(
     report_acpi_fadt(&context->acpi_fadt);
     report_pm_timer(&pm_timer_state);
     report_acpi_mcfg(&context->acpi_mcfg, context->mcfg_present);
-    console_write("Sapote: ACPI root verified\n");
-    console_write("Sapote: ACPI MADT verified\n");
-    console_write("Sapote: ACPI topology verified\n");
-    console_write("Sapote: ACPI FADT verified\n");
-    console_write("Sapote: ACPI configuration windows verified\n");
+    console_write("Phipia: ACPI root verified\n");
+    console_write("Phipia: ACPI MADT verified\n");
+    console_write("Phipia: ACPI topology verified\n");
+    console_write("Phipia: ACPI FADT verified\n");
+    console_write("Phipia: ACPI configuration windows verified\n");
 
     apic_status = apic_bring_online(&context->topology);
     if (apic_status != APIC_STATUS_OK) {
@@ -478,7 +481,7 @@ static void execute_interrupt_controllers(
 
     apic_state = apic_get_state();
     report_apic(&apic_state);
-    console_write("Sapote: local APIC online\n");
+    console_write("Phipia: local APIC online\n");
     ioapic_status = ioapic_initialize(&context->topology);
 
     if (ioapic_status != IOAPIC_STATUS_OK) {
@@ -488,7 +491,7 @@ static void execute_interrupt_controllers(
 
     ioapic_state = ioapic_get_state();
     report_ioapic(&ioapic_state);
-    console_write("Sapote: I/O APIC online\n");
+    console_write("Phipia: I/O APIC online\n");
     boot_stage_result_succeed(descriptor, result);
 }
 
@@ -660,10 +663,10 @@ static void execute_ui_font(
         return;
     }
 
-    console_write("Sapote: Redwood font verified\n");
+    console_write("Phipia: font verified\n");
     boot_stage_result_succeed(descriptor, result);
-    result->proof_counters[0] = sapote_ui_font_size();
-    result->proof_counters[1] = sapote_ui_font_fingerprint();
+    result->proof_counters[0] = phipia_ui_font_size();
+    result->proof_counters[1] = phipia_ui_font_fingerprint();
     result->proof_counter_count = 2U;
 }
 
@@ -677,9 +680,9 @@ static void execute_pointer_decision(
 
     (void)context;
     if (status == POINTER_STATUS_OK) {
-        console_write("Sapote: PS/2 pointer available\n");
+        console_write("Phipia: PS/2 pointer available\n");
     } else {
-        console_write("Sapote: PS/2 pointer unavailable: ");
+        console_write("Phipia: PS/2 pointer unavailable: ");
         console_write(pointer_status_string(status));
         console_putc('\n');
     }
@@ -722,7 +725,7 @@ static void execute_ui_layout(
         return;
     }
 
-    console_write("Sapote: Redwood layout validated\n");
+    console_write("Phipia: layout validated\n");
     boot_stage_result_succeed(descriptor, result);
     result->proof_counters[0] = framebuffer.width;
     result->proof_counters[1] = framebuffer.height;
@@ -735,8 +738,8 @@ static void execute_early_scenario(
     struct boot_stage_result *result
 )
 {
-    console_write("Sapote: day one passed\n");
-    console_write("Sapote: memory foundation passed\n");
+    console_write("Phipia: day one passed\n");
+    console_write("Phipia: memory foundation passed\n");
     context->test_scenario = kernel_test_select(&context->information);
     context->test_context.mcfg = context->mcfg_present ?
         &context->acpi_mcfg : NULL;
@@ -800,6 +803,7 @@ static void execute_timer_calibration(
     retire_pit();
     prove_clocks_without_pit();
     prove_monotonic_time();
+    prove_wall_clock();
     boot_stage_result_succeed(descriptor, result);
 }
 
@@ -846,8 +850,8 @@ static void execute_pci_resource_foundation(
             "PCI BAR transaction negative controls failed");
         return;
     }
-    console_write("Sapote: PCI resource ownership negative controls 4/4 passed\n");
-    console_write("Sapote: supervisor NX UC device-MMIO arena established\n");
+    console_write("Phipia: PCI resource ownership negative controls 4/4 passed\n");
+    console_write("Phipia: supervisor NX UC device-MMIO arena established\n");
     boot_stage_result_succeed(descriptor, result);
     result->proof_counters[0] =
         pci_resource_get_state().arena_pages;
@@ -872,8 +876,8 @@ static void execute_dynamic_vector_foundation(
             "dynamic vector or MSI-X negative controls failed");
         return;
     }
-    console_write("Sapote: dynamic vector negative controls 4/4 passed\n");
-    console_write("Sapote: dynamic interrupt vector foundation established\n");
+    console_write("Phipia: dynamic vector negative controls 4/4 passed\n");
+    console_write("Phipia: dynamic interrupt vector foundation established\n");
     boot_stage_result_succeed(descriptor, result);
     result->proof_counters[0] = interrupt_vector_get_state().capacity;
     result->proof_counter_count = 1U;
@@ -895,8 +899,8 @@ static void execute_dma_foundation(
         stage_failed(context, result, "DMA ownership negative controls failed");
         return;
     }
-    console_write("Sapote: bounded DMA negative controls 2/2 passed\n");
-    console_write("Sapote: contiguous DMA ownership foundation established\n");
+    console_write("Phipia: bounded DMA negative controls 2/2 passed\n");
+    console_write("Phipia: contiguous DMA ownership foundation established\n");
     boot_stage_result_succeed(descriptor, result);
 }
 
@@ -926,17 +930,17 @@ static void execute_network_foundation(
         stage_failed(context, result, network_status_string(status));
         return;
     }
-    console_write("Sapote: network controls ");
+    console_write("Phipia: network controls ");
     console_write_u64(network_tests + syscall_tests);
     console_write(" passed; entropy ");
     console_write(random_capability_string(random_get_state().capability));
     console_putc('\n');
     if (status == NETWORK_STATUS_OK) {
-        console_write("Sapote: virtio-net0 initialized\n");
+        console_write("Phipia: virtio-net0 initialized\n");
     } else if (status == NETWORK_STATUS_LINK_DOWN) {
-        console_write("Sapote: virtio-net0 initialized without carrier\n");
+        console_write("Phipia: virtio-net0 initialized without carrier\n");
     } else {
-        console_write("Sapote: virtio-net0 absent\n");
+        console_write("Phipia: virtio-net0 absent\n");
     }
     boot_stage_result_succeed(descriptor, result);
     result->proof_counters[0] = network_tests + syscall_tests;
@@ -1028,7 +1032,7 @@ static void execute_device_substrate_proof(
 
     status = device_substrate_prove(&proof);
     if (status == DEVICE_SUBSTRATE_STATUS_ABSENT) {
-        console_write("Sapote: device-substrate fixture absent\n");
+        console_write("Phipia: device-substrate fixture absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
@@ -1036,7 +1040,7 @@ static void execute_device_substrate_proof(
         const struct pci_function *function = pci_find_device(
             UINT16_C(0x1AF4), UINT16_C(0x1044));
 
-        console_write("Sapote: PCI ");
+        console_write("Phipia: PCI ");
         if (function != NULL) {
             console_write_u64(function->address.segment);
             console_putc(':');
@@ -1055,19 +1059,19 @@ static void execute_device_substrate_proof(
         return;
     }
 
-    console_write("Sapote: VirtIO RNG device DMA wrote ");
+    console_write("Phipia: VirtIO RNG device DMA wrote ");
     console_write_u64(proof.random_bytes);
     console_write(" bytes; nonzero ");
     console_write_u64(proof.nonzero_bytes);
     console_putc('\n');
-    console_write("Sapote: MSI-X delivered ");
+    console_write("Phipia: MSI-X delivered ");
     console_write_u64(proof.interrupt_count);
     console_write(" interrupt; used ring ");
     console_write_u64(proof.used_before);
     console_write(" -> ");
     console_write_u64(proof.used_after);
     console_putc('\n');
-    console_write("Sapote: device substrate teardown complete\n");
+    console_write("Phipia: device substrate teardown complete\n");
     boot_stage_result_succeed(descriptor, result);
     result->proof_counters[0] = proof.interrupt_count;
     result->proof_counters[1] = proof.random_bytes;
@@ -1088,13 +1092,13 @@ static void execute_xhci_foundation(
             "xHCI foundation robustness controls failed");
         return;
     }
-    console_write("Sapote: xHCI foundation robustness controls ");
+    console_write("Phipia: xHCI foundation robustness controls ");
     console_write_u64(completed);
     console_putc('/');
     console_write_u64(XHCI_FOUNDATION_ROBUSTNESS_TESTS);
     console_write(" passed\n");
     console_write(
-        "Sapote: bounded xHCI host-controller foundation established\n");
+        "Phipia: bounded xHCI host-controller foundation established\n");
     boot_stage_result_succeed(descriptor, result);
 }
 
@@ -1169,14 +1173,14 @@ static void execute_xhci_descriptor_proof(
 
     status = xhci_descriptor_prove(&proof);
     if (status == XHCI_STATUS_ABSENT) {
-        console_write("Sapote: xHCI fixture absent\n");
+        console_write("Phipia: xHCI fixture absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
     if (status != XHCI_STATUS_OK) {
         const struct pci_function *function = xhci_pci_function();
 
-        console_write("Sapote: PCI ");
+        console_write("Phipia: PCI ");
         if (function == NULL) {
             console_write("unknown");
         } else {
@@ -1215,16 +1219,16 @@ static void execute_xhci_descriptor_proof(
         return;
     }
 
-    console_write("Sapote: xHCI controller ready\n");
-    console_write("Sapote: USB device descriptor DMA completed: ");
+    console_write("Phipia: xHCI controller ready\n");
+    console_write("Phipia: USB device descriptor DMA completed: ");
     console_write_u64(proof.descriptor_bytes);
     console_write(" bytes\n");
-    console_write("Sapote: xHCI MSI-X descriptor completion count ");
+    console_write("Phipia: xHCI MSI-X descriptor completion count ");
     console_write_u64(proof.msix_completion_count);
     console_putc('\n');
     console_write(
-        "Sapote: xHCI DMA ownership CPU-CONTROLLER-CPU complete\n");
-    console_write("Sapote: xHCI teardown complete\n");
+        "Phipia: xHCI DMA ownership CPU-CONTROLLER-CPU complete\n");
+    console_write("Phipia: xHCI teardown complete\n");
     boot_stage_result_succeed(descriptor, result);
     result->proof_counters[0] = proof.descriptor_bytes;
     result->proof_counters[1] = proof.msix_completion_count;
@@ -1245,13 +1249,13 @@ static void execute_nvme_foundation(
             "NVMe foundation robustness controls failed");
         return;
     }
-    console_write("Sapote: NVMe foundation robustness controls ");
+    console_write("Phipia: NVMe foundation robustness controls ");
     console_write_u64(completed);
     console_putc('/');
     console_write_u64(NVME_FOUNDATION_ROBUSTNESS_TESTS);
     console_write(" passed\n");
     console_write(
-        "Sapote: bounded NVMe block-controller foundation established\n");
+        "Phipia: bounded NVMe block-controller foundation established\n");
     boot_stage_result_succeed(descriptor, result);
 }
 
@@ -1309,44 +1313,45 @@ static void execute_nvme_read_proof(
         return;
     }
 
-    /* The filesystem, process, and Linux scenarios own other namespaces. */
+    /* The filesystem, process, Linux, and ext4 scenarios own other namespaces. */
     if (context->test_scenario == KERNEL_TEST_NONE ||
         context->test_scenario == KERNEL_TEST_FILESYSTEM ||
         context->test_scenario == KERNEL_TEST_PROCESS ||
         context->test_scenario == KERNEL_TEST_LINUX_ABI ||
         context->test_scenario == KERNEL_TEST_LINUX_ABI_UNAME ||
-        test_uses_redwood_proof_userland(context->test_scenario) ||
+        context->test_scenario == KERNEL_TEST_EXT4_RECOVERY ||
+        test_uses_phipia_proof_userland(context->test_scenario) ||
         test_uses_fat32_volumes(context->test_scenario)) {
-        console_write("Sapote: NVMe fixture absent\n");
+        console_write("Phipia: NVMe fixture absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
 
     status = nvme_read_prove(&proof);
     if (status == NVME_STATUS_ABSENT) {
-        console_write("Sapote: NVMe fixture absent\n");
+        console_write("Phipia: NVMe fixture absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
     if (status != NVME_STATUS_OK) {
-        console_write("Sapote: NVMe read proof violated invariant: ");
+        console_write("Phipia: NVMe read proof violated invariant: ");
         console_write(nvme_status_string(status));
         console_putc('\n');
         stage_failed(context, result, nvme_status_string(status));
         return;
     }
 
-    console_write("Sapote: NVMe controller ready\n");
-    console_write("Sapote: NVMe namespace ready\n");
-    console_write("Sapote: NVMe block read completed: ");
+    console_write("Phipia: NVMe controller ready\n");
+    console_write("Phipia: NVMe namespace ready\n");
+    console_write("Phipia: NVMe block read completed: ");
     console_write_u64(proof.block_bytes);
     console_write(" bytes\n");
-    console_write("Sapote: NVMe MSI-X read completion count ");
+    console_write("Phipia: NVMe MSI-X read completion count ");
     console_write_u64(proof.msix_completion_count);
     console_putc('\n');
     console_write(
-        "Sapote: NVMe DMA ownership CPU-CONTROLLER-CPU complete\n");
-    console_write("Sapote: NVMe teardown complete\n");
+        "Phipia: NVMe DMA ownership CPU-CONTROLLER-CPU complete\n");
+    console_write("Phipia: NVMe teardown complete\n");
     boot_stage_result_succeed(descriptor, result);
     result->proof_counters[0] = proof.block_bytes;
     result->proof_counters[1] = proof.msix_completion_count;
@@ -1367,13 +1372,13 @@ static void execute_fat16_foundation(
             "FAT16 foundation robustness controls failed");
         return;
     }
-    console_write("Sapote: FAT16 foundation robustness controls ");
+    console_write("Phipia: FAT16 foundation robustness controls ");
     console_write_u64(completed);
     console_putc('/');
     console_write_u64(FILESYSTEM_INTEGRATION_CONTROLS);
     console_write(" passed\n");
     console_write(
-        "Sapote: bounded read-only FAT16 foundation established\n");
+        "Phipia: bounded read-only FAT16 foundation established\n");
     boot_stage_result_succeed(descriptor, result);
 }
 
@@ -1432,44 +1437,45 @@ static void execute_filesystem_file_proof(
         return;
     }
 
-    /* Preserve the raw, process-ELF, and BusyBox fixture namespaces. */
+    /* Preserve raw, process, BusyBox, FAT32, and ext4 fixture namespaces. */
     if (context->test_scenario == KERNEL_TEST_NONE ||
         context->test_scenario == KERNEL_TEST_NVME ||
         context->test_scenario == KERNEL_TEST_PROCESS ||
         context->test_scenario == KERNEL_TEST_LINUX_ABI ||
         context->test_scenario == KERNEL_TEST_LINUX_ABI_UNAME ||
-        test_uses_redwood_proof_userland(context->test_scenario) ||
+        context->test_scenario == KERNEL_TEST_EXT4_RECOVERY ||
+        test_uses_phipia_proof_userland(context->test_scenario) ||
         test_uses_fat32_volumes(context->test_scenario)) {
-        console_write("Sapote: FAT16 fixture absent\n");
+        console_write("Phipia: FAT16 fixture absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
 
     status = filesystem_file_prove(&proof);
     if (status == FILESYSTEM_STATUS_ABSENT) {
-        console_write("Sapote: FAT16 fixture absent\n");
+        console_write("Phipia: FAT16 fixture absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
     if (status != FILESYSTEM_STATUS_OK) {
-        console_write("Sapote: FAT16 file proof violated invariant: ");
+        console_write("Phipia: FAT16 file proof violated invariant: ");
         console_write(filesystem_status_string(status));
         console_putc('\n');
         stage_failed(context, result, filesystem_status_string(status));
         return;
     }
 
-    console_write("Sapote: FAT16 volume ready\n");
-    console_write("Sapote: FAT16 file SAPOTE.BIN read: ");
+    console_write("Phipia: FAT16 volume ready\n");
+    console_write("Phipia: FAT16 file PHIPIA.BIN read: ");
     console_write_u64(proof.file_bytes);
     console_write(" bytes\n");
-    console_write("Sapote: FAT16 MSI-X completion count ");
+    console_write("Phipia: FAT16 MSI-X completion count ");
     console_write_u64(proof.msix_completion_count);
     console_putc('\n');
     console_write(
-        "Sapote: FAT16 DMA ownership CPU-CONTROLLER-CPU complete\n");
-    console_write("Sapote: FAT16 teardown complete\n");
-    console_write("ST FAT16 file SAPOTE.BIN bytes ");
+        "Phipia: FAT16 DMA ownership CPU-CONTROLLER-CPU complete\n");
+    console_write("Phipia: FAT16 teardown complete\n");
+    console_write("ST FAT16 file PHIPIA.BIN bytes ");
     console_write_u64(proof.file_bytes);
     console_write(" reads ");
     console_write_u64(proof.read_count);
@@ -1499,7 +1505,7 @@ static void execute_process_address_space_foundation(
             "private process address-space controls failed");
         return;
     }
-    console_write("Sapote: process address-space foundation controls ");
+    console_write("Phipia: process address-space foundation controls ");
     console_write_u64(completed);
     console_putc('/');
     console_write_u64(PROCESS_ADDRESS_SPACE_FOUNDATION_CONTROLS);
@@ -1520,7 +1526,7 @@ static void execute_elf64_loader_foundation(
         stage_failed(context, result, "bounded ELF64 parser controls failed");
         return;
     }
-    console_write("Sapote: ELF64 parser robustness controls ");
+    console_write("Phipia: ELF64 parser robustness controls ");
     console_write_u64(completed);
     console_putc('/');
     console_write_u64(ELF64_PARSER_ROBUSTNESS_CONTROLS);
@@ -1598,25 +1604,25 @@ static void execute_process_installed_proof(
     }
 
     if (context->test_scenario != KERNEL_TEST_PROCESS) {
-        console_write("Sapote: process fixture absent\n");
+        console_write("Phipia: process fixture absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
 
     status = process_installed_prove(&proof);
     if (status == PROCESS_STATUS_ABSENT) {
-        console_write("Sapote: process fixture absent\n");
+        console_write("Phipia: process fixture absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
     if (status != PROCESS_STATUS_OK) {
-        console_write("Sapote: process proof violated invariant: ");
+        console_write("Phipia: process proof violated invariant: ");
         console_write(process_status_string(status));
         console_putc('\n');
         stage_failed(context, result, process_status_string(status));
         return;
     }
-    console_write("ST PROCESS ELF64 SAPOTE.BIN bytes ");
+    console_write("ST PROCESS ELF64 PHIPIA.BIN bytes ");
     console_write_u64(proof.file_bytes);
     console_write(" segments ");
     console_write_u64(proof.segment_count);
@@ -1644,7 +1650,7 @@ static void execute_linux_syscall_cpu_foundation(
             "Linux SYSCALL CPU foundation controls failed");
         return;
     }
-    console_write("Sapote: Linux SYSCALL CPU foundation controls ");
+    console_write("Phipia: Linux SYSCALL CPU foundation controls ");
     console_write_u64(completed);
     console_putc('/');
     console_write_u64(LINUX_SYSCALL_CPU_FOUNDATION_CONTROLS);
@@ -1666,7 +1672,7 @@ static void execute_linux_image_stack_foundation(
             "BusyBox ELF and Linux initial-stack controls failed");
         return;
     }
-    console_write("Sapote: BusyBox image and Linux stack controls ");
+    console_write("Phipia: BusyBox image and Linux stack controls ");
     console_write_u64(completed);
     console_putc('/');
     console_write_u64(LINUX_ABI_IMAGE_STACK_FOUNDATION_CONTROLS);
@@ -1685,7 +1691,7 @@ static void execute_linux_uname_image_uts_foundation(
 
     if (!linux_uname_image_uts_foundation_self_test(&completed) ||
         completed != LINUX_UNAME_ABI_IMAGE_UTS_FOUNDATION_CONTROLS) {
-        console_write("Sapote: BusyBox uname foundation stopped after ");
+        console_write("Phipia: BusyBox uname foundation stopped after ");
         console_write_u64(completed);
         console_write(" counted controls\n");
         stage_failed(context, result,
@@ -1694,19 +1700,19 @@ static void execute_linux_uname_image_uts_foundation(
     }
     if (!linux_cat_image_stdin_foundation_self_test(&cat_completed) ||
         cat_completed != LINUX_CAT_ABI_IMAGE_STDIN_FOUNDATION_CONTROLS) {
-        console_write("Sapote: BusyBox cat foundation stopped after ");
+        console_write("Phipia: BusyBox cat foundation stopped after ");
         console_write_u64(cat_completed);
         console_write(" counted controls\n");
         stage_failed(context, result,
             "BusyBox cat ELF, stack, and stdin controls failed");
         return;
     }
-    console_write("Sapote: BusyBox uname image and UTS controls ");
+    console_write("Phipia: BusyBox uname image and UTS controls ");
     console_write_u64(completed);
     console_putc('/');
     console_write_u64(LINUX_UNAME_ABI_IMAGE_UTS_FOUNDATION_CONTROLS);
     console_write(" passed\n");
-    console_write("Sapote: BusyBox cat image and stdin controls ");
+    console_write("Phipia: BusyBox cat image and stdin controls ");
     console_write_u64(cat_completed);
     console_putc('/');
     console_write_u64(LINUX_CAT_ABI_IMAGE_STDIN_FOUNDATION_CONTROLS);
@@ -1786,18 +1792,18 @@ static void execute_linux_installed_proof(
         return;
     }
     if (context->test_scenario != KERNEL_TEST_LINUX_ABI) {
-        console_write("Sapote: Linux ABI fixture absent\n");
+        console_write("Phipia: Linux ABI fixture absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
     status = linux_abi_installed_prove(&proof);
     if (status == LINUX_ABI_STATUS_ABSENT) {
-        console_write("Sapote: Linux ABI fixture absent\n");
+        console_write("Phipia: Linux ABI fixture absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
     if (status != LINUX_ABI_STATUS_OK) {
-        console_write("Sapote: Linux ABI proof violated invariant: ");
+        console_write("Phipia: Linux ABI proof violated invariant: ");
         console_write(linux_abi_status_string(status));
         console_putc('\n');
         stage_failed(context, result, linux_abi_status_string(status));
@@ -1893,18 +1899,18 @@ static void execute_linux_uname_installed_proof(
         return;
     }
     if (context->test_scenario != KERNEL_TEST_LINUX_ABI_UNAME) {
-        console_write("Sapote: Linux uname ABI fixture absent\n");
+        console_write("Phipia: Linux uname ABI fixture absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
     status = linux_uname_abi_installed_prove(&proof);
     if (status == LINUX_UNAME_ABI_STATUS_ABSENT) {
-        console_write("Sapote: Linux uname ABI fixture absent\n");
+        console_write("Phipia: Linux uname ABI fixture absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
     if (status != LINUX_UNAME_ABI_STATUS_OK) {
-        console_write("Sapote: Linux uname ABI proof violated invariant: ");
+        console_write("Phipia: Linux uname ABI proof violated invariant: ");
         console_write(linux_uname_abi_status_string(status));
         console_putc('\n');
         stage_failed(context, result, linux_uname_abi_status_string(status));
@@ -2025,37 +2031,37 @@ static void execute_closing_proofs(
         }
     }
 
-    console_write("Sapote: exception probes passed\n");
-    console_write("Sapote: PIC spurious paths passed\n");
-    console_write("Sapote: PIT delivered eight interrupts\n");
-    console_write("Sapote: I/O APIC delivered eight interrupts\n");
-    console_write("Sapote: legacy 8259 retired\n");
-    console_write("Sapote: timer survives legacy retirement\n");
+    console_write("Phipia: exception probes passed\n");
+    console_write("Phipia: PIC spurious paths passed\n");
+    console_write("Phipia: PIT delivered eight interrupts\n");
+    console_write("Phipia: I/O APIC delivered eight interrupts\n");
+    console_write("Phipia: legacy 8259 retired\n");
+    console_write("Phipia: timer survives legacy retirement\n");
     console_write(
-        "Sapote: I/O APIC delivered eight level-triggered interrupts\n"
+        "Phipia: I/O APIC delivered eight level-triggered interrupts\n"
     );
-    console_write("Sapote: level-triggered routing established\n");
-    console_write("Sapote: local APIC timer delivered eight interrupts\n");
-    console_write("Sapote: TSC reference established\n");
-    console_write("Sapote: PM timer independent reference established\n");
-    console_write("Sapote: PIT retired\n");
-    console_write("Sapote: clocks survive PIT retirement\n");
-    console_write("Sapote: deadline timers online\n");
-    console_write("Sapote: monotonic time established\n");
-    console_write("Sapote: virtual memory established\n");
-    console_write("Sapote: kernel heap established\n");
-    console_write("Sapote: PCI enumeration established\n");
-    console_write("Sapote: device foundations established\n");
-    console_write("Sapote: kernel threads passed\n");
-    console_write("Sapote: preemption passed\n");
+    console_write("Phipia: level-triggered routing established\n");
+    console_write("Phipia: local APIC timer delivered eight interrupts\n");
+    console_write("Phipia: TSC reference established\n");
+    console_write("Phipia: PM timer independent reference established\n");
+    console_write("Phipia: PIT retired\n");
+    console_write("Phipia: clocks survive PIT retirement\n");
+    console_write("Phipia: deadline timers online\n");
+    console_write("Phipia: monotonic time established\n");
+    console_write("Phipia: virtual memory established\n");
+    console_write("Phipia: kernel heap established\n");
+    console_write("Phipia: PCI enumeration established\n");
+    console_write("Phipia: device foundations established\n");
+    console_write("Phipia: kernel threads passed\n");
+    console_write("Phipia: preemption passed\n");
     if (framebuffer_is_active()) {
-        console_write("Sapote: framebuffer passed\n");
-        console_write("Sapote: logo passed\n");
-        console_write("Sapote: screen console passed\n");
-        console_write("Sapote: shell passed\n");
+        console_write("Phipia: framebuffer passed\n");
+        console_write("Phipia: logo passed\n");
+        console_write("Phipia: screen console passed\n");
+        console_write("Phipia: shell passed\n");
     }
-    console_write("Sapote: keyboard passed\n");
-    console_write("Sapote: never triple fault milestone passed\n");
+    console_write("Phipia: keyboard passed\n");
+    console_write("Phipia: never triple fault milestone passed\n");
     boot_stage_result_succeed(descriptor, result);
 }
 
@@ -2068,11 +2074,14 @@ static void execute_desktop_construction(
     const enum ui_status status = ui_construct(pointer_is_present());
 
     if (status != UI_STATUS_OK) {
+        console_write("Phipia: desktop construction failed: ");
+        console_write(ui_status_string(status));
+        console_putc('\n');
         stage_failed(context, result, ui_status_string(status));
         return;
     }
 
-    console_write("Sapote: Redwood desktop constructed\n");
+    console_write("Phipia: desktop constructed\n");
     boot_stage_result_succeed(descriptor, result);
 }
 
@@ -2085,15 +2094,18 @@ static void execute_desktop_activation(
     const enum ui_status status = ui_activate();
 
     if (status != UI_STATUS_OK) {
+        console_write("Phipia: desktop activation failed: ");
+        console_write(ui_status_string(status));
+        console_putc('\n');
         stage_failed(context, result, ui_status_string(status));
         return;
     }
 
-    console_write("Sapote: Redwood desktop activated\n");
+    console_write("Phipia: desktop activated\n");
     boot_stage_result_succeed(descriptor, result);
 }
 
-static void execute_redwood_installed_proof(
+static void execute_phipia_installed_proof(
     struct boot_context *context,
     const struct boot_stage_descriptor *descriptor,
     struct boot_stage_result *result
@@ -2107,7 +2119,7 @@ static void execute_redwood_installed_proof(
         return;
     }
 
-    console_write("Sapote: Redwood installed proof passed\n");
+    console_write("Phipia: installed proof passed\n");
     boot_stage_result_succeed(descriptor, result);
     result->proof_counters[0] = proof.render_hash;
     result->proof_counters[1] = proof.glyphs;
@@ -2128,7 +2140,7 @@ static void execute_multiprocess_foundation(
             "bounded multiprocess foundation controls failed");
         return;
     }
-    console_write("Sapote: multiprocess foundation controls ");
+    console_write("Phipia: multiprocess foundation controls ");
     console_write_u64(completed);
     console_putc('/');
     console_write_u64(MULTIPROCESS_CONTROLLED_ROBUSTNESS_TESTS);
@@ -2206,7 +2218,7 @@ static void execute_multiprocess_proof(
 
     status = multiprocess_prove(&proof);
     if (status != MULTIPROCESS_STATUS_OK) {
-        console_write("Sapote: multiprocess proof violated invariant: ");
+        console_write("Phipia: multiprocess proof violated invariant: ");
         console_write(multiprocess_status_string(status));
         console_putc('\n');
         stage_failed(context, result, multiprocess_status_string(status));
@@ -2247,7 +2259,7 @@ static void execute_driver_matrix_foundation(
             "bounded PCI driver matrix controls failed");
         return;
     }
-    console_write("Sapote: PCI driver matrix controls ");
+    console_write("Phipia: PCI driver matrix controls ");
     console_write_u64(completed);
     console_putc('/');
     console_write_u64(DRIVER_MATRIX_CONTROLLED_CONTROLS);
@@ -2324,19 +2336,19 @@ static void execute_driver_matrix_probe(
 
     if (context->test_scenario != KERNEL_TEST_DRIVER_MATRIX &&
         context->test_scenario != KERNEL_TEST_DRIVER_MATRIX_BUILTIN) {
-        console_write("Sapote: PCI driver matrix devices absent\n");
+        console_write("Phipia: PCI driver matrix devices absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
 
     status = driver_matrix_bind(&matrix);
     if (status == DRIVER_STATUS_ABSENT) {
-        console_write("Sapote: PCI driver matrix devices absent\n");
+        console_write("Phipia: PCI driver matrix devices absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
     if (status != DRIVER_STATUS_OK) {
-        console_write("Sapote: PCI driver matrix violated invariant: ");
+        console_write("Phipia: PCI driver matrix violated invariant: ");
         console_write(driver_status_string(status));
         if (matrix.failed_driver < driver_matrix_count()) {
             const struct driver_probe *failed =
@@ -2407,7 +2419,7 @@ static void execute_audio_foundation(
         stage_failed(context, result, "bounded HD Audio controls failed");
         return;
     }
-    console_write("Sapote: HD Audio foundation controls ");
+    console_write("Phipia: HD Audio foundation controls ");
     console_write_u64(completed);
     console_putc('/');
     console_write_u64(AUDIO_CONTROLLED_CONTROLS);
@@ -2482,19 +2494,19 @@ static void execute_audio_codec_proof(
     }
 
     if (context->test_scenario != KERNEL_TEST_AUDIO) {
-        console_write("Sapote: HD Audio controller absent\n");
+        console_write("Phipia: HD Audio controller absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
 
     status = audio_prove(&proof);
     if (status == AUDIO_STATUS_ABSENT) {
-        console_write("Sapote: HD Audio controller absent\n");
+        console_write("Phipia: HD Audio controller absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
     if (status != AUDIO_STATUS_OK) {
-        console_write("Sapote: HD Audio proof violated invariant: ");
+        console_write("Phipia: HD Audio proof violated invariant: ");
         console_write(audio_status_string(status));
         console_putc('\n');
         stage_failed(context, result, audio_status_string(status));
@@ -2537,9 +2549,35 @@ static void execute_audio_codec_proof(
     console_write_u64(proof.verbs_issued);
     console_write(" responses ");
     console_write_u64(proof.responses_received);
+    console_write(" PCM ");
+    console_write_u64(proof.sample_rate);
+    console_write("Hz/");
+    console_write_u64(proof.bits_per_sample);
+    console_write("bit/");
+    console_write_u64(proof.channels);
+    console_write("ch route ");
+    console_write_u64(proof.playback_codec);
+    console_putc(':');
+    console_write_u64(proof.playback_function_group);
+    console_putc(':');
+    console_write_u64(proof.playback_converter);
+    console_write("->");
+    console_write_u64(proof.playback_pin);
+    console_write(" stream ");
+    console_write_u64(proof.stream_descriptor_index);
+    console_putc('/');
+    console_write_u64(proof.playback_stream_tag);
+    console_write(" link ");
+    console_write_u64(proof.initial_link_position);
+    console_write("->");
+    console_write_u64(proof.final_link_position);
+    console_write(" completions ");
+    console_write_u64(proof.period_completions);
+    console_write(" underrun-recoveries ");
+    console_write_u64(proof.underrun_recoveries);
     console_write(
-        " device wrote the response ring bus mastering withdrawn before "
-        "release teardown clean census equal\n");
+        " device wrote the response ring stream stopped/reset bus mastering "
+        "withdrawn before release teardown clean census equal\n");
     boot_stage_result_succeed(descriptor, result);
     result->proof_counters[0] = proof.responses_received;
     result->proof_counters[1] = proof.codecs_identified;
@@ -2565,7 +2603,7 @@ static void execute_nvidia_foundation(
         stage_failed(context, result, "bounded NVIDIA controls failed");
         return;
     }
-    console_write("Sapote: NVIDIA driver foundation controls ");
+    console_write("Phipia: NVIDIA driver foundation controls ");
     console_write_u64(completed);
     console_putc('/');
     console_write_u64(NVIDIA_CONTROLLED_CONTROLS);
@@ -2641,14 +2679,14 @@ static void execute_nvidia_probe(
         return;
     }
     if (context->test_scenario != KERNEL_TEST_NVIDIA) {
-        console_write("Sapote: NVIDIA functions absent\n");
+        console_write("Phipia: NVIDIA functions absent\n");
         boot_stage_result_skip(descriptor, result);
         return;
     }
 
     status = nvidia_bind(&probe);
     if (status != NVIDIA_STATUS_OK) {
-        console_write("Sapote: NVIDIA probe violated invariant: ");
+        console_write("Phipia: NVIDIA probe violated invariant: ");
         console_write(nvidia_status_string(status));
         console_putc('\n');
         stage_failed(context, result, nvidia_status_string(status));
@@ -2775,7 +2813,7 @@ static const struct boot_stage_descriptor installed_descriptors[] = {
         execute_keyboard),
     OPTIONAL_STAGE(BOOT_STAGE_SHELL, "interactive shell",
         BOOT_PHASE_RUNTIME, BOOT_IRREVERSIBLE_NONE, execute_shell),
-    OPTIONAL_STAGE(BOOT_STAGE_UI_FONT, "Sapote Redwood UI font",
+    OPTIONAL_STAGE(BOOT_STAGE_UI_FONT, "Phipia UI font",
         BOOT_PHASE_RUNTIME, BOOT_IRREVERSIBLE_NONE, execute_ui_font),
     OPTIONAL_STAGE(BOOT_STAGE_POINTER_DECISION,
         "pointer availability decision", BOOT_PHASE_RUNTIME,
@@ -2783,7 +2821,7 @@ static const struct boot_stage_descriptor installed_descriptors[] = {
     OPTIONAL_NEUTRAL_STAGE(BOOT_STAGE_POINTER_OUTCOME,
         "pointer availability outcome", BOOT_PHASE_RUNTIME,
         BOOT_IRREVERSIBLE_NONE, execute_pointer_outcome),
-    OPTIONAL_STAGE(BOOT_STAGE_UI_LAYOUT, "Sapote Redwood layout",
+    OPTIONAL_STAGE(BOOT_STAGE_UI_LAYOUT, "Phipia layout",
         BOOT_PHASE_RUNTIME, BOOT_IRREVERSIBLE_NONE, execute_ui_layout),
     REQUIRED_STAGE(BOOT_STAGE_EARLY_SCENARIO, "early scenario gate",
         BOOT_PHASE_RUNTIME, BOOT_IRREVERSIBLE_NONE, execute_early_scenario),
@@ -2891,9 +2929,9 @@ static const struct boot_stage_descriptor installed_descriptors[] = {
     OPTIONAL_STAGE(BOOT_STAGE_DESKTOP_ACTIVATION, "desktop activation",
         BOOT_PHASE_PROOFS, BOOT_IRREVERSIBLE_NONE,
         execute_desktop_activation),
-    OPTIONAL_STAGE(BOOT_STAGE_REDWOOD_INSTALLED_PROOF,
-        "Sapote Redwood installed proof", BOOT_PHASE_PROOFS,
-        BOOT_IRREVERSIBLE_NONE, execute_redwood_installed_proof)
+    OPTIONAL_STAGE(BOOT_STAGE_PHIPIA_INSTALLED_PROOF,
+        "Phipia installed proof", BOOT_PHASE_PROOFS,
+        BOOT_IRREVERSIBLE_NONE, execute_phipia_installed_proof)
 };
 
 _Static_assert(sizeof(installed_descriptors) /
@@ -3742,7 +3780,7 @@ static bool declare_dependencies(
             BOOT_CAPABILITY_DESKTOP_SHELL_ACTIVATED;
         descriptor->provided_capability_count = 1U;
         break;
-    case BOOT_STAGE_REDWOOD_INSTALLED_PROOF:
+    case BOOT_STAGE_PHIPIA_INSTALLED_PROOF:
         descriptor->required_capabilities[0] =
             BOOT_CAPABILITY_DESKTOP_SHELL_ACTIVATED;
         descriptor->required_capabilities[1] =
@@ -3751,7 +3789,7 @@ static bool declare_dependencies(
             BOOT_CAPABILITY_BOOT_PROOFS_COMPLETE;
         descriptor->required_capability_count = 3U;
         descriptor->provided_capabilities[0] =
-            BOOT_CAPABILITY_REDWOOD_INSTALLED_PROOF_COMPLETE;
+            BOOT_CAPABILITY_PHIPIA_INSTALLED_PROOF_COMPLETE;
         descriptor->provided_capability_count = 1U;
         break;
     case BOOT_STAGE_INVALID:

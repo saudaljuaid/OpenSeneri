@@ -1,0 +1,21 @@
+[package]
+name = "phipia-kernel-rust"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[lib]
+name = "phipia"
+path = "lib.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+ext4plus = { path = "../../vendor/ext4plus", default-features = false, features = ["sync"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 2
+panic = "abort"
+strip = "none"

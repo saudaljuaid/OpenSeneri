@@ -6,7 +6,7 @@
 #[path = "../src/rust/linux_elf64.rs"]
 mod linux_elf64;
 
-static BUSYBOX: &[u8] = include_bytes!(env!("SAPOTE_CAT_BUSYBOX_BINARY"));
+static BUSYBOX: &[u8] = include_bytes!(env!("PHIPIA_CAT_BUSYBOX_BINARY"));
 
 #[test]
 fn measured_cat_busybox_is_the_only_accepted_conjunction() {

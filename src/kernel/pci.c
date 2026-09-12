@@ -3,33 +3,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/acpi.h>
-#include <sapote/console.h>
-#include <sapote/cpu.h>
-#include <sapote/heap.h>
-#include <sapote/paging.h>
-#include <sapote/pci.h>
+#include <phipia/acpi.h>
+#include <phipia/console.h>
+#include <phipia/cpu.h>
+#include <phipia/heap.h>
+#include <phipia/paging.h>
+#include <phipia/pci.h>
 
 /*
- * Enumerate the PCI configuration space the machine actually has.
- *
- * Nothing above this layer can name a device until something below it has
- * counted them, and every driver Sapote will ever have - storage, network,
- * wireless - starts by being found here. So this increment finds them and
- * reports what they are, and deliberately does nothing else: every access it
- * makes is a read, so enumerating cannot disturb a device that is already
- * working. Sizing a base address register means writing all ones into it, and
- * writing to configuration space belongs to the increment that also owns a
- * device rather than to the one that counts them.
- *
- * There are two ways to reach configuration space and this file implements
- * both, because that is what lets each check the other. The I/O ports are
- * always there and reach the first 256 bytes of everything; the memory-mapped
- * window is what firmware declares in the MCFG, needs mapping, and is the only
- * way to reach the extended space beyond 256 bytes. Enumeration runs on the
- * ports, because they need no mapping and are bounded by nothing. The window is
- * then required to agree with them, register for register, on every function
- * that falls inside it.
+ * Read-only PCI enumeration through configuration ports and ECAM. Port access
+ * covers the first 256 bytes; firmware's MCFG window covers extended space.
+ * Functions reachable through both paths must return identical registers.
+ * BAR sizing and other configuration writes belong to device ownership.
  */
 
 /* One bus is 1 MiB of the window, one device 32 KiB, one function 4 KiB. */
@@ -82,7 +67,7 @@ static uint64_t ecam_access_address(
         (uint64_t)offset;
 
     /*
-     * Sapote maps one 2 MiB region of a window firmware may declare far larger,
+     * Phipia maps one 2 MiB region of a window firmware may declare far larger,
      * so the mapped size is the bound that matters rather than the declared
      * one. A register past it is refused, not wrapped.
      */
@@ -676,20 +661,9 @@ static enum pci_status compare_mechanisms(void)
 }
 
 /*
- * Prove the port mechanism is there before anything is read through it.
- *
- * A machine without it decodes nothing at 0xCF8 and answers 0xFFFFFFFF or zero,
- * so the test is whether the port behaves like a register: write a value and
- * get that value back. Writing the enable bit alone and requiring exactly it
- * back is the canonical probe, because that pattern sets no reserved bit and so
- * reads back identically whether an implementation preserves them or not.
- *
- * A second write saturates every field and the read-back is compared through a
- * mask. The reserved bits are deliberately not required to read zero: the rule
- * that reserved bits read zero belongs to PCI configuration space, and this
- * port is a platform register rather than part of it. Requiring it here was the
- * first version of this function, and it refused to boot on a machine where
- * everything worked - the check was wrong, not the machine.
+ * Check the PCI configuration-address port before using it. The enable-bit
+ * probe avoids reserved bits; the saturated probe compares only defined fields
+ * because 0xCF8 is a platform register, not PCI configuration space.
  */
 static bool port_mechanism_present(void)
 {
@@ -790,7 +764,7 @@ enum pci_status pci_initialize(const struct acpi_mcfg *mcfg, bool mcfg_present)
     /*
      * The port pair is two registers used as one, so a read that lands between
      * the address write and the data read answers about a different function.
-     * Nothing in Sapote reads configuration space from an interrupt handler,
+     * Nothing in Phipia reads configuration space from an interrupt handler,
      * and this is the refusal that keeps it that way.
      */
     if (cpu_interrupts_enabled()) {
@@ -1135,13 +1109,8 @@ static bool ecam_arithmetic_is_right(void)
     correct = correct && ecam_address(address, 0U) == 0U;
 
     /*
-     * The last register the last mapped function exposes. It is not the last
-     * dword of the window: each function occupies 4 KiB of the window but only
-     * its first 256 bytes are configuration space both mechanisms reach, so the
-     * highest displacement is the last function's slot plus 0xFC and the 3840
-     * bytes of extended space above it are deliberately out of reach here.
-     * Writing this expectation as "the end of the window" is the mistake the
-     * self-test caught on its first run.
+     * Each function owns a 4 KiB ECAM slot, but this interface exposes only the
+     * shared 256-byte configuration prefix. The final reachable dword is 0xFC.
      */
     address.segment = 0U;
     address.bus = 1U;

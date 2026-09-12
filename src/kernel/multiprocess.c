@@ -1,44 +1,25 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /*
- * Several bounded user processes, private address spaces, and one round robin.
- *
- * The v0.7.0 Ring 3 proof built one address space, entered it once, and tore it
- * down before anything else could exist. That is a single process in the
- * narrowest sense: not one process at a time, but one process ever, with no
- * saved register set to come back to and no second hierarchy to come back
- * from. Everything above it - the syscall boundary, the measured BusyBox
- * profiles, the Terminal - inherited that shape.
- *
- * This file is the other half. It installs up to PAGING_PROCESS_SPACE_SLOTS
- * processes at once, each with its own hierarchy, image frame, stack frames and
- * generation, and gives the processor to them in turn. A process leaves through
- * the same reviewed CPL3 gate the proof uses; the difference is that its
- * complete register set is saved on the way out and loaded again on the way
- * back, so the program resumes at the instruction after the one it left on.
- *
- * The schedule is cooperative and interrupts stay masked in CPL3, which is
- * deliberate: a preemptive user scheduler would have to take the local APIC
- * timer away from the clock that every deadline in the kernel is built on, and
- * that is a separate change with separate evidence. What is proved here is that
- * several processes exist together, run interleaved, cannot see each other's
- * memory, and that one of them faulting is that process ending rather than the
- * machine ending.
+ * Cooperative round-robin scheduling for bounded user processes. Each process
+ * owns a private page hierarchy, image, stack, generation, and saved register
+ * set. CPL3 interrupts stay masked. A process fault ends that process without
+ * ending the kernel or its peers.
  */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/cpu.h>
-#include <sapote/dma.h>
-#include <sapote/elf64.h>
-#include <sapote/interrupt_vector.h>
-#include <sapote/interrupts.h>
-#include <sapote/memory.h>
-#include <sapote/msix.h>
-#include <sapote/multiprocess.h>
-#include <sapote/paging.h>
-#include <sapote/pci_resource.h>
-#include <sapote/process.h>
+#include <phipia/cpu.h>
+#include <phipia/dma.h>
+#include <phipia/elf64.h>
+#include <phipia/interrupt_vector.h>
+#include <phipia/interrupts.h>
+#include <phipia/memory.h>
+#include <phipia/msix.h>
+#include <phipia/multiprocess.h>
+#include <phipia/paging.h>
+#include <phipia/pci_resource.h>
+#include <phipia/process.h>
 
 #define MULTIPROCESS_SENTINEL_BYTES 32U
 #define MULTIPROCESS_USER_RFLAGS UINT64_C(2)
@@ -226,7 +207,7 @@ static bool gate_armed;
 static bool proof_active;
 static bool interrupts_were_enabled;
 static uint8_t multiprocess_sentinel[MULTIPROCESS_SENTINEL_BYTES] = {
-    0x53, 0x41, 0x50, 0x4F, 0x54, 0x45, 0x2D, 0x4D,
+    0x50, 0x48, 0x49, 0x50, 0x49, 0x41, 0x2D, 0x4D,
     0x55, 0x4C, 0x54, 0x49, 0x50, 0x52, 0x4F, 0x43,
     0x45, 0x53, 0x53, 0x2D, 0x53, 0x45, 0x4E, 0x54,
     0x49, 0x4E, 0x45, 0x4C, 0x2D, 0x52, 0x33, 0x30
@@ -670,7 +651,7 @@ static enum multiprocess_status build_process(
     }
     installed_count = index + 1U;
 
-    if (sapote_multiprocess_elf64_parse(multiprocess_image,
+    if (phipia_multiprocess_elf64_parse(multiprocess_image,
             sizeof(multiprocess_image), &image) != ELF64_STATUS_OK) {
         return MULTIPROCESS_STATUS_ELF_PARSER;
     }
@@ -1109,13 +1090,13 @@ bool multiprocess_foundation_self_test(size_t *completed_tests)
         return false;
     }
     ++completed;
-    if (sapote_multiprocess_elf64_self_test() !=
+    if (phipia_multiprocess_elf64_self_test() !=
             ELF64_PARSER_ROBUSTNESS_CONTROLS) {
         return false;
     }
     ++completed;
     zero_bytes(&image, sizeof(image));
-    if (sapote_multiprocess_elf64_parse(multiprocess_image,
+    if (phipia_multiprocess_elf64_parse(multiprocess_image,
             sizeof(multiprocess_image), &image) != ELF64_STATUS_OK ||
         !validated_placement(&image)) {
         return false;
@@ -1123,9 +1104,9 @@ bool multiprocess_foundation_self_test(size_t *completed_tests)
     ++completed;
     /* The proof executable and the multiprocess one must refuse each other. */
     zero_bytes(&image, sizeof(image));
-    if (sapote_multiprocess_elf64_parse(multiprocess_image,
+    if (phipia_multiprocess_elf64_parse(multiprocess_image,
             ELF64_FILE_BYTES, &image) == ELF64_STATUS_OK ||
-        sapote_elf64_parse(multiprocess_image, sizeof(multiprocess_image),
+        phipia_elf64_parse(multiprocess_image, sizeof(multiprocess_image),
             &image) == ELF64_STATUS_OK) {
         return false;
     }

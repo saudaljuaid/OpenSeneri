@@ -3,8 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/dma.h>
-#include <sapote/paging.h>
+#include <phipia/dma.h>
+#include <phipia/paging.h>
 
 static struct dma_state state;
 
@@ -64,9 +64,9 @@ static enum dma_status validate_allocation(
         !record->frames.active ||
         allocation->cpu_address !=
             (void *)(uintptr_t)record->frames.physical_base ||
-        record->frames.page_count > UINT64_MAX / SAPOTE_PAGE_SIZE ||
+        record->frames.page_count > UINT64_MAX / PHIPIA_PAGE_SIZE ||
         allocation->byte_length !=
-            (uint64_t)record->frames.page_count * SAPOTE_PAGE_SIZE ||
+            (uint64_t)record->frames.page_count * PHIPIA_PAGE_SIZE ||
         record->owner != allocation->owner ||
         record->initialized != allocation->initialized) {
         return DMA_STATUS_BAD_ALLOCATION;
@@ -148,7 +148,7 @@ enum dma_status dma_allocate(
     }
 
     allocation->byte_length =
-        (uint64_t)allocation->frames.page_count * SAPOTE_PAGE_SIZE;
+        (uint64_t)allocation->frames.page_count * PHIPIA_PAGE_SIZE;
     if (paging_translate((uint64_t)allocation->frames.physical_base, &first) !=
             PAGING_STATUS_OK ||
         paging_translate((uint64_t)allocation->frames.physical_base +
@@ -371,7 +371,7 @@ bool dma_self_test(void)
 {
     struct dma_request request = {
         .page_count = 2U,
-        .alignment = SAPOTE_PAGE_SIZE * 2U,
+        .alignment = PHIPIA_PAGE_SIZE * 2U,
         .maximum_physical_address = UINT32_MAX
     };
     struct dma_allocation allocation;
@@ -396,20 +396,20 @@ bool dma_self_test(void)
     }
 
     request.page_count = 1U;
-    request.alignment = SAPOTE_PAGE_SIZE + 1U;
+    request.alignment = PHIPIA_PAGE_SIZE + 1U;
     if (dma_allocate(&request, &allocation) !=
             DMA_STATUS_FRAME_ALLOCATION_FAILURE) {
         return false;
     }
 
-    request.alignment = SAPOTE_EARLY_PHYSICAL_LIMIT * 2U;
+    request.alignment = PHIPIA_EARLY_PHYSICAL_LIMIT * 2U;
     if (dma_allocate(&request, &allocation) !=
             DMA_STATUS_FRAME_ALLOCATION_FAILURE) {
         return false;
     }
 
     request.page_count = 2U;
-    request.alignment = SAPOTE_PAGE_SIZE * 2U;
+    request.alignment = PHIPIA_PAGE_SIZE * 2U;
     request.maximum_physical_address = UINT32_MAX;
     if (dma_allocate(&request, &allocation) != DMA_STATUS_OK ||
         ((uint64_t)allocation.frames.physical_base &

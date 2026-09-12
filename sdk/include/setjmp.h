@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-#ifndef SAPOTE_SETJMP_H
-#define SAPOTE_SETJMP_H
+#ifndef PHIPIA_SETJMP_H
+#define PHIPIA_SETJMP_H
 
 typedef unsigned long jmp_buf[8];
 

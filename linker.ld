@@ -35,7 +35,8 @@ SECTIONS
     .text ALIGN(4K) :
     {
         __text_start = .;
-        *(.boot.text)
+        *(.boot.text32)
+        *(.boot.text64)
         *(.text .text.*)
         . = ALIGN(4K);
         __text_end = .;

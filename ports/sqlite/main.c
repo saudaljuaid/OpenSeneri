@@ -2,7 +2,7 @@
 
 #include "sqlite3.h"
 
-#include <sapote/runtime.h>
+#include <phipia/runtime.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -69,9 +69,9 @@ static int first_phase(void)
         execute(primary, "CREATE TABLE rows(id INTEGER PRIMARY KEY, name TEXT NOT NULL, value INTEGER NOT NULL);") != SQLITE_OK) {
         goto failure;
     }
-    transaction_started = sapote_monotonic_ns();
+    transaction_started = phipia_monotonic_ns();
     status = execute(primary, "BEGIN IMMEDIATE; INSERT INTO rows(name,value) VALUES('alpha',11),('beta',22),('gamma',33); COMMIT;");
-    transaction_elapsed = sapote_monotonic_ns() - transaction_started;
+    transaction_elapsed = phipia_monotonic_ns() - transaction_started;
     if (status != SQLITE_OK ||
         sqlite3_open_v2("PORT.DB", &contender, SQLITE_OPEN_READWRITE, NULL) !=
             SQLITE_OK || execute(primary, "BEGIN IMMEDIATE;") != SQLITE_OK) {
@@ -86,9 +86,9 @@ static int first_phase(void)
         primary = NULL;
         goto failure;
     }
-    printf("SAPOTE PERF sqlite transaction_ns=%llu\n",
+    printf("PHIPIA PERF sqlite transaction_ns=%llu\n",
         (unsigned long long)transaction_elapsed);
-    puts("SAPOTE SQLITE PHASE1 PASS rows=3 locking=busy");
+    puts("PHIPIA SQLITE PHASE1 PASS rows=3 locking=busy");
     return 0;
 
 failure:
@@ -110,7 +110,7 @@ static int second_phase(void)
     FILE *result;
     int write_ok;
 
-    reopen_started = sapote_monotonic_ns();
+    reopen_started = phipia_monotonic_ns();
     if (sqlite3_open_v2("PORT.DB", &database, SQLITE_OPEN_READWRITE, NULL) !=
             SQLITE_OK || sqlite3_exec(database,
             "SELECT name, value FROM rows ORDER BY id;", collect_row, &query,
@@ -126,15 +126,15 @@ static int second_phase(void)
         goto failure;
     }
     database = NULL;
-    reopen_elapsed = sapote_monotonic_ns() - reopen_started;
+    reopen_elapsed = phipia_monotonic_ns() - reopen_started;
     result = fopen("RESULT.TXT", "w");
     if (result == NULL) return 1;
     write_ok = fwrite(output, 1U, sizeof(output) - 1U, result) ==
         sizeof(output) - 1U;
     if (fclose(result) != 0 || !write_ok) return 1;
-    printf("SAPOTE PERF sqlite reopen_query_ns=%llu\n",
+    printf("PHIPIA PERF sqlite reopen_query_ns=%llu\n",
         (unsigned long long)reopen_elapsed);
-    puts("SAPOTE SQLITE PHASE2 PASS rows=3 sum=66 integrity=ok");
+    puts("PHIPIA SQLITE PHASE2 PASS rows=3 sum=66 integrity=ok");
     return 0;
 
 failure:

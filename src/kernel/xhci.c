@@ -8,14 +8,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/clock.h>
-#include <sapote/cpu.h>
-#include <sapote/dma.h>
-#include <sapote/interrupt_vector.h>
-#include <sapote/msix.h>
-#include <sapote/pci.h>
-#include <sapote/pci_resource.h>
-#include <sapote/xhci.h>
+#include <phipia/clock.h>
+#include <phipia/cpu.h>
+#include <phipia/dma.h>
+#include <phipia/interrupt_vector.h>
+#include <phipia/msix.h>
+#include <phipia/pci.h>
+#include <phipia/pci_resource.h>
+#include <phipia/xhci.h>
 
 #define XHCI_CAPLENGTH UINT64_C(0x00)
 #define XHCI_HCSPARAMS1 UINT64_C(0x04)
@@ -333,7 +333,7 @@ static enum xhci_status decode_scratchpad_count(
     scratchpads = ((size_t)((params2 >> 21U) & 0x1FU) << 5U) |
         (size_t)((params2 >> 27U) & 0x1FU);
     if (scratchpads > XHCI_MAX_SCRATCHPADS ||
-        scratchpads > SIZE_MAX / SAPOTE_PAGE_SIZE) {
+        scratchpads > SIZE_MAX / PHIPIA_PAGE_SIZE) {
         return XHCI_STATUS_SCRATCHPAD_OVERFLOW;
     }
     *scratchpad_count = scratchpads;
@@ -796,16 +796,16 @@ static enum xhci_status allocate_page(
 {
     const struct dma_request request = {
         .page_count = pages,
-        .alignment = SAPOTE_PAGE_SIZE,
+        .alignment = PHIPIA_PAGE_SIZE,
         .maximum_physical_address = XHCI_DMA_MAX_32
     };
 
     if (pages == 0U || dma_allocate(&request, allocation) != DMA_STATUS_OK) {
         return XHCI_STATUS_DMA_ALLOCATION_FAILURE;
     }
-    if ((physical_of(allocation) & (SAPOTE_PAGE_SIZE - 1U)) != 0U ||
+    if ((physical_of(allocation) & (PHIPIA_PAGE_SIZE - 1U)) != 0U ||
         physical_of(allocation) > XHCI_DMA_MAX_32 ||
-        allocation->byte_length < (uint64_t)pages * SAPOTE_PAGE_SIZE) {
+        allocation->byte_length < (uint64_t)pages * PHIPIA_PAGE_SIZE) {
         return XHCI_STATUS_DMA_LAYOUT_FAILURE;
     }
     zero_bytes(allocation->cpu_address, allocation->byte_length);
@@ -1202,7 +1202,7 @@ static enum xhci_status prepare_dma(
             XHCI_ADMIN_SCRATCH_ARRAY_OFFSET;
         for (size_t index = 0U; index < scratchpad_count; ++index) {
             scratch_array[index] = physical_of(&controller->scratchpads.dma) +
-                (uint64_t)index * SAPOTE_PAGE_SIZE;
+                (uint64_t)index * PHIPIA_PAGE_SIZE;
         }
     }
     admin[1] = physical_of(&controller->contexts.output);
@@ -2350,7 +2350,7 @@ bool xhci_foundation_self_test(size_t *completed_tests)
         validate_ring_geometry(UINT64_MAX - 15U, 1024U,
             XHCI_RING_TRB_COUNT) == XHCI_STATUS_RING_CONTAINMENT &&
         (UINT64_C(0x1040) & 63U) == 0U &&
-        XHCI_CONTEXT_64_BYTES * 33U <= SAPOTE_PAGE_SIZE, &completed)) {
+        XHCI_CONTEXT_64_BYTES * 33U <= PHIPIA_PAGE_SIZE, &completed)) {
         return false;
     }
     /* 8: the command validator rejects cycle, ownership and reserved bits. */

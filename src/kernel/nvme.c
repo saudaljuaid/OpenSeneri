@@ -11,16 +11,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/clock.h>
-#include <sapote/cpu.h>
-#include <sapote/dma.h>
-#include <sapote/fat16.h>
-#include <sapote/interrupt_vector.h>
-#include <sapote/memory.h>
-#include <sapote/msix.h>
-#include <sapote/nvme.h>
-#include <sapote/pci.h>
-#include <sapote/pci_resource.h>
+#include <phipia/clock.h>
+#include <phipia/cpu.h>
+#include <phipia/dma.h>
+#include <phipia/fat16.h>
+#include <phipia/interrupt_vector.h>
+#include <phipia/memory.h>
+#include <phipia/msix.h>
+#include <phipia/nvme.h>
+#include <phipia/pci.h>
+#include <phipia/pci_resource.h>
 
 #define NVME_REG_CAP UINT64_C(0x00)
 #define NVME_REG_VS UINT64_C(0x08)
@@ -61,6 +61,7 @@
 #define NVME_ADMIN_IDENTIFY UINT8_C(0x06)
 #define NVME_ADMIN_CREATE_IO_SQ UINT8_C(0x01)
 #define NVME_ADMIN_CREATE_IO_CQ UINT8_C(0x05)
+#define NVME_NVM_FLUSH UINT8_C(0x00)
 #define NVME_NVM_READ UINT8_C(0x02)
 #define NVME_NVM_WRITE UINT8_C(0x01)
 #define NVME_IDENTIFY_NAMESPACE UINT32_C(0)
@@ -74,6 +75,10 @@
 #define NVME_COMPLETION_ENTRY_BYTES UINT64_C(16)
 #define NVME_SENTINEL UINT8_C(0xA5)
 #define NVME_COMMAND_TIMEOUT_NS UINT64_C(2000000000)
+/* Flush may wait for backing-store durability. Linux v6.12 NVMe uses a
+ * thirty-second I/O timeout (drivers/nvme/host/core.c: nvme_io_timeout).
+ * Keep ordinary command refusals prompt while allowing that bounded fence. */
+#define NVME_FLUSH_TIMEOUT_NS UINT64_C(30000000000)
 #define NVME_TIMEOUT_UNIT_NS UINT64_C(500000000)
 #define NVME_MAX_COMMAND_IDENTIFIER UINT16_C(0xFFFE)
 #define NVME_READ_ALLOCATION_PAGES 3U
@@ -140,8 +145,8 @@ _Static_assert(sizeof(struct nvme_submission_entry) ==
     NVME_SUBMISSION_ENTRY_BYTES, "NVMe SQE must be 64 bytes");
 _Static_assert(sizeof(struct nvme_completion_entry) ==
     NVME_COMPLETION_ENTRY_BYTES, "NVMe CQE must be 16 bytes");
-_Static_assert(SAPOTE_PAGE_SIZE == NVME_BLOCK_BYTES,
-    "the bounded fixture uses Sapote's one 4 KiB DMA page");
+_Static_assert(PHIPIA_PAGE_SIZE == NVME_BLOCK_BYTES,
+    "the bounded fixture uses Phipia's one 4 KiB DMA page");
 
 static struct nvme_read_proof installed_proof;
 static uint64_t controller_generation;
@@ -153,6 +158,7 @@ struct nvme_filesystem_runtime {
     struct interrupt_vector_state vectors_before;
     struct msix_state msix_before;
     struct frame_allocator_stats frames_before;
+    struct frame_allocator_stats frames_ready;
     uint64_t generation;
     bool active;
 };
@@ -588,7 +594,7 @@ static enum nvme_status validate_queue_geometry(
     uint64_t required;
     uint64_t end;
 
-    if ((base & (SAPOTE_PAGE_SIZE - 1U)) != 0U || depth < 2U ||
+    if ((base & (PHIPIA_PAGE_SIZE - 1U)) != 0U || depth < 2U ||
         !multiply_checked((uint64_t)depth, entry_bytes, &required) ||
         required > allocation_length || !add_checked(base, required, &end) ||
         end <= base) {
@@ -640,7 +646,7 @@ static enum nvme_status allocate_dma(
 {
     const struct dma_request request = {
         .page_count = page_count,
-        .alignment = SAPOTE_PAGE_SIZE,
+        .alignment = PHIPIA_PAGE_SIZE,
         .maximum_physical_address = UINT64_MAX
     };
 
@@ -675,7 +681,7 @@ static enum nvme_status prepare_dma(struct nvme_runtime *controller)
     fill_bytes(controller->read.dma.cpu_address,
         controller->read.dma.byte_length, NVME_SENTINEL);
     controller->read.data_offset =
-        (uint64_t)NVME_READ_DATA_PAGE * SAPOTE_PAGE_SIZE;
+        (uint64_t)NVME_READ_DATA_PAGE * PHIPIA_PAGE_SIZE;
     controller->read.data_length = NVME_BLOCK_BYTES;
     controller->read.state = NVME_DMA_CPU_OWNED;
     controller->admin.submission_state = NVME_DMA_CPU_OWNED;
@@ -785,10 +791,10 @@ static enum nvme_status validate_prp(
     if (allocation == NULL || !allocation->active || length == 0U ||
         !add_checked(offset, length, &end) || end > allocation->byte_length ||
         !add_checked(physical_of(allocation), offset, &address) ||
-        (address & (SAPOTE_PAGE_SIZE - 1U)) != 0U ||
-        length > SAPOTE_PAGE_SIZE ||
-        (address & ~(SAPOTE_PAGE_SIZE - 1U)) !=
-            ((address + length - 1U) & ~(SAPOTE_PAGE_SIZE - 1U))) {
+        (address & (PHIPIA_PAGE_SIZE - 1U)) != 0U ||
+        length > PHIPIA_PAGE_SIZE ||
+        (address & ~(PHIPIA_PAGE_SIZE - 1U)) !=
+            ((address + length - 1U) & ~(PHIPIA_PAGE_SIZE - 1U))) {
         return NVME_STATUS_PRP_INVALID;
     }
     return NVME_STATUS_OK;
@@ -1149,15 +1155,22 @@ static void set_prp1(
     entry->dword[7] = (uint32_t)(address >> 32U);
 }
 
+static uint64_t command_timeout_ns(enum nvme_queue_kind kind, uint8_t opcode)
+{
+    return kind == NVME_QUEUE_IO && opcode == NVME_NVM_FLUSH ?
+        NVME_FLUSH_TIMEOUT_NS : NVME_COMMAND_TIMEOUT_NS;
+}
+
 static enum nvme_status wait_for_completion(
     struct nvme_runtime *controller,
-    struct nvme_queue_pair *queue
+    struct nvme_queue_pair *queue,
+    uint64_t timeout_ns
 )
 {
     uint64_t deadline;
     enum nvme_status status;
 
-    if (!add_checked(clock_monotonic_ns(), NVME_COMMAND_TIMEOUT_NS,
+    if (!add_checked(clock_monotonic_ns(), timeout_ns,
             &deadline)) {
         return NVME_STATUS_COMMAND_TIMEOUT;
     }
@@ -1207,12 +1220,17 @@ static enum nvme_status submit_entry(
 )
 {
     uint64_t doorbell;
+    uint64_t timeout_ns;
     enum nvme_status status;
 
     if (queue->submission_state != NVME_DMA_CPU_OWNED ||
         queue->submission.owner != DMA_OWNER_CPU) {
         return NVME_STATUS_QUEUE_OWNERSHIP;
     }
+    /* Read the opcode while the submission ring is still CPU-owned. */
+    timeout_ns = command_timeout_ns(queue->kind, (uint8_t)
+        ((const struct nvme_submission_entry *)queue->submission.cpu_address)
+            [queue->submission_tail].dword[0]);
     status = allocate_command_identifier(queue, command_identifier);
     if (status != NVME_STATUS_OK) {
         return status;
@@ -1249,7 +1267,7 @@ static enum nvme_status submit_entry(
         controller->registers.io_submission_doorbell.offset;
     cpu_store_fence();
     mmio_write32(controller->mmio, doorbell, queue->submission_tail);
-    status = wait_for_completion(controller, queue);
+    status = wait_for_completion(controller, queue, timeout_ns);
     controller->expectation.kind = NVME_EXPECT_NONE;
     controller->expectation.queue = NULL;
     controller->expectation.data = NULL;
@@ -1675,6 +1693,29 @@ static enum nvme_status submit_write_at(
         controller->read.data_length);
 }
 
+static enum nvme_status submit_flush(
+    struct nvme_runtime *controller,
+    uint16_t command_identifier
+)
+{
+    struct nvme_submission_entry *entry;
+    enum nvme_status status;
+
+    if (controller == NULL) {
+        return NVME_STATUS_NULL_ARGUMENT;
+    }
+    status = prepare_submission_entry(&controller->io, &entry);
+    if (status != NVME_STATUS_OK) {
+        return status;
+    }
+    zero_bytes(entry, sizeof(*entry));
+    entry->dword[0] = NVME_NVM_FLUSH |
+        (uint32_t)command_identifier << 16U;
+    entry->dword[1] = NVME_NAMESPACE_IDENTIFIER;
+    return submit_entry(controller, &controller->io, command_identifier,
+        NULL, 0U, 0U);
+}
+
 static enum nvme_status submit_read(struct nvme_runtime *controller)
 {
     return submit_read_at(controller, NVME_FIXTURE_LBA, 1U);
@@ -1847,7 +1888,7 @@ static enum nvme_status validate_read_data(struct nvme_runtime *controller)
     return NVME_STATUS_OK;
 }
 
-static bool resource_state_matches(
+static uint32_t resource_state_mismatches(
     struct pci_resource_state pci_before,
     struct dma_state dma_before,
     struct interrupt_vector_state vectors_before,
@@ -1862,33 +1903,123 @@ static bool resource_state_matches(
     const struct msix_state msix_after = msix_get_state();
     const struct frame_allocator_stats frames_after =
         frame_allocator_get_stats();
+    uint32_t mismatches = 0U;
 
-    return pci_after.active_claims == pci_before.active_claims &&
-        pci_after.active_mappings == pci_before.active_mappings &&
-        pci_after.arena_pages == pci_before.arena_pages &&
-        pci_after.mapped_pages == pci_before.mapped_pages &&
-        pci_after.bus_masters == pci_before.bus_masters &&
-        pci_after.active == pci_before.active &&
-        dma_after.active_allocations == dma_before.active_allocations &&
-        dma_after.cpu_owned_allocations == dma_before.cpu_owned_allocations &&
-        dma_after.device_owned_allocations ==
-            dma_before.device_owned_allocations &&
-        dma_after.active == dma_before.active &&
-        vectors_after.capacity == vectors_before.capacity &&
-        vectors_after.allocated == vectors_before.allocated &&
-        vectors_after.free == vectors_before.free &&
-        vectors_after.active == vectors_before.active &&
-        msix_after.active_bindings == msix_before.active_bindings &&
-        !msix_after.failure_injection_armed &&
-        !msix_before.failure_injection_armed &&
-        frames_after.addressable_frames == frames_before.addressable_frames &&
-        frames_after.allocatable_frames ==
-            frames_before.allocatable_frames &&
-        frames_after.free_frames == frames_before.free_frames &&
-        frames_after.allocated_frames == frames_before.allocated_frames &&
-        frames_after.reserved_frames == frames_before.reserved_frames &&
-        frames_after.highest_allocatable_address ==
-            frames_before.highest_allocatable_address;
+    if (pci_after.active_claims != pci_before.active_claims ||
+        pci_after.active_mappings != pci_before.active_mappings ||
+        pci_after.arena_pages != pci_before.arena_pages ||
+        pci_after.mapped_pages != pci_before.mapped_pages ||
+        pci_after.bus_masters != pci_before.bus_masters ||
+        pci_after.active != pci_before.active) {
+        mismatches |= NVME_VOLUME_RESOURCE_MISMATCH_PCI;
+    }
+    if (dma_after.active_allocations != dma_before.active_allocations ||
+        dma_after.cpu_owned_allocations != dma_before.cpu_owned_allocations ||
+        dma_after.device_owned_allocations !=
+            dma_before.device_owned_allocations ||
+        dma_after.active != dma_before.active) {
+        mismatches |= NVME_VOLUME_RESOURCE_MISMATCH_DMA;
+    }
+    if (vectors_after.capacity != vectors_before.capacity ||
+        vectors_after.allocated != vectors_before.allocated ||
+        vectors_after.free != vectors_before.free ||
+        vectors_after.active != vectors_before.active) {
+        mismatches |= NVME_VOLUME_RESOURCE_MISMATCH_VECTOR;
+    }
+    if (msix_after.active_bindings != msix_before.active_bindings ||
+        msix_after.failure_injection_armed ||
+        msix_before.failure_injection_armed) {
+        mismatches |= NVME_VOLUME_RESOURCE_MISMATCH_MSIX;
+    }
+    if (frames_after.addressable_frames != frames_before.addressable_frames ||
+        frames_after.allocatable_frames != frames_before.allocatable_frames ||
+        frames_after.free_frames != frames_before.free_frames ||
+        frames_after.allocated_frames != frames_before.allocated_frames ||
+        frames_after.reserved_frames != frames_before.reserved_frames ||
+        frames_after.highest_allocatable_address !=
+            frames_before.highest_allocatable_address) {
+        mismatches |= NVME_VOLUME_RESOURCE_MISMATCH_FRAMES;
+    }
+    return mismatches;
+}
+
+static bool resource_state_matches(
+    struct pci_resource_state pci_before,
+    struct dma_state dma_before,
+    struct interrupt_vector_state vectors_before,
+    struct msix_state msix_before,
+    struct frame_allocator_stats frames_before
+)
+{
+    return resource_state_mismatches(pci_before, dma_before, vectors_before,
+        msix_before, frames_before) == 0U;
+}
+
+/*
+ * A volume client may retain unrelated frames while its controller lease is
+ * open (for example, an admitted filesystem object in the kernel heap). Prove
+ * the controller released exactly the frame count it acquired at open rather
+ * than requiring those client-owned frames to disappear with the lease.
+ */
+static bool volume_frames_released(
+    struct frame_allocator_stats frames_before,
+    struct frame_allocator_stats frames_ready,
+    struct frame_allocator_stats frames_before_teardown,
+    struct frame_allocator_stats frames_after
+)
+{
+    size_t controller_frames;
+
+    if (frames_before.addressable_frames != frames_ready.addressable_frames ||
+        frames_before.addressable_frames !=
+            frames_before_teardown.addressable_frames ||
+        frames_before.addressable_frames != frames_after.addressable_frames ||
+        frames_before.allocatable_frames != frames_ready.allocatable_frames ||
+        frames_before.allocatable_frames !=
+            frames_before_teardown.allocatable_frames ||
+        frames_before.allocatable_frames != frames_after.allocatable_frames ||
+        frames_before.reserved_frames != frames_ready.reserved_frames ||
+        frames_before.reserved_frames !=
+            frames_before_teardown.reserved_frames ||
+        frames_before.reserved_frames != frames_after.reserved_frames ||
+        frames_before.highest_allocatable_address !=
+            frames_ready.highest_allocatable_address ||
+        frames_before.highest_allocatable_address !=
+            frames_before_teardown.highest_allocatable_address ||
+        frames_before.highest_allocatable_address !=
+            frames_after.highest_allocatable_address ||
+        frames_ready.allocated_frames < frames_before.allocated_frames ||
+        frames_ready.free_frames > frames_before.free_frames) {
+        return false;
+    }
+    controller_frames = frames_ready.allocated_frames -
+        frames_before.allocated_frames;
+    if (frames_before.free_frames - frames_ready.free_frames !=
+            controller_frames ||
+        frames_before_teardown.allocated_frames < controller_frames ||
+        frames_before_teardown.free_frames > SIZE_MAX - controller_frames) {
+        return false;
+    }
+    return frames_after.allocated_frames ==
+            frames_before_teardown.allocated_frames - controller_frames &&
+        frames_after.free_frames ==
+            frames_before_teardown.free_frames + controller_frames;
+}
+
+static uint32_t volume_resource_state_mismatches(
+    const struct nvme_filesystem_runtime *runtime,
+    struct frame_allocator_stats frames_before_teardown
+)
+{
+    uint32_t mismatches = resource_state_mismatches(runtime->pci_before,
+        runtime->dma_before, runtime->vectors_before, runtime->msix_before,
+        runtime->frames_before);
+
+    if (volume_frames_released(runtime->frames_before, runtime->frames_ready,
+            frames_before_teardown, frame_allocator_get_stats())) {
+        mismatches &= ~NVME_VOLUME_RESOURCE_MISMATCH_FRAMES;
+    }
+    return mismatches;
 }
 
 static enum nvme_status reclaim_all(struct nvme_runtime *controller)
@@ -2084,6 +2215,34 @@ static bool exercise_cleanup_boundary(size_t boundary)
         vectors_before, msix_before, frames_before);
 }
 
+static bool exercise_volume_frame_isolation(void)
+{
+    const struct frame_allocator_stats before = {
+        .addressable_frames = 100U,
+        .allocatable_frames = 80U,
+        .free_frames = 70U,
+        .allocated_frames = 10U,
+        .reserved_frames = 20U,
+        .highest_allocatable_address = UINT64_C(0x100000)
+    };
+    struct frame_allocator_stats ready = before;
+    struct frame_allocator_stats before_teardown = before;
+    struct frame_allocator_stats after = before;
+
+    ready.free_frames -= 7U;
+    ready.allocated_frames += 7U;
+    before_teardown.free_frames -= 9U;
+    before_teardown.allocated_frames += 9U;
+    after.free_frames -= 2U;
+    after.allocated_frames += 2U;
+    if (!volume_frames_released(before, ready, before_teardown, after)) {
+        return false;
+    }
+    ++after.allocated_frames;
+    --after.free_frames;
+    return !volume_frames_released(before, ready, before_teardown, after);
+}
+
 static bool exercise_owned_release_refusal(void)
 {
     const struct pci_resource_state pci_before = pci_resource_get_state();
@@ -2177,20 +2336,30 @@ bool nvme_foundation_self_test(size_t *completed_tests)
             NVME_STATUS_UNSUPPORTED_PAGE_SIZE, &completed)) {
         return false;
     }
-    /* 4: controller enable and disable expiries remain distinct and finite. */
+    /* 4: expiries stay finite; only I/O Flush can outlive two seconds. */
     if (!test_record(NVME_STATUS_DISABLE_TIMEOUT !=
             NVME_STATUS_ENABLE_TIMEOUT &&
         deadline_reached(NVME_TIMEOUT_UNIT_NS, NVME_TIMEOUT_UNIT_NS) &&
-        NVME_COMMAND_TIMEOUT_NS != 0U, &completed)) {
+        NVME_COMMAND_TIMEOUT_NS != 0U &&
+        !deadline_reached(NVME_COMMAND_TIMEOUT_NS + 1U,
+            command_timeout_ns(NVME_QUEUE_IO, NVME_NVM_FLUSH)) &&
+        deadline_reached(NVME_FLUSH_TIMEOUT_NS,
+            command_timeout_ns(NVME_QUEUE_IO, NVME_NVM_FLUSH)) &&
+        command_timeout_ns(NVME_QUEUE_ADMIN, NVME_NVM_FLUSH) ==
+            NVME_COMMAND_TIMEOUT_NS &&
+        command_timeout_ns(NVME_QUEUE_IO, NVME_NVM_READ) ==
+            NVME_COMMAND_TIMEOUT_NS &&
+        command_timeout_ns(NVME_QUEUE_IO, NVME_NVM_WRITE) ==
+            NVME_COMMAND_TIMEOUT_NS, &completed)) {
         return false;
     }
     /* 5: malformed, misaligned and overflowing Admin queues reject. */
     if (!test_record(validate_queue_geometry(UINT64_C(0x1001),
-            SAPOTE_PAGE_SIZE, NVME_SUBMISSION_ENTRY_BYTES,
+            PHIPIA_PAGE_SIZE, NVME_SUBMISSION_ENTRY_BYTES,
             NVME_QUEUE_DEPTH, NVME_STATUS_ADMIN_QUEUE_INVALID) ==
                 NVME_STATUS_ADMIN_QUEUE_INVALID &&
         validate_queue_geometry(UINT64_MAX - 4095U,
-            SAPOTE_PAGE_SIZE * 2U, NVME_SUBMISSION_ENTRY_BYTES, 128U,
+            PHIPIA_PAGE_SIZE * 2U, NVME_SUBMISSION_ENTRY_BYTES, 128U,
             NVME_STATUS_ADMIN_QUEUE_INVALID) ==
                 NVME_STATUS_ADMIN_QUEUE_INVALID, &completed)) {
         return false;
@@ -2199,7 +2368,7 @@ bool nvme_foundation_self_test(size_t *completed_tests)
     if (!test_record(validate_queue_geometry(UINT64_C(0x2000), 16U,
             NVME_COMPLETION_ENTRY_BYTES, NVME_QUEUE_DEPTH,
             NVME_STATUS_IO_QUEUE_INVALID) == NVME_STATUS_IO_QUEUE_INVALID &&
-        validate_queue_geometry(UINT64_C(0x2000), SAPOTE_PAGE_SIZE,
+        validate_queue_geometry(UINT64_C(0x2000), PHIPIA_PAGE_SIZE,
             NVME_COMPLETION_ENTRY_BYTES, SIZE_MAX,
             NVME_STATUS_IO_QUEUE_INVALID) == NVME_STATUS_IO_QUEUE_INVALID,
             &completed)) {
@@ -2293,16 +2462,16 @@ bool nvme_foundation_self_test(size_t *completed_tests)
     struct dma_allocation synthetic_dma = {
         .frames = {.physical_base = UINT64_C(0x1000), .active = true},
         .cpu_address = identify_namespace_data,
-        .byte_length = SAPOTE_PAGE_SIZE * 2U,
+        .byte_length = PHIPIA_PAGE_SIZE * 2U,
         .owner = DMA_OWNER_CPU,
         .active = true
     };
-    if (!test_record(validate_prp(&synthetic_dma, SAPOTE_PAGE_SIZE,
-            SAPOTE_PAGE_SIZE) == NVME_STATUS_OK &&
-        validate_prp(&synthetic_dma, SAPOTE_PAGE_SIZE - 4U, 8U) ==
+    if (!test_record(validate_prp(&synthetic_dma, PHIPIA_PAGE_SIZE,
+            PHIPIA_PAGE_SIZE) == NVME_STATUS_OK &&
+        validate_prp(&synthetic_dma, PHIPIA_PAGE_SIZE - 4U, 8U) ==
             NVME_STATUS_PRP_INVALID &&
-        validate_prp(&synthetic_dma, SAPOTE_PAGE_SIZE * 2U,
-            SAPOTE_PAGE_SIZE) == NVME_STATUS_PRP_INVALID, &completed)) {
+        validate_prp(&synthetic_dma, PHIPIA_PAGE_SIZE * 2U,
+            PHIPIA_PAGE_SIZE) == NVME_STATUS_PRP_INVALID, &completed)) {
         return false;
     }
     /* 14: phase, CID, SQID and status mismatches never report success. */
@@ -2377,13 +2546,14 @@ bool nvme_foundation_self_test(size_t *completed_tests)
         exercise_owned_release_refusal(), &completed)) {
         return false;
     }
-    /* 19: every partial DMA/queue boundary unwinds without retained state. */
+    /* 19: partial boundaries unwind and volume frames retain distinct owners. */
     bool every_boundary_clean = true;
     for (size_t boundary = 0U; boundary <= 7U; ++boundary) {
         every_boundary_clean = every_boundary_clean &&
             exercise_cleanup_boundary(boundary);
     }
-    if (!test_record(every_boundary_clean, &completed)) {
+    if (!test_record(every_boundary_clean && exercise_volume_frame_isolation(),
+            &completed)) {
         return false;
     }
     /* 20: the teardown hook detects freed state without inspecting it. */
@@ -2895,6 +3065,7 @@ static enum nvme_status volume_open_interrupts_disabled(
     }
     filesystem_runtime.generation =
         filesystem_runtime.controller.claim.discovery.generation;
+    filesystem_runtime.frames_ready = frame_allocator_get_stats();
     zero_bytes(session, sizeof(*session));
     session->generation = filesystem_runtime.generation;
     session->namespace_blocks =
@@ -3075,8 +3246,63 @@ enum nvme_status nvme_volume_write(
     return result;
 }
 
+static enum nvme_status volume_flush_interrupts_disabled(
+    struct nvme_volume_session *session
+)
+{
+    struct nvme_runtime *controller;
+    uint64_t interrupts_before;
+    enum nvme_status result;
+
+    if (session == NULL) {
+        return NVME_STATUS_NULL_ARGUMENT;
+    }
+    if (!volume_session_matches(session)) {
+        return NVME_STATUS_SESSION_INVALID;
+    }
+    if (!session->writable) {
+        return NVME_STATUS_VOLUME_READ_ONLY;
+    }
+    if (session->state != NVME_FILESYSTEM_SESSION_READY &&
+        session->state != NVME_FILESYSTEM_SESSION_BLOCK_CPU_OWNED) {
+        return NVME_STATUS_TRANSITION_INVALID;
+    }
+    controller = &filesystem_runtime.controller;
+    session->state = NVME_FILESYSTEM_SESSION_BLOCK_CONTROLLER_OWNED;
+    interrupts_before = controller->interrupt_count;
+    result = submit_flush(controller, volume_command_identifier(session));
+    if (result != NVME_STATUS_OK) {
+        session->state = NVME_FILESYSTEM_SESSION_READY;
+        return result;
+    }
+    if (controller->interrupt_count != interrupts_before + 1U) {
+        session->state = NVME_FILESYSTEM_SESSION_READY;
+        return NVME_STATUS_INTERRUPT_COUNT;
+    }
+    session->state = NVME_FILESYSTEM_SESSION_READY;
+    ++session->completion_count;
+    return NVME_STATUS_OK;
+}
+
+enum nvme_status nvme_volume_flush(struct nvme_volume_session *session)
+{
+    const bool interrupts_were_enabled = cpu_interrupts_enabled();
+    enum nvme_status result;
+
+    if (interrupts_were_enabled) {
+        cpu_interrupt_disable();
+    }
+    result = volume_flush_interrupts_disabled(session);
+    if (interrupts_were_enabled) {
+        cpu_interrupt_enable();
+    }
+    return result;
+}
+
 enum nvme_status nvme_volume_close(struct nvme_volume_session *session)
 {
+    const struct frame_allocator_stats frames_before_teardown =
+        frame_allocator_get_stats();
     enum nvme_status result;
 
     if (session == NULL) {
@@ -3088,12 +3314,11 @@ enum nvme_status nvme_volume_close(struct nvme_volume_session *session)
     }
     session->state = NVME_FILESYSTEM_SESSION_STOPPING;
     result = teardown_controller(&filesystem_runtime.controller);
+    session->close_teardown_status = result;
+    session->close_resource_mismatches = volume_resource_state_mismatches(
+        &filesystem_runtime, frames_before_teardown);
     if (result == NVME_STATUS_OK &&
-        !resource_state_matches(filesystem_runtime.pci_before,
-            filesystem_runtime.dma_before,
-            filesystem_runtime.vectors_before,
-            filesystem_runtime.msix_before,
-            filesystem_runtime.frames_before)) {
+        session->close_resource_mismatches != 0U) {
         result = NVME_STATUS_TEARDOWN_FAILURE;
     }
     if (result != NVME_STATUS_OK) {
@@ -3133,7 +3358,7 @@ const char *nvme_status_string(enum nvme_status status)
     case NVME_STATUS_UNSUPPORTED_COMMAND_SET:
         return "NVMe controller lacks the NVM command set";
     case NVME_STATUS_UNSUPPORTED_PAGE_SIZE:
-        return "NVMe controller cannot use Sapote's page size";
+        return "NVMe controller cannot use Phipia's page size";
     case NVME_STATUS_UNSUPPORTED_VERSION:
         return "NVMe controller version is unsupported";
     case NVME_STATUS_DISABLE_TIMEOUT:

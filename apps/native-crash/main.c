@@ -1,15 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 #include <pthread.h>
-#include <sapote/event.h>
-#include <sapote/runtime.h>
-#include <sapote/window.h>
+#include <phipia/event.h>
+#include <phipia/runtime.h>
+#include <phipia/window.h>
 #include <stdint.h>
 
 static void *blocked_thread(void *argument)
 {
     (void)argument;
     for (;;) {
-        (void)sapote_sleep_until(sapote_monotonic_ns() +
+        (void)phipia_sleep_until(phipia_monotonic_ns() +
             UINT64_C(1000000000));
     }
 }
@@ -28,25 +28,25 @@ static _Noreturn void poison_state_and_fault(void)
 
 int main(void)
 {
-    struct sapote_memory_map_response mapping = {0U, 0U, 0U, 0U};
-    struct sapote_window_create_response window = {0U};
+    struct phipia_memory_map_response mapping = {0U, 0U, 0U, 0U};
+    struct phipia_window_create_response window = {0U};
     pthread_t thread;
     long file;
     long directory;
     long timer;
 
-    if (sapote_path_mkdir(SAPOTE_VOLUME_DATA, "LIVE") != 0) return 10;
-    file = sapote_file_open(SAPOTE_VOLUME_DATA, "LIVE/OPEN.TXT",
-        SAPOTE_OPEN_WRITE | SAPOTE_OPEN_CREATE | SAPOTE_OPEN_TRUNCATE);
-    directory = sapote_directory_open(SAPOTE_VOLUME_DATA, "LIVE");
-    timer = sapote_timer_create();
+    if (phipia_path_mkdir(PHIPIA_VOLUME_DATA, "LIVE") != 0) return 10;
+    file = phipia_file_open(PHIPIA_VOLUME_DATA, "LIVE/OPEN.TXT",
+        PHIPIA_OPEN_WRITE | PHIPIA_OPEN_CREATE | PHIPIA_OPEN_TRUNCATE);
+    directory = phipia_directory_open(PHIPIA_VOLUME_DATA, "LIVE");
+    timer = phipia_timer_create();
     if (file < 0 || directory < 0 || timer < 0 ||
-        sapote_file_write((sapote_handle_t)file, "live", 4U) != 4 ||
-        sapote_timer_set((sapote_handle_t)timer,
-            sapote_monotonic_ns() + UINT64_C(1000000000)) != 0 ||
-        sapote_memory_allocate(2U * SAPOTE_ABI_PAGE_SIZE,
-            SAPOTE_MEMORY_READ | SAPOTE_MEMORY_WRITE, &mapping) != 0 ||
-        sapote_window_create("Crash containment", 160U, 96U, &window) != 0 ||
+        phipia_file_write((phipia_handle_t)file, "live", 4U) != 4 ||
+        phipia_timer_set((phipia_handle_t)timer,
+            phipia_monotonic_ns() + UINT64_C(1000000000)) != 0 ||
+        phipia_memory_allocate(2U * PHIPIA_ABI_PAGE_SIZE,
+            PHIPIA_MEMORY_READ | PHIPIA_MEMORY_WRITE, &mapping) != 0 ||
+        phipia_window_create("Crash containment", 160U, 96U, &window) != 0 ||
         pthread_create(&thread, NULL, blocked_thread, NULL) != 0) {
         return 11;
     }

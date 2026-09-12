@@ -2,8 +2,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include <sapote/boot.h>
-#include <sapote/self_test.h>
+#include <phipia/boot.h>
+#include <phipia/self_test.h>
 
 struct empty_information {
     struct multiboot2_information_header header;
@@ -420,7 +420,7 @@ static bool framebuffer_rejections_are_named(void)
     prepare_framebuffer_fixture(&fixture);
     write_le64(
         framebuffer_field(&fixture.framebuffer, FB_OFFSET_ADDRESS),
-        SAPOTE_EARLY_PHYSICAL_LIMIT -
+        PHIPIA_EARLY_PHYSICAL_LIMIT -
             (uint64_t)TEST_FB_PITCH * TEST_FB_HEIGHT + 4U
     );
 

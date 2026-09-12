@@ -2,13 +2,13 @@
 
 # Architecture
 
-Sapote is a single-core x86_64 kernel built as one fixed-address ELF image. It
+Phipia is a single-core x86_64 kernel built as one fixed-address ELF image. It
 boots through Multiboot2, installs its own memory and interrupt foundations,
-discovers emulated hardware, and can hand control to the Sapote Redwood workspace
+discovers emulated hardware, and can hand control to the Phipia workspace
 or one of the bounded QEMU proof scenarios.
 
-This page is the durable map. Source, headers, self-tests, and the Boot Ledger
-remain authoritative when implementation details change.
+Source, headers, self-tests, and the Boot Ledger define the implementation. This
+page maps those pieces by subsystem.
 
 ## Boot and CPU boundary
 
@@ -33,14 +33,20 @@ types, and installed W^X checks. Kernel mappings remain supervisor-only.
 `native_process.c` admits manifest-described applications through the Rust
 `native_image` validator, creates a private address space, installs immutable
 RX/R ELF loads, RW/NX state, TLS and guarded stacks, and owns the typed mapping
-and handle census. Teardown restores the kernel CR3 and FS base before releasing
-any process resource. See [`APPLICATION_LOADER.md`](APPLICATION_LOADER.md).
+and handle census. Authenticated DSO RX pages may reference a bounded global
+physical-page cache; every writable, TLS, root-executable, and anonymous page
+remains process-private. Teardown restores the kernel CR3 and FS base before
+releasing any process resource. See
+[`APPLICATION_LOADER.md`](APPLICATION_LOADER.md) and
+[`DYNAMIC_LINKING.md`](DYNAMIC_LINKING.md).
 
 `paging.c` holds `PAGING_PROCESS_SPACE_SLOTS` such hierarchies at once rather
-than one. Every private operation resolves the caller's token to a slot, a
-space and its identity-alias narrowings share an index, and a narrowing may
-only be undone while it is the newest one owned - which is what stops one
-process's teardown from freeing a split page table another still has a leaf in.
+than one. Every private operation resolves the caller's token to a slot. Each
+space narrows its own executable identity aliases, while a global
+physical-frame registry reference-counts the live supervisor alias used by
+shared DSO code. A process narrowing may only be undone while it is the newest
+one owned, which stops one process's teardown from freeing a split page table
+another still has a leaf in.
 
 ## Interrupts, clocks, and scheduling
 
@@ -51,9 +57,12 @@ vectors support MSI-X devices.
 The ACPI PM timer is the independent clock reference. The APIC timer drives
 preemption, the TSC supplies a second calibrated counter, and `clock.c` exposes
 one monotonic time source. `timer.c` builds bounded deadlines on it.
+`wall_clock.c` separately reads coherent, validated UTC from the CMOS/RTC for
+calendar-time consumers. Wall time is never used for deadlines; see
+[`WALL_CLOCK.md`](WALL_CLOCK.md).
 
 `thread.c` provides guarded kernel stacks, a small scheduler, and preemption.
-Sapote remains single-core.
+Phipia remains single-core.
 
 `multiprocess.c` and the native scheduler add bounded user scheduling above
 them: up to four processes
@@ -71,15 +80,20 @@ before a driver can claim resources. BAR mappings, MSI-X vectors, and DMA
 buffers are typed and generation-checked. Without an IOMMU, a bus-mastering
 device is still treated as capable of reaching all physical memory.
 
-The current device boundaries are deliberately small:
+The device boundaries are explicit:
 
 - xHCI: one emulated controller and one endpoint-zero descriptor transfer;
 - NVMe: at most two controllers, one namespace and queue pair each, with
   generation-authenticated 512- or 4096-byte synchronous read/write sessions;
 - FAT32: separate immutable-system and writable-data mounts with bounded
   handles, a four-sector cache, and clean-sync persistence;
+- VFS: bounded mount, vnode, file-description, and streaming-directory tables
+  with mount/vnode/handle generations and backend-owned cookies;
+- ext4: exact-profile, metadata-checksummed, journaled read/write/truncate and
+  bounded namespace mutation, 64-bit stat/read, symlink/hardlink identity, and
+  directory enumeration through pinned ext4plus;
 - FAT16: retained read-only compatibility proofs for historical releases;
-- PS/2: keyboard and three-byte pointer input for the shell and Sapote Redwood.
+- PS/2: keyboard and three-byte pointer input for the shell and Phipia.
 
 `driver.c` adds thirteen bounded drivers for real Intel, Realtek, AMD, Cirrus
 Logic and Bochs Display Interface devices. Each binds through the same typed
@@ -96,18 +110,28 @@ while they still belong to the kernel, and it is withdrawn only after the
 engines are stopped and the controller is back in reset - before the memory is
 reclaimed, never after. See [`AUDIO.md`](AUDIO.md).
 
-There is no Unix VFS, journal, hotplug framework, physical-device passthrough,
-or general USB class stack. The exact FAT32 design and limits are in
-[`FAT32.md`](FAT32.md).
+This is a small kernel VFS, not a Unix compatibility layer. FAT32 is writable;
+the admitted ext4 profile is writable through the retained JBD2 coordinator
+for regular-file I/O and the bounded namespace operations documented below. The storage
+profiles are documented in [`FAT32.md`](FAT32.md) and [`EXT4.md`](EXT4.md).
 
-`nvidia.c` is fifteen bounded drivers for the register and configuration
-contracts an NVIDIA board publishes, written from envytools, Nouveau, Mesa/NVK
-and NVIDIA's own published material rather than from a datasheet that does not
-exist, and from the PCI and PCI Express specifications for the capabilities
-four of them cross-check against. Fourteen of them read only; the fifteenth
-clears the ROM shadow bit the PROM window requires and proves it restored. The bytes that come out of that window are parsed in freestanding
-Rust, never in C. Nothing here has run against NVIDIA silicon, and the header,
-the module and a build gate all say so. See [`NVIDIA.md`](NVIDIA.md).
+`package_manager.c` parses the canonical signed repository-index and package-v3
+formats and produces bounded deterministic install/remove plans against
+`package_state.c` installed databases. Its serialized graph workspace is kept
+off the 16 KiB syscall stack, and every trust decision is delegated to explicit
+immutable-key and Ed25519 callbacks that fail closed when unavailable. The
+kernel's pinned, fail-closed `package_trust.c` provider supplies those callbacks;
+the privileged caller must provision its immutable key table. Authenticated
+package file/relation views feed the generation builder. The VFS-backed
+`package_service.c` recovers, stages, verifies, and atomically selects complete
+package generations. The Ring 3 Phip client supplies signed HTTPS downloads;
+the Store queues that same client path. The boundary is documented in [`PACKAGE_MANAGER.md`](PACKAGE_MANAGER.md) and
+[`PACKAGE_TRANSACTIONS.md`](PACKAGE_TRANSACTIONS.md).
+
+`nvidia.c` contains fifteen bounded register and configuration probes based on
+envytools, Nouveau, Mesa/NVK, NVIDIA's open modules, and the PCI specifications.
+Fourteen are read-only; the video-BIOS probe restores its temporary ROM-shadow
+change. Rust validates the ROM bytes. See [`NVIDIA.md`](NVIDIA.md).
 
 ## Networking
 
@@ -150,21 +174,22 @@ what is left. RF is the processor's own note about the trap rather than
 something the program chose, and a kernel that authenticates it as user state
 refuses legal returns on any processor that sets it.
 
-The native ABI v1 loads approved path-based static ELF64 applications from the
-read-only System volume. A fixed binary manifest selects capabilities and
-limits, binds the executable SHA-256, names immutable resources and a private
-Data namespace, and is validated with the ELF by freestanding Rust before the
-kernel maps a byte. Native syscalls use a separate register convention and
-number space. Process-local generation-protected handles cover files,
-directories, windows, events, network objects, timers, and threads. The public
-C SDK and Rust `no_std` crate both target this same ABI. See
+The native ABI v1 loads approved path-based static ELF64 applications and
+bounded PIE roots with authenticated DSO catalogs from the read-only System
+volume. A fixed binary manifest selects capabilities and limits, binds the
+executable SHA-256, names immutable resources and a private Data namespace,
+and is validated with the ELF by freestanding Rust before the kernel maps a
+byte. Native syscalls use a separate register convention and number space.
+Process-local generation-protected handles cover files, directories, windows,
+events, network objects, timers, and threads. The public C SDK and Rust
+`no_std` crate both target this same ABI. See
 [`NATIVE_ABI.md`](NATIVE_ABI.md),
 [`APPLICATION_PACKAGES.md`](APPLICATION_PACKAGES.md), and
 [`NATIVE_HANDLES.md`](NATIVE_HANDLES.md).
 
 Separately, the Linux compatibility boundary programs
 the x86_64 `SYSCALL` MSRs and runs three checksum-pinned static BusyBox
-profiles: `echo SAPOTE`, `uname -s`, and `cat`. Sapote Redwood's `linux` command
+profiles: `echo PHIPIA`, `uname -s`, and `cat`. Phipia's `linux` command
 selects one of the three exact root entries on the deterministic read-only
 FAT32 system volume attached as an ordinary emulated NVMe namespace. Each
 launch validates
@@ -175,7 +200,7 @@ prompt.
 Echo and uname remain synchronous. Cat alone may suspend at its measured
 `read(0, 0x400001203f00, 4096)` entry. The syscall boundary saves an
 authenticated user frame, restores the kernel CR3 and safe launch stack, and
-returns to Sapote Redwood without printing a prompt. Keyboard events then belong
+returns to Phipia without printing a prompt. Keyboard events then belong
 to the bounded foreground line state. A complete line or EOF is revalidated,
 copied all-or-nothing into the authenticated RW/NX mapping, and resumes the
 same generation immediately after the real `SYSCALL`. The cycle may repeat
@@ -185,7 +210,7 @@ frame, input, output ownership, mappings, and generation.
 The v0.8.0 echo, v0.9.0 uname, and v1.1.0 FAT16 fixtures remain independent
 historical proof scenarios. v2.0.0 repackages the same exact executable bytes
 on the immutable FAT32 system volume without changing their measured ABI. This
-surface is not POSIX and is not Sapote's native application ABI. It accepts
+surface is not POSIX and is not Phipia's native application ABI. It accepts
 only the measured calls, arguments, mappings, input/output relationship, and
 lifecycle documented in [`LINUX_SYSCALL_ABI.md`](LINUX_SYSCALL_ABI.md).
 
@@ -196,36 +221,36 @@ streams that the kernel did not create: packed fonts and logo data, FAT16/FAT32
 metadata, and ELF64 program records. Only validated, pointer-free results cross
 back to C. See [`RUST.md`](RUST.md).
 
-## Sapote Redwood
+## Phipia
 
 `framebuffer.c` validates and maps the linear framebuffer. `surface.c` provides
 cached clipped drawing and damage tracking; `screen.c` implements text cells.
 `keyboard.c`, `pointer.c`, `shell.c`, and `ui.c` form the interactive boundary.
 `ui_anim.c` implements the bounded fixed-point window genie used by the
-interactive compositor; it snapshots pixels already owned by Redwood and does
+interactive compositor; it snapshots pixels already owned by Phipia and does
 not introduce floating-point work into the kernel.
 
-Sapote Redwood is a bounded eight-application workspace with a menu bar,
+Phipia is a bounded eight-application workspace with a menu bar,
 native 3D Dock, movable overlapping windows, Settings, Store, Camera, Canvas,
-Files, Notes, Terminal, and SapStudio. Native processes may additionally own
-bounded xRGB content surfaces while Redwood retains chrome, focus, stacking,
+Files, Notes, Terminal, and Media Editor. Native processes may additionally own
+bounded xRGB content surfaces while Phipia retains chrome, focus, stacking,
 movement, close, maximize, minimize controls, and composition. Its design and
 capture contract are in
-[`REDWOOD.md`](REDWOOD.md) and [`NATIVE_GRAPHICS.md`](NATIVE_GRAPHICS.md).
+[`PHIPIA.md`](PHIPIA.md) and [`NATIVE_GRAPHICS.md`](NATIVE_GRAPHICS.md).
 
 ## Repository map
 
 | Path | Purpose |
 | --- | --- |
-| `include/sapote/` | Public kernel subsystem contracts |
+| `include/phipia/` | Public kernel subsystem contracts |
 | `src/arch/x86_64/` | Entry, interrupts, process entry, syscall entry, context switch |
 | `src/kernel/` | Kernel implementation and guest-side tests |
 | `src/rust/` | Freestanding bounded parsers and the C ABI |
-| `include/sapote/abi/` | Versioned public native syscall records |
+| `include/phipia/abi/` | Versioned public native syscall records |
 | `sdk/` | Freestanding C startup, headers, runtime and linker contract |
-| `rust/sapote/` | Rust `no_std` native application crate |
+| `rust/phipia/` | Rust `no_std` native application crate |
 | `apps/native-*` | Native ABI, graphics, networking and Rust proof applications |
-| `ports/` | Pinned upstream application inputs and Sapote adaptations |
+| `ports/` | Pinned upstream application inputs and Phipia adaptations |
 | `userspace/busybox/` | Pinned configurations, traces, licenses, and source inputs |
 | `tools/` | Deterministic asset, fixture, and BusyBox builders |
 | `.github/workflows/` | Required build and measured-profile evidence |
@@ -237,11 +262,9 @@ keeping development diaries in the active documentation set.
 
 ## Current limits
 
-Sapote has no SMP, IPv6, transport TLS, firewall, routing, Wi-Fi, IOMMU,
-general VFS, journaled crash recovery, dynamic linker, signals, ambient Unix
-descriptor table, broad hardware support, or browser. Native ABI v1 is stable
-within its documented static-application profile, not a POSIX personality.
-There is no fork, exec, process identifier space or inter-process
-communication. The thirteen bounded drivers bind and identify their devices;
-none of them moves data. The HD Audio driver identifies codecs and plays
-nothing. See [`NATIVE_LIMITATIONS.md`](NATIVE_LIMITATIONS.md).
+Phipia is single-core and has no IPv6, firewall, routing, Wi-Fi, IOMMU, general
+Unix VFS, hosted `ld.so`/`dlopen`, signals, ambient Unix descriptor table, or
+browser. Native ABI v1 supports its documented static and bounded PIE/DSO
+profiles rather than a POSIX personality. Process creation, fork, exec, process
+IDs, and IPC are outside the ABI. See
+[`NATIVE_LIMITATIONS.md`](NATIVE_LIMITATIONS.md).

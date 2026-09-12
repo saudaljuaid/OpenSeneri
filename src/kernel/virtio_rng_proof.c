@@ -3,15 +3,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/clock.h>
-#include <sapote/cpu.h>
-#include <sapote/device_substrate.h>
-#include <sapote/dma.h>
-#include <sapote/interrupt_vector.h>
-#include <sapote/interrupts.h>
-#include <sapote/msix.h>
-#include <sapote/pci.h>
-#include <sapote/pci_resource.h>
+#include <phipia/clock.h>
+#include <phipia/cpu.h>
+#include <phipia/device_substrate.h>
+#include <phipia/dma.h>
+#include <phipia/interrupt_vector.h>
+#include <phipia/interrupts.h>
+#include <phipia/msix.h>
+#include <phipia/pci.h>
+#include <phipia/pci_resource.h>
 
 #define VIRTIO_VENDOR_ID UINT16_C(0x1AF4)
 #define VIRTIO_RNG_MODERN_DEVICE_ID UINT16_C(0x1044)
@@ -73,7 +73,7 @@ struct proof_interrupt_context {
 
 static struct device_substrate_proof installed_proof;
 
-_Static_assert(VIRTIO_RNG_BYTES <= SAPOTE_PAGE_SIZE,
+_Static_assert(VIRTIO_RNG_BYTES <= PHIPIA_PAGE_SIZE,
     "VirtIO RNG proof receive buffer exceeds its DMA page");
 
 static uint32_t config_dword(
@@ -419,7 +419,7 @@ enum device_substrate_status device_substrate_prove(
 
     struct dma_request dma_request = {
         .page_count = 1U,
-        .alignment = SAPOTE_PAGE_SIZE,
+        .alignment = PHIPIA_PAGE_SIZE,
         .maximum_physical_address = UINT32_MAX
     };
     if (dma_allocate(&dma_request, &queue_dma) != DMA_STATUS_OK ||

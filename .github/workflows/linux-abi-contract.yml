@@ -57,7 +57,7 @@ jobs:
                           ./minimal-stack-launcher \
                           >minimal-stack-stdout.txt \
                           2>minimal-stack-stderr.txt
-                      printf 'SAPOTE\n' | cmp --silent - \
+                      printf 'PHIPIA\n' | cmp --silent - \
                           minimal-stack-stdout.txt
                       test ! -s minimal-stack-stderr.txt
                       test "$(grep -Fc \

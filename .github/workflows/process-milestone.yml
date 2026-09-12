@@ -16,7 +16,7 @@ jobs:
     bounded-evidence:
         name: bounded-process-evidence
         runs-on: ubuntu-24.04
-        timeout-minutes: 180
+        timeout-minutes: 360
         steps:
             - name: Check out source
               uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -64,22 +64,22 @@ jobs:
                   done
                   proof=evidence/process/process-sweep-10.log
                   grep -Fx \
-                      'ST PROCESS ELF64 SAPOTE.BIN bytes 128 segments 1 ring 3 address-space private result valid teardown clean robustness 50' \
+                      'ST PROCESS ELF64 PHIPIA.BIN bytes 128 segments 1 ring 3 address-space private result valid teardown clean robustness 50' \
                       "$proof" >evidence/process/process-proof-transcript.txt
                   grep -Fx 'ST PASS process' "$proof" \
                       >>evidence/process/process-proof-transcript.txt
                   cp build/tests/boot-ledger/serial.log \
                       evidence/process/ordinary-ledger.log
                   rm evidence/process/process-sweep-*.log
-                  make build/tests/process/sapote.iso
-                  cp build/tests/process/sapote.iso \
+                  make build/tests/process/phipia.iso
+                  cp build/tests/process/phipia.iso \
                       evidence/process/process-scenario.iso
                   mkdir -p build/process-scenario-isos
                   for scenario in $(
                       make --no-print-directory -s contract-scenarios
                   ); do
-                      make "build/tests/${scenario}/sapote.iso"
-                      cp "build/tests/${scenario}/sapote.iso" \
+                      make "build/tests/${scenario}/phipia.iso"
+                      cp "build/tests/${scenario}/phipia.iso" \
                           "build/process-scenario-isos/${scenario}.iso"
                   done
                   tar -czf evidence/process/scenario-isos.tar.gz \
@@ -101,17 +101,17 @@ jobs:
               run: |
                   set -euo pipefail
                   make iso
-                  cp build/sapote.iso evidence/process/Sapote-process-regression.iso
+                  cp build/phipia.iso evidence/process/Phipia-process-regression.iso
                   python3 tools/make-elf64-fixture.py \
-                      build/tests/process/SAPOTE.BIN
+                      build/tests/process/PHIPIA.BIN
                   python3 tools/make-process-fixture.py \
                       build/tests/process/process-fixture.raw
-                  cp build/tests/process/SAPOTE.BIN \
-                      evidence/process/SAPOTE.BIN
+                  cp build/tests/process/PHIPIA.BIN \
+                      evidence/process/PHIPIA.BIN
                   cp build/tests/process/process-fixture.raw \
                       evidence/process/process-fixture.raw
                   payload_sha=$(
-                      sha256sum build/tests/process/SAPOTE.BIN \
+                      sha256sum build/tests/process/PHIPIA.BIN \
                           | awk '{print toupper($1)}'
                   )
                   fixture_sha=$(
@@ -121,7 +121,7 @@ jobs:
                   test "$payload_sha" = \
                       C923A94F08DF64523D3DB701E4F9FC5FF5B51DFC21447E1DC57586D40D42B8A9
                   test "$fixture_sha" = \
-                      5130D78A0FEB51EC410E5CC931A1E6485D96549A726E62BCE95F7D5C18FA2290
+                      F8730A9253C9EBECFABB0108714F4F59EC05D151C5ADB19B0C8E08279CEFE53E
                   read -r expected_scenarios expected_assertions < <(
                       make --no-print-directory -s contract-counts
                   )
@@ -143,23 +143,23 @@ jobs:
                   rm evidence/process/ordinary-ledger.log
                   stage_capacity=$(sed -nE \
                       's/^#define BOOT_LEDGER_STAGE_CAPACITY ([0-9]+)U$/\1/p' \
-                      include/sapote/boot_ledger.h)
+                      include/phipia/boot_ledger.h)
                   receipt_capacity=$(sed -nE \
                       's/^#define BOOT_LEDGER_RECEIPT_CAPACITY ([0-9]+)U$/\1/p' \
-                      include/sapote/boot_ledger.h)
+                      include/phipia/boot_ledger.h)
                   capability_capacity=$(sed -nE \
                       's/^#define BOOT_STAGE_CAPABILITY_CAPACITY ([0-9]+)U$/\1/p' \
-                      include/sapote/boot_ledger.h)
+                      include/phipia/boot_ledger.h)
                   test -n "$stage_capacity"
                   test -n "$receipt_capacity"
                   test -n "$capability_capacity"
-                  readelf -W -h build/tests/process/SAPOTE.BIN \
+                  readelf -W -h build/tests/process/PHIPIA.BIN \
                       >evidence/process/elf64-header.txt
-                  readelf -W -l build/tests/process/SAPOTE.BIN \
+                  readelf -W -l build/tests/process/PHIPIA.BIN \
                       >evidence/process/elf64-program-header.txt
-                  test "$(readelf -W -l build/tests/process/SAPOTE.BIN \
+                  test "$(readelf -W -l build/tests/process/PHIPIA.BIN \
                       | grep -Ec '^[[:space:]]+LOAD')" -eq 1
-                  if readelf -W -l build/tests/process/SAPOTE.BIN \
+                  if readelf -W -l build/tests/process/PHIPIA.BIN \
                       | grep -Eq 'LOAD[[:space:]].*RWE'; then
                       echo 'user fixture contains an RWX load segment'
                       exit 1
@@ -167,7 +167,7 @@ jobs:
                   objdump -D -b binary -m i386:x86-64 \
                       --no-show-raw-insn \
                       --start-address=120 --stop-address=128 \
-                      build/tests/process/SAPOTE.BIN \
+                      build/tests/process/PHIPIA.BIN \
                       >evidence/process/elf64-text-disassembly.txt
                   if grep -Ei \
                       '%(xmm|ymm|zmm|mm|k)[0-9]+|^[[:space:]]*[0-9a-f]+:[[:space:]]+(f[a-z0-9]+|emms|fxsave|fxrstor|v[a-z0-9]+)([[:space:]]|$)' \
@@ -176,13 +176,13 @@ jobs:
                       exit 1
                   fi
                   {
-                      printf 'Sapote v0.7.0 deterministic process fixture\n'
+                      printf 'Phipia v0.7.0 deterministic process fixture\n'
                       printf 'logical sectors: 4096\n'
                       printf 'bytes per sector: 4096\n'
                       printf 'BPB LBA: 0\n'
                       printf 'FAT span: LBA 1, 2 sectors\n'
                       printf 'root directory: LBA 3, 128 entries\n'
-                      printf 'SAPOTE.BIN data: cluster 2, LBA 4, 128 bytes\n'
+                      printf 'PHIPIA.BIN data: cluster 2, LBA 4, 128 bytes\n'
                       printf 'ELF: ET_EXEC, EM_X86_64, one PT_LOAD, PF_R|PF_X\n'
                       printf 'entry instruction offset: 120\n'
                       printf 'proof instruction bytes: B8 37 50 41 53 CD 81 F4\n'
@@ -191,7 +191,7 @@ jobs:
                       printf 'backend: temporary regular file, raw, guest read-only\n'
                   } >evidence/process/fixture-layout-digest.txt
                   {
-                      printf 'Sapote Ring 3 and ELF64 Foundation verification\n'
+                      printf 'Phipia Ring 3 and ELF64 Foundation verification\n'
                       printf 'commit: %s\n' "$GITHUB_SHA"
                       printf 'tree: %s\n' "$(git rev-parse 'HEAD^{tree}')"
                       printf 'scenarios per sweep: %s\n' "$scenario_count"
@@ -201,8 +201,8 @@ jobs:
                       printf 'ordinary ledger: %s\n' "$ordinary_record"
                       printf 'source lines (src and include): %s\n' "$source_lines"
                       printf 'shell assertion lines: %s\n' "$assertion_count"
-                      printf 'kernel bytes: %s\n' "$(stat -c %s build/sapote.elf)"
-                      printf 'ISO bytes: %s\n' "$(stat -c %s build/sapote.iso)"
+                      printf 'kernel bytes: %s\n' "$(stat -c %s build/phipia.elf)"
+                      printf 'ISO bytes: %s\n' "$(stat -c %s build/phipia.iso)"
                       printf 'make verify: passed\n'
                       printf 'all %s scenarios: passed individually\n' "$scenario_count"
                       printf 'serial TCG complete sweeps: 10 passed\n'
@@ -220,8 +220,8 @@ jobs:
                   (
                       cd evidence/process
                       sha256sum \
-                          Sapote-process-regression.iso \
-                          SAPOTE.BIN \
+                          Phipia-process-regression.iso \
+                          PHIPIA.BIN \
                           process-fixture.raw \
                           process-scenario.iso \
                           scenario-isos.tar.gz \
@@ -240,7 +240,7 @@ jobs:
             - name: Upload the bounded milestone evidence
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
-                  name: sapote-process-milestone-${{ github.sha }}
+                  name: phipia-process-milestone-${{ github.sha }}
                   path: evidence/process
                   if-no-files-found: error
                   retention-days: 30

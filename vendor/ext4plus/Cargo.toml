@@ -1,0 +1,44 @@
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+# https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+# <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+# option. This file may not be copied, modified, or distributed
+# except according to those terms.
+
+[package]
+name = "ext4plus"
+version = "0.1.0-rc.2"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/arihant2math/ext4plus"
+categories = ["filesystem", "embedded", "no-std", "asynchronous"]
+description = "No-std compatible Rust library for ext2/ext3/ext4 filesystems"
+keywords = ["ext4", "ext2", "ext3", "filesystem", "no_std"]
+rust-version = "1.86"
+include = [
+    "src/*.rs",
+    "src/file_blocks",
+    "src/iters",
+    "src/journal",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+]
+
+[features]
+default = ["multi-threaded"]
+multi-threaded = []
+std = []
+sync = ["maybe-async/is_sync", "dep:spin"]
+
+[dependencies]
+async-lock = { version = "3.4", default-features = false }
+async-trait = "0.1"
+bitflags = "2.0"
+crc = "3.0"
+maybe-async = "0.2"
+spin = { version = "0.10", optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

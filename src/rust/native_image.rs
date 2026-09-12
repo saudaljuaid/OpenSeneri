@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Safe validators for the Sapote application manifest and static ELF64 image.
+//! Safe validators for the Phipia application manifest and static ELF64 image.
 
 use crate::sha256;
 
@@ -14,8 +14,8 @@ pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 const MIN_ADDRESS: u64 = 0x0000_4000_0000_0000;
 const MAX_ADDRESS: u64 = 0x0000_4001_0000_0000;
 const PAGE: u64 = 4096;
-const MANIFEST_MAGIC: &[u8; 8] = b"SAPOTEA1";
-const CAPABILITIES_V1: u64 = (1u64 << 10) - 1;
+const MANIFEST_MAGIC: &[u8; 8] = b"PHIPIAA1";
+const CAPABILITIES_V1: u64 = (1u64 << 12) - 1;
 const MIN_MEMORY: u64 = 64 * 1024;
 const MAX_MEMORY: u64 = 256 * 1024 * 1024;
 const MAX_HANDLES: u16 = 128;
@@ -132,6 +132,10 @@ pub struct Manifest {
     pub icon: [u8; 16],
     /// Fixed entry-argument records.
     pub arguments: [[u8; 32]; 8],
+    /// Optional System-volume dynamic-library catalog path.
+    pub dynamic_catalog: [u8; 16],
+    /// SHA-256 of the complete dynamic-library catalog.
+    pub dynamic_catalog_sha256: [u8; 32],
 }
 
 impl Manifest {
@@ -143,6 +147,7 @@ impl Manifest {
             name: [0; 32], identifier: [0; 16], executable: [0; 16],
             executable_sha256: [0; 32], resource_directory: [0; 16],
             data_namespace: [0; 16], icon: [0; 16], arguments: [[0; 32]; 8],
+            dynamic_catalog: [0; 16], dynamic_catalog_sha256: [0; 32],
         }
     }
 }
@@ -325,7 +330,7 @@ pub fn parse_manifest(input: &[u8]) -> Result<Manifest, Status> {
     if format != 1 || abi_version != 1 { return Err(Status::ManifestVersion); }
     if header_size as usize != MANIFEST_BYTES { return Err(Status::ManifestSize); }
     if flags != 0 || reserved != 0 || input[44..64].iter().any(|byte| *byte != 0)
-        || input[496..].iter().any(|byte| *byte != 0) {
+        || input[512..].iter().any(|byte| *byte != 0) {
         return Err(Status::ManifestReserved);
     }
     if argument_count as usize > 8 { return Err(Status::ManifestArgument); }
@@ -357,9 +362,19 @@ pub fn parse_manifest(input: &[u8]) -> Result<Manifest, Status> {
             return Err(Status::ManifestArgument);
         }
     }
+    let dynamic_catalog = copy_field::<16>(input, 464)?;
+    let dynamic_catalog_sha256 = copy_field::<32>(input, 480)?;
+    let catalog_present = dynamic_catalog.iter().any(|byte| *byte != 0);
+    let catalog_digest_present = dynamic_catalog_sha256.iter().any(|byte| *byte != 0);
+    if !text_valid(&dynamic_catalog, false, false)
+        || catalog_present != catalog_digest_present
+    {
+        return Err(Status::ManifestText);
+    }
     Ok(Manifest { valid: 1, abi_version, capabilities, memory_limit, max_handles,
         max_threads, argument_count, reserved: 0, name, identifier, executable,
-        executable_sha256, resource_directory, data_namespace, icon, arguments })
+        executable_sha256, resource_directory, data_namespace, icon, arguments,
+        dynamic_catalog, dynamic_catalog_sha256 })
 }
 
 #[derive(Clone, Copy)]
@@ -539,6 +554,19 @@ pub fn validate(manifest_bytes: &[u8], elf: &[u8]) -> Result<(Manifest, Validate
     Ok((manifest, image))
 }
 
+/// Validate a manifest and authenticate one bounded executable without
+/// selecting its static or dynamic ELF parser.
+pub fn authenticate(manifest_bytes: &[u8], elf: &[u8]) -> Result<Manifest, Status> {
+    let manifest = parse_manifest(manifest_bytes)?;
+    if elf.is_empty() || elf.len() > MAX_FILE_BYTES {
+        return Err(Status::ElfLength);
+    }
+    if sha256::digest(elf) != manifest.executable_sha256 {
+        return Err(Status::DigestMismatch);
+    }
+    Ok(manifest)
+}
+
 /// Allocation-free invariant count used by the boot self-test.
 #[must_use]
 pub fn self_test() -> u32 {
@@ -547,7 +575,7 @@ pub fn self_test() -> u32 {
         0x41, 0x41, 0x40, 0xDE, 0x5D, 0xAE, 0x22, 0x23,
         0xB0, 0x03, 0x61, 0xA3, 0x96, 0x17, 0x7A, 0x9C,
         0xB4, 0x10, 0xFF, 0x61, 0xF2, 0x00, 0x15, 0xAD,
-    ] || core::mem::size_of::<Manifest>() != 432
+    ] || core::mem::size_of::<Manifest>() != 480
         || core::mem::size_of::<Segment>() != 56
         || core::mem::size_of::<ValidatedImage>() != 976 {
         return 0;
@@ -561,7 +589,7 @@ mod tests {
 
     fn manifest() -> [u8; MANIFEST_BYTES] {
         let mut bytes = [0u8; MANIFEST_BYTES];
-        bytes[..8].copy_from_slice(b"SAPOTEA1");
+        bytes[..8].copy_from_slice(b"PHIPIAA1");
         bytes[8..10].copy_from_slice(&1u16.to_le_bytes());
         bytes[10..12].copy_from_slice(&(MANIFEST_BYTES as u16).to_le_bytes());
         bytes[12..16].copy_from_slice(&1u32.to_le_bytes());
@@ -586,7 +614,7 @@ mod tests {
     #[test]
     fn manifest_accepts_printable_url_argument() {
         let mut bytes = manifest();
-        let url = b"http://sapote.test/welcome.txt\0";
+        let url = b"http://phipia.test/welcome.txt\0";
         bytes[208..208 + url.len()].copy_from_slice(url);
         assert!(parse_manifest(&bytes).is_ok());
     }
@@ -601,10 +629,37 @@ mod tests {
     #[test]
     fn manifest_rejects_reserved_and_unknown_capability() {
         let mut bytes = manifest();
-        bytes[500] = 1;
+        bytes[512] = 1;
         assert!(matches!(parse_manifest(&bytes), Err(Status::ManifestReserved)));
         bytes = manifest();
         bytes[28..36].copy_from_slice(&(1u64 << 63).to_le_bytes());
         assert!(matches!(parse_manifest(&bytes), Err(Status::ManifestCapability)));
+    }
+
+    #[test]
+    fn manifest_accepts_audio_capability() {
+        let mut bytes = manifest();
+        bytes[28..36].copy_from_slice(&(1u64 << 10).to_le_bytes());
+        assert_eq!(parse_manifest(&bytes).unwrap().capabilities, 1u64 << 10);
+    }
+
+    #[test]
+    fn manifest_accepts_package_capability() {
+        let mut bytes = manifest();
+        bytes[28..36].copy_from_slice(&(1u64 << 11).to_le_bytes());
+        assert_eq!(parse_manifest(&bytes).unwrap().capabilities, 1u64 << 11);
+    }
+
+    #[test]
+    fn manifest_requires_a_catalog_path_and_digest_together() {
+        let mut bytes = manifest();
+        bytes[464..476].copy_from_slice(b"DYNAMIC.CAT\0");
+        bytes[480..512].fill(0x5a);
+        let parsed = parse_manifest(&bytes).expect("paired dynamic catalog");
+        assert_eq!(&parsed.dynamic_catalog[..12], b"DYNAMIC.CAT\0");
+        assert_eq!(parsed.dynamic_catalog_sha256, [0x5a; 32]);
+
+        bytes[480..512].fill(0);
+        assert!(matches!(parse_manifest(&bytes), Err(Status::ManifestText)));
     }
 }

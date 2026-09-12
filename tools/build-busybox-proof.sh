@@ -6,9 +6,9 @@ if [ "$#" -ne 2 ]; then
     exit 2
 fi
 
-build_only=${SAPOTE_BUSYBOX_BUILD_ONLY:-0}
+build_only=${PHIPIA_BUSYBOX_BUILD_ONLY:-0}
 if [ "$build_only" != 0 ] && [ "$build_only" != 1 ]; then
-    printf 'SAPOTE_BUSYBOX_BUILD_ONLY must be 0 or 1\n' >&2
+    printf 'PHIPIA_BUSYBOX_BUILD_ONLY must be 0 or 1\n' >&2
     exit 2
 fi
 
@@ -189,9 +189,9 @@ stdout_file="$output_dir/stdout.txt"
 stderr_file="$output_dir/stderr.txt"
 trace_file="$output_dir/syscall-trace.txt"
 env -i strace --argv0=busybox --quiet=all --string-limit=256 \
-    --output="$trace_file" "$output_dir/busybox" echo SAPOTE \
+    --output="$trace_file" "$output_dir/busybox" echo PHIPIA \
     >"$stdout_file" 2>"$stderr_file"
-printf 'SAPOTE\n' | cmp --silent - "$stdout_file"
+printf 'PHIPIA\n' | cmp --silent - "$stdout_file"
 test ! -s "$stderr_file"
 sed -nE 's/^([a-z_][a-z0-9_]*)\(.*/\1/p' "$trace_file" \
     | grep -v '^execve$' >"$output_dir/syscall-sequence.txt"
@@ -211,16 +211,16 @@ cmp --silent "$work_dir/expected-syscall-sequence.txt" \
 test "$(sort -u "$output_dir/syscall-sequence.txt" | wc -l)" -eq 7
 grep -Fq 'arch_prctl(ARCH_SET_FS, 0x400001008998)' "$trace_file"
 grep -Fq 'set_tid_address(0x400001008b34)' "$trace_file"
-grep -Fq 'write(1, "SAPOTE\n", 7)' "$trace_file"
+grep -Fq 'write(1, "PHIPIA\n", 7)' "$trace_file"
 grep -Fq 'exit_group(0)' "$trace_file"
 
 qemu_stdout="$output_dir/qemu-stdout.txt"
 qemu_stderr="$output_dir/qemu-stderr.txt"
 qemu_trace="$output_dir/exercised-instructions.txt"
 env -i qemu-x86_64 -0 busybox -d in_asm -D "$qemu_trace" \
-    "$output_dir/busybox" echo SAPOTE \
+    "$output_dir/busybox" echo PHIPIA \
     >"$qemu_stdout" 2>"$qemu_stderr"
-printf 'SAPOTE\n' | cmp --silent - "$qemu_stdout"
+printf 'PHIPIA\n' | cmp --silent - "$qemu_stdout"
 test ! -s "$qemu_stderr"
 python3 "$repository_root/tools/check-exercised-instructions.py" --self-test
 python3 "$repository_root/tools/check-exercised-instructions.py" \

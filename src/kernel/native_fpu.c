@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Explicit x87/SSE ownership for native userspace threads. */
 
-#include <sapote/native_fpu.h>
+#include <phipia/native_fpu.h>
 
-#include <sapote/cpu.h>
+#include <phipia/cpu.h>
 
 #define CPUID_FPU (UINT32_C(1) << 0U)
 #define CPUID_FXSR (UINT32_C(1) << 24U)

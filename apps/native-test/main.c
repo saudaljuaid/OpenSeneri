@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 #include <pthread.h>
-#include <sapote/event.h>
-#include <sapote/runtime.h>
+#include <phipia/event.h>
+#include <phipia/runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,7 +35,7 @@ static void *thread_probe(void *argument)
 
     tls_value = expected;
     for (unsigned int iteration = 0U; iteration < 32U; ++iteration) {
-        if (native_state_round_trip(sapote_monotonic_ns() + 1000000U,
+        if (native_state_round_trip(phipia_monotonic_ns() + 1000000U,
                 expected * 257U + iteration) != 0 || tls_value != expected) {
             return (void *)(uintptr_t)1U;
         }
@@ -46,16 +46,16 @@ static void *thread_probe(void *argument)
 static int syscall_performance_probe(void)
 {
     const unsigned int iterations = 1024U;
-    const uint64_t started = sapote_monotonic_ns();
+    const uint64_t started = phipia_monotonic_ns();
 
     for (unsigned int iteration = 0U; iteration < iterations; ++iteration) {
-        if (sapote_syscall0(SAPOTE_SYS_ABI_VERSION) != SAPOTE_ABI_VERSION) {
+        if (phipia_syscall0(PHIPIA_SYS_ABI_VERSION) != PHIPIA_ABI_VERSION) {
             return 14;
         }
     }
-    const uint64_t elapsed = sapote_monotonic_ns() - started;
+    const uint64_t elapsed = phipia_monotonic_ns() - started;
 
-    printf("SAPOTE PERF syscall iterations=%u total_ns=%llu average_ns=%llu\n",
+    printf("PHIPIA PERF syscall iterations=%u total_ns=%llu average_ns=%llu\n",
         iterations, (unsigned long long)elapsed,
         (unsigned long long)(elapsed / iterations));
     return 0;
@@ -74,36 +74,36 @@ static int file_performance_probe(void)
     for (size_t index = 0U; index < sizeof(buffer); ++index) {
         buffer[index] = (uint8_t)(index * 37U + 11U);
     }
-    file = sapote_file_open(SAPOTE_VOLUME_DATA, "TMP/PERF.BIN",
-        SAPOTE_OPEN_WRITE | SAPOTE_OPEN_CREATE | SAPOTE_OPEN_TRUNCATE);
+    file = phipia_file_open(PHIPIA_VOLUME_DATA, "TMP/PERF.BIN",
+        PHIPIA_OPEN_WRITE | PHIPIA_OPEN_CREATE | PHIPIA_OPEN_TRUNCATE);
     if (file < 0) return 341;
-    write_started = sapote_monotonic_ns();
+    write_started = phipia_monotonic_ns();
     for (size_t offset = 0U; offset < FILE_BYTES; offset += sizeof(buffer)) {
-        if (sapote_file_write((sapote_handle_t)file, buffer,
+        if (phipia_file_write((phipia_handle_t)file, buffer,
                 sizeof(buffer)) != (long)sizeof(buffer)) {
             return 342;
         }
     }
-    write_elapsed = sapote_monotonic_ns() - write_started;
-    if (sapote_handle_close((sapote_handle_t)file) != 0) return 343;
-    file = sapote_file_open(SAPOTE_VOLUME_DATA, "TMP/PERF.BIN",
-        SAPOTE_OPEN_READ);
+    write_elapsed = phipia_monotonic_ns() - write_started;
+    if (phipia_handle_close((phipia_handle_t)file) != 0) return 343;
+    file = phipia_file_open(PHIPIA_VOLUME_DATA, "TMP/PERF.BIN",
+        PHIPIA_OPEN_READ);
     if (file < 0) return 344;
-    read_started = sapote_monotonic_ns();
+    read_started = phipia_monotonic_ns();
     for (size_t offset = 0U; offset < FILE_BYTES; offset += sizeof(buffer)) {
-        if (sapote_file_read((sapote_handle_t)file, buffer,
+        if (phipia_file_read((phipia_handle_t)file, buffer,
                 sizeof(buffer)) != (long)sizeof(buffer) ||
             buffer[0] != UINT8_C(11) || buffer[sizeof(buffer) - 1U] !=
                 (uint8_t)((sizeof(buffer) - 1U) * 37U + 11U)) {
             return 345;
         }
     }
-    read_elapsed = sapote_monotonic_ns() - read_started;
-    if (sapote_handle_close((sapote_handle_t)file) != 0 ||
-        sapote_path_unlink(SAPOTE_VOLUME_DATA, "TMP/PERF.BIN") != 0) {
+    read_elapsed = phipia_monotonic_ns() - read_started;
+    if (phipia_handle_close((phipia_handle_t)file) != 0 ||
+        phipia_path_unlink(PHIPIA_VOLUME_DATA, "TMP/PERF.BIN") != 0) {
         return 346;
     }
-    printf("SAPOTE PERF file sequential_bytes=%u write_ns=%llu read_ns=%llu\n",
+    printf("PHIPIA PERF file sequential_bytes=%u write_ns=%llu read_ns=%llu\n",
         FILE_BYTES, (unsigned long long)write_elapsed,
         (unsigned long long)read_elapsed);
     return 0;
@@ -111,42 +111,42 @@ static int file_performance_probe(void)
 
 static int memory_and_pointer_probes(void)
 {
-    struct sapote_memory_map_response split = {0U, 0U, 0U, 0U};
-    struct sapote_memory_map_response mappings[16];
-    struct sapote_memory_map_response ignored = {0U, 0U, 0U, 0U};
-    const struct sapote_memory_map_request bad_flags = {
-        sizeof(bad_flags), SAPOTE_ABI_VERSION, SAPOTE_ABI_PAGE_SIZE, 0U,
+    struct phipia_memory_map_response split = {0U, 0U, 0U, 0U};
+    struct phipia_memory_map_response mappings[16];
+    struct phipia_memory_map_response ignored = {0U, 0U, 0U, 0U};
+    const struct phipia_memory_map_request bad_flags = {
+        sizeof(bad_flags), PHIPIA_ABI_VERSION, PHIPIA_ABI_PAGE_SIZE, 0U,
         UINT32_C(0x80000000), 0U
     };
     size_t mapping_count = 0U;
     long exhausted = 0;
 
-    if (sapote_syscall2(SAPOTE_SYS_MEMORY_MAP,
+    if (phipia_syscall2(PHIPIA_SYS_MEMORY_MAP,
             (uint64_t)(uintptr_t)&bad_flags,
-            (uint64_t)(uintptr_t)&ignored) != -SAPOTE_EINVAL ||
-        sapote_random((void *)(uintptr_t)UINT64_C(0x12345000), 1U) !=
-            -SAPOTE_EFAULT ||
-        sapote_memory_allocate(2U * SAPOTE_ABI_PAGE_SIZE,
-            SAPOTE_MEMORY_READ | SAPOTE_MEMORY_WRITE, &split) != 0) {
+            (uint64_t)(uintptr_t)&ignored) != -PHIPIA_EINVAL ||
+        phipia_random((void *)(uintptr_t)UINT64_C(0x12345000), 1U) !=
+            -PHIPIA_EFAULT ||
+        phipia_memory_allocate(2U * PHIPIA_ABI_PAGE_SIZE,
+            PHIPIA_MEMORY_READ | PHIPIA_MEMORY_WRITE, &split) != 0) {
         return 20;
     }
     {
         volatile uint8_t *edge = (volatile uint8_t *)(uintptr_t)
-            (split.address + SAPOTE_ABI_PAGE_SIZE - 1U);
+            (split.address + PHIPIA_ABI_PAGE_SIZE - 1U);
 
         *edge = UINT8_C(0xA5);
-        if (sapote_memory_release(split.address + SAPOTE_ABI_PAGE_SIZE,
-                SAPOTE_ABI_PAGE_SIZE) != 0 ||
-            sapote_random((void *)(uintptr_t)(split.address +
-                SAPOTE_ABI_PAGE_SIZE - 1U), 2U) != -SAPOTE_EFAULT ||
+        if (phipia_memory_release(split.address + PHIPIA_ABI_PAGE_SIZE,
+                PHIPIA_ABI_PAGE_SIZE) != 0 ||
+            phipia_random((void *)(uintptr_t)(split.address +
+                PHIPIA_ABI_PAGE_SIZE - 1U), 2U) != -PHIPIA_EFAULT ||
             *edge != UINT8_C(0xA5) ||
-            sapote_memory_release(split.address, SAPOTE_ABI_PAGE_SIZE) != 0) {
+            phipia_memory_release(split.address, PHIPIA_ABI_PAGE_SIZE) != 0) {
             return 21;
         }
     }
     while (mapping_count < sizeof(mappings) / sizeof(mappings[0])) {
-        const long status = sapote_memory_allocate(2U * 1024U * 1024U,
-            SAPOTE_MEMORY_READ | SAPOTE_MEMORY_WRITE,
+        const long status = phipia_memory_allocate(2U * 1024U * 1024U,
+            PHIPIA_MEMORY_READ | PHIPIA_MEMORY_WRITE,
             &mappings[mapping_count]);
 
         if (status < 0) {
@@ -155,12 +155,12 @@ static int memory_and_pointer_probes(void)
         }
         ++mapping_count;
     }
-    if (exhausted != -SAPOTE_ENOMEM || mapping_count == 0U) {
+    if (exhausted != -PHIPIA_ENOMEM || mapping_count == 0U) {
         return 22;
     }
     while (mapping_count != 0U) {
         --mapping_count;
-        if (sapote_memory_release(mappings[mapping_count].address,
+        if (phipia_memory_release(mappings[mapping_count].address,
                 mappings[mapping_count].length) != 0) {
             return 23;
         }
@@ -171,23 +171,23 @@ static int memory_and_pointer_probes(void)
 static int file_and_handle_probes(void)
 {
     static const char replacement[] = "replacement";
-    struct sapote_volume_space space = {0U, 0U, 0U, 0U, 0U, 0U};
-    struct sapote_directory_entry entry;
+    struct phipia_volume_space space = {0U, 0U, 0U, 0U, 0U, 0U};
+    struct phipia_directory_entry entry;
     char bytes[sizeof(replacement)];
     long file;
     long duplicate;
     long directory;
     int found = 0;
 
-    if (sapote_file_open(SAPOTE_VOLUME_DATA, "../ESCAPE.TXT",
-            SAPOTE_OPEN_READ) != -SAPOTE_EINVAL ||
-        sapote_file_open(SAPOTE_VOLUME_SYSTEM, "../NATIVET.APP",
-            SAPOTE_OPEN_READ) != -SAPOTE_EINVAL ||
-        sapote_syscall0(SAPOTE_SYS_STREAM_OPEN) != -SAPOTE_EACCES ||
-        sapote_syscall0(UINT64_C(0xFFFF)) != -SAPOTE_ENOSYS) {
+    if (phipia_file_open(PHIPIA_VOLUME_DATA, "../ESCAPE.TXT",
+            PHIPIA_OPEN_READ) != -PHIPIA_EINVAL ||
+        phipia_file_open(PHIPIA_VOLUME_SYSTEM, "../NATIVET.APP",
+            PHIPIA_OPEN_READ) != -PHIPIA_EINVAL ||
+        phipia_syscall0(PHIPIA_SYS_STREAM_OPEN) != -PHIPIA_EACCES ||
+        phipia_syscall0(UINT64_C(0xFFFF)) != -PHIPIA_ENOSYS) {
         return 24;
     }
-    if (sapote_path_mkdir(SAPOTE_VOLUME_DATA, "TMP") != 0) {
+    if (phipia_path_mkdir(PHIPIA_VOLUME_DATA, "TMP") != 0) {
         return 25;
     }
     {
@@ -195,51 +195,51 @@ static int file_and_handle_probes(void)
 
         if (performance != 0) return performance;
     }
-    file = sapote_file_open(SAPOTE_VOLUME_DATA, "TMP/A.TXT",
-        SAPOTE_OPEN_READ | SAPOTE_OPEN_WRITE | SAPOTE_OPEN_CREATE |
-            SAPOTE_OPEN_TRUNCATE);
-    if (file < 0 || sapote_timer_set((sapote_handle_t)file,
-            sapote_monotonic_ns()) != -SAPOTE_EBADF) {
+    file = phipia_file_open(PHIPIA_VOLUME_DATA, "TMP/A.TXT",
+        PHIPIA_OPEN_READ | PHIPIA_OPEN_WRITE | PHIPIA_OPEN_CREATE |
+            PHIPIA_OPEN_TRUNCATE);
+    if (file < 0 || phipia_timer_set((phipia_handle_t)file,
+            phipia_monotonic_ns()) != -PHIPIA_EBADF) {
         return 26;
     }
-    duplicate = sapote_handle_duplicate((sapote_handle_t)file);
-    if (duplicate < 0 || sapote_handle_close((sapote_handle_t)file) != 0 ||
-        sapote_file_read((sapote_handle_t)file, bytes, 1U) != -SAPOTE_ESTALE ||
-        sapote_handle_close((sapote_handle_t)file) != -SAPOTE_ESTALE ||
-        sapote_file_write((sapote_handle_t)duplicate, "abcdef", 6U) != 6 ||
-        sapote_handle_close((sapote_handle_t)duplicate) != 0) {
+    duplicate = phipia_handle_duplicate((phipia_handle_t)file);
+    if (duplicate < 0 || phipia_handle_close((phipia_handle_t)file) != 0 ||
+        phipia_file_read((phipia_handle_t)file, bytes, 1U) != -PHIPIA_ESTALE ||
+        phipia_handle_close((phipia_handle_t)file) != -PHIPIA_ESTALE ||
+        phipia_file_write((phipia_handle_t)duplicate, "abcdef", 6U) != 6 ||
+        phipia_handle_close((phipia_handle_t)duplicate) != 0) {
         return 27;
     }
-    puts("SAPOTE STORAGE typed duplicate stale-handle PASS");
-    if (sapote_path_truncate(SAPOTE_VOLUME_DATA, "TMP/A.TXT", 3U) != 0 ||
-        sapote_path_rename(SAPOTE_VOLUME_DATA, "TMP/A.TXT", "TMP/B.TXT") !=
+    puts("PHIPIA STORAGE typed duplicate stale-handle PASS");
+    if (phipia_path_truncate(PHIPIA_VOLUME_DATA, "TMP/A.TXT", 3U) != 0 ||
+        phipia_path_rename(PHIPIA_VOLUME_DATA, "TMP/A.TXT", "TMP/B.TXT") !=
             0) {
         return 28;
     }
-    puts("SAPOTE STORAGE truncate rename PASS");
-    file = sapote_file_open(SAPOTE_VOLUME_DATA, "TMP/C.TXT",
-        SAPOTE_OPEN_WRITE | SAPOTE_OPEN_CREATE | SAPOTE_OPEN_TRUNCATE);
-    if (file < 0 || sapote_file_write((sapote_handle_t)file, replacement,
+    puts("PHIPIA STORAGE truncate rename PASS");
+    file = phipia_file_open(PHIPIA_VOLUME_DATA, "TMP/C.TXT",
+        PHIPIA_OPEN_WRITE | PHIPIA_OPEN_CREATE | PHIPIA_OPEN_TRUNCATE);
+    if (file < 0 || phipia_file_write((phipia_handle_t)file, replacement,
             sizeof(replacement) - 1U) != (long)(sizeof(replacement) - 1U) ||
-        sapote_handle_close((sapote_handle_t)file) != 0 ||
-        sapote_path_replace(SAPOTE_VOLUME_DATA, "TMP/C.TXT", "TMP/B.TXT") !=
+        phipia_handle_close((phipia_handle_t)file) != 0 ||
+        phipia_path_replace(PHIPIA_VOLUME_DATA, "TMP/C.TXT", "TMP/B.TXT") !=
             0) {
         return 29;
     }
-    puts("SAPOTE STORAGE replacement PASS");
-    file = sapote_file_open(SAPOTE_VOLUME_DATA, "TMP/B.TXT", SAPOTE_OPEN_READ);
-    if (file < 0 || sapote_file_read((sapote_handle_t)file, bytes,
+    puts("PHIPIA STORAGE replacement PASS");
+    file = phipia_file_open(PHIPIA_VOLUME_DATA, "TMP/B.TXT", PHIPIA_OPEN_READ);
+    if (file < 0 || phipia_file_read((phipia_handle_t)file, bytes,
             sizeof(bytes)) != (long)(sizeof(replacement) - 1U) ||
         memcmp(bytes, replacement, sizeof(replacement) - 1U) != 0 ||
-        sapote_handle_close((sapote_handle_t)file) != 0) {
+        phipia_handle_close((phipia_handle_t)file) != 0) {
         return 30;
     }
-    directory = sapote_directory_open(SAPOTE_VOLUME_DATA, "TMP");
+    directory = phipia_directory_open(PHIPIA_VOLUME_DATA, "TMP");
     if (directory < 0) {
         return 31;
     }
     for (;;) {
-        const long status = sapote_directory_read((sapote_handle_t)directory,
+        const long status = phipia_directory_read((phipia_handle_t)directory,
             &entry);
 
         if (status < 0) {
@@ -254,43 +254,43 @@ static int file_and_handle_probes(void)
         }
     }
     if (!found) return 331;
-    if (sapote_handle_close((sapote_handle_t)directory) != 0) return 332;
-    puts("SAPOTE STORAGE directory enumeration PASS");
-    if (sapote_volume_space(SAPOTE_VOLUME_DATA, &space) != 0) return 333;
+    if (phipia_handle_close((phipia_handle_t)directory) != 0) return 332;
+    puts("PHIPIA STORAGE directory enumeration PASS");
+    if (phipia_volume_space(PHIPIA_VOLUME_DATA, &space) != 0) return 333;
     if (space.total_bytes == 0U || space.free_bytes >= space.total_bytes) {
         return 334;
     }
-    if (sapote_volume_sync(SAPOTE_VOLUME_DATA) != 0) return 335;
-    if (sapote_path_unlink(SAPOTE_VOLUME_DATA, "TMP/B.TXT") != 0) return 336;
-    if (sapote_path_unlink(SAPOTE_VOLUME_DATA, "TMP") != 0) return 337;
-    if (sapote_volume_sync(SAPOTE_VOLUME_DATA) != 0) return 338;
-    puts("SAPOTE STORAGE sync cleanup PASS");
+    if (phipia_volume_sync(PHIPIA_VOLUME_DATA) != 0) return 335;
+    if (phipia_path_unlink(PHIPIA_VOLUME_DATA, "TMP/B.TXT") != 0) return 336;
+    if (phipia_path_unlink(PHIPIA_VOLUME_DATA, "TMP") != 0) return 337;
+    if (phipia_volume_sync(PHIPIA_VOLUME_DATA) != 0) return 338;
+    puts("PHIPIA STORAGE sync cleanup PASS");
     return 0;
 }
 
 static int timer_probe(void)
 {
-    struct sapote_wait_item item;
-    const long timer = sapote_timer_create();
+    struct phipia_wait_item item;
+    const long timer = phipia_timer_create();
     uint64_t now;
 
     if (timer < 0) {
         return 34;
     }
-    now = sapote_monotonic_ns();
-    item = (struct sapote_wait_item){(sapote_handle_t)timer,
-        SAPOTE_WAIT_SIGNALED, 0U};
-    if (sapote_timer_set((sapote_handle_t)timer, now + UINT64_C(1000000)) != 0 ||
-        sapote_wait(&item, 1U, now + UINT64_C(20000000)) != 1 ||
-        item.ready != SAPOTE_WAIT_SIGNALED) {
+    now = phipia_monotonic_ns();
+    item = (struct phipia_wait_item){(phipia_handle_t)timer,
+        PHIPIA_WAIT_SIGNALED, 0U};
+    if (phipia_timer_set((phipia_handle_t)timer, now + UINT64_C(1000000)) != 0 ||
+        phipia_wait(&item, 1U, now + UINT64_C(20000000)) != 1 ||
+        item.ready != PHIPIA_WAIT_SIGNALED) {
         return 35;
     }
-    now = sapote_monotonic_ns();
+    now = phipia_monotonic_ns();
     item.ready = 0U;
-    if (sapote_timer_set((sapote_handle_t)timer, now + UINT64_C(1000000000)) !=
-            0 || sapote_wait(&item, 1U, now) != -SAPOTE_ETIMEDOUT ||
-        sapote_cancel((sapote_handle_t)timer) != 0 ||
-        sapote_handle_close((sapote_handle_t)timer) != 0) {
+    if (phipia_timer_set((phipia_handle_t)timer, now + UINT64_C(1000000000)) !=
+            0 || phipia_wait(&item, 1U, now) != -PHIPIA_ETIMEDOUT ||
+        phipia_cancel((phipia_handle_t)timer) != 0 ||
+        phipia_handle_close((phipia_handle_t)timer) != 0) {
         return 36;
     }
     return 0;
@@ -298,7 +298,7 @@ static int timer_probe(void)
 
 int main(int argc, char **argv, char **environment)
 {
-    static const char expected_resource[] = "Sapote immutable resource\n";
+    static const char expected_resource[] = "Phipia immutable resource\n";
     pthread_t first;
     pthread_t second;
     void *first_result = (void *)(uintptr_t)1U;
@@ -309,17 +309,17 @@ int main(int argc, char **argv, char **environment)
     long resource_handle;
     int probe;
 
-    if (sapote_syscall0(SAPOTE_SYS_ABI_VERSION) != SAPOTE_ABI_VERSION ||
+    if (phipia_syscall0(PHIPIA_SYS_ABI_VERSION) != PHIPIA_ABI_VERSION ||
         argc != 3 || argv == NULL || environment == NULL ||
         strcmp(argv[0], "NATIVET.APP") != 0 ||
         strcmp(argv[1], "alpha") != 0 || strcmp(argv[2], "beta") != 0 ||
-        argv[3] != NULL || strcmp(environment[0], "SAPOTE_ABI=1") != 0 ||
-        strcmp(environment[1], "SAPOTE_APP_ID=NATIVET") != 0 ||
-        strcmp(environment[2], "SAPOTE_DATA=NATIVET") != 0 ||
+        argv[3] != NULL || strcmp(environment[0], "PHIPIA_ABI=1") != 0 ||
+        strcmp(environment[1], "PHIPIA_APP_ID=NATIVET") != 0 ||
+        strcmp(environment[2], "PHIPIA_DATA=NATIVET") != 0 ||
         environment[3] != NULL) {
         return 10;
     }
-    puts("SAPOTE STARTUP argc argv environment auxiliary PASS");
+    puts("PHIPIA STARTUP argc argv environment auxiliary PASS");
     if (!initial_state_is_clean()) {
         return 11;
     }
@@ -332,24 +332,24 @@ int main(int argc, char **argv, char **environment)
     free(memory);
     probe = memory_and_pointer_probes();
     if (probe != 0) return probe;
-    puts("SAPOTE MEMORY anonymous range exhaustion PASS");
+    puts("PHIPIA MEMORY anonymous range exhaustion PASS");
     probe = file_and_handle_probes();
     if (probe != 0) return probe;
-    puts("SAPOTE STORAGE handles directory persistence operations PASS");
+    puts("PHIPIA STORAGE handles directory persistence operations PASS");
     probe = timer_probe();
     if (probe != 0) return probe;
-    puts("SAPOTE EVENT wait timeout cancellation PASS");
-    resource_handle = sapote_file_open(SAPOTE_VOLUME_SYSTEM, "RESOURCE.TXT",
-        SAPOTE_OPEN_READ);
-    if (resource_handle < 0 || sapote_file_read((sapote_handle_t)resource_handle,
+    puts("PHIPIA EVENT wait timeout cancellation PASS");
+    resource_handle = phipia_file_open(PHIPIA_VOLUME_SYSTEM, "RESOURCE.TXT",
+        PHIPIA_OPEN_READ);
+    if (resource_handle < 0 || phipia_file_read((phipia_handle_t)resource_handle,
             resource, sizeof(resource)) !=
             (long)(sizeof(expected_resource) - 1U) ||
         memcmp(resource, expected_resource, sizeof(expected_resource) - 1U) != 0 ||
-        sapote_file_read((sapote_handle_t)resource_handle, resource, 1U) != 0 ||
-        sapote_handle_close((sapote_handle_t)resource_handle) < 0) {
+        phipia_file_read((phipia_handle_t)resource_handle, resource, 1U) != 0 ||
+        phipia_handle_close((phipia_handle_t)resource_handle) < 0) {
         return 37;
     }
-    puts("SAPOTE RESOURCE immutable System read PASS");
+    puts("PHIPIA RESOURCE immutable System read PASS");
     file = fopen("FOUND.TXT", "w+");
     if (file == NULL || fputs("native ABI v1\n", file) == EOF ||
         fflush(file) != 0 || fseek(file, 0L, SEEK_SET) != 0) return 38;
@@ -360,30 +360,30 @@ int main(int argc, char **argv, char **environment)
             return 39;
         }
     }
-    puts("SAPOTE STDIO buffered update stream PASS");
+    puts("PHIPIA STDIO buffered update stream PASS");
     if (pthread_create(&first, NULL, thread_probe,
             (void *)(uintptr_t)101U) != 0) {
         return 40;
     }
-    puts("SAPOTE THREAD first-created");
+    puts("PHIPIA THREAD first-created");
     if (pthread_create(&second, NULL, thread_probe,
             (void *)(uintptr_t)202U) != 0) {
         return 40;
     }
-    puts("SAPOTE THREAD second-created");
+    puts("PHIPIA THREAD second-created");
     if (pthread_join(first, &first_result) != 0) {
         return 40;
     }
-    puts("SAPOTE THREAD first-joined");
+    puts("PHIPIA THREAD first-joined");
     if (pthread_join(second, &second_result) != 0 || first_result != NULL ||
         second_result != NULL || tls_value != 17U) {
         return 40;
     }
-    puts("SAPOTE THREAD second-joined");
-    printf("SAPOTE REFUSAL capability EACCES stale ESTALE pointer EFAULT "
+    puts("PHIPIA THREAD second-joined");
+    printf("PHIPIA REFUSAL capability EACCES stale ESTALE pointer EFAULT "
         "traversal EINVAL exhaustion ENOMEM\n");
-    printf("SAPOTE FILE create seek truncate rename replace sync unlink PASS\n");
-    printf("SAPOTE STATE general FS x87 SSE PASS\n");
-    printf("SAPOTE NATIVE PASS argc=%d app=%s\n", argc, argv[0]);
+    printf("PHIPIA FILE create seek truncate rename replace sync unlink PASS\n");
+    printf("PHIPIA STATE general FS x87 SSE PASS\n");
+    printf("PHIPIA NATIVE PASS argc=%d app=%s\n", argc, argv[0]);
     return 0;
 }

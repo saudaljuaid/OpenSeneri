@@ -1,6 +1,6 @@
-print("SAPOTE LUA INPUT READY")
+print("PHIPIA LUA INPUT READY")
 local input = assert(io.read("*l"), "stdin ended before the test input")
-assert(input == "sapote", "unexpected stdin value")
+assert(input == "phipia", "unexpected stdin value")
 
 local sum = 0
 for value = 1, 100 do
@@ -15,4 +15,4 @@ assert(output:write(string.format("input=%s\nsum=%d\nmath=ok\n",
   input, sum)))
 assert(output:close())
 
-print("SAPOTE LUA PASS input=" .. input .. " sum=" .. sum)
+print("PHIPIA LUA PASS input=" .. input .. " sum=" .. sum)

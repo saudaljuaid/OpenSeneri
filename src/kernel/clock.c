@@ -3,8 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/clock.h>
-#include <sapote/tsc.h>
+#include <phipia/clock.h>
+#include <phipia/tsc.h>
 
 static struct clock_state state;
 

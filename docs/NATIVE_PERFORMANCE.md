@@ -2,18 +2,18 @@
 
 # Native userspace performance diagnostics
 
-Sapote records bounded diagnostics to catch structural regressions. They are
+Phipia records bounded diagnostics to catch structural regressions. They are
 QEMU measurements, not production throughput claims, and the QEMU serial logs
 retained by the native-porting workflow are the evidence of record.
 
 | Marker | Measured boundary |
 | --- | --- |
-| `SAPOTE PERF syscall` | 1,024 Ring 3 ABI-version queries, reported as total and mean monotonic nanoseconds. |
-| `SAPOTE PERF file` | 64 KiB sequential Data write and read in 4 KiB requests through native file handles. |
-| `SAPOTE PERF context-switch` | Real scheduler transition sections. `without_fpu_cycles` includes saved GPR context, address-space activation/restoration, and FS-base work; `with_fpu_cycles` adds the eager aligned `FXSAVE64` or `FXRSTOR64` section. Both are per-transition TSC means and exclude application work. |
-| `SAPOTE PERF canvas` | Bounded xRGB8888 damage submissions from two concurrent native Canvas processes. The app reports brush-damage sample count, largest presented region, total, and mean monotonic nanoseconds. |
-| `SAPOTE PERF lua` | Native entry-probe time through upstream Lua state creation and standard-library initialization. A link wrapper observes `luaL_openlibs` without changing upstream sources. |
-| `SAPOTE PERF sqlite` | The committed insert transaction in phase one, then database reopen, query, integrity check, and close after a clean reboot. |
+| `PHIPIA PERF syscall` | 1,024 Ring 3 ABI-version queries, reported as total and mean monotonic nanoseconds. |
+| `PHIPIA PERF file` | 64 KiB sequential Data write and read in 4 KiB requests through native file handles. |
+| `PHIPIA PERF context-switch` | Real scheduler transition sections. `without_fpu_cycles` includes saved GPR context, address-space activation/restoration, and FS-base work; `with_fpu_cycles` adds the eager aligned `FXSAVE64` or `FXRSTOR64` section. Both are per-transition TSC means and exclude application work. |
+| `PHIPIA PERF canvas` | Bounded xRGB8888 damage submissions from two concurrent native Canvas processes. The app reports brush-damage sample count, largest presented region, total, and mean monotonic nanoseconds. |
+| `PHIPIA PERF lua` | Native entry-probe time through upstream Lua state creation and standard-library initialization. A link wrapper observes `luaL_openlibs` without changing upstream sources. |
+| `PHIPIA PERF sqlite` | The committed insert transaction in phase one, then database reopen, query, integrity check, and close after a clean reboot. |
 
 The following reference sample came from GitHub's Ubuntu QEMU TCG run at
 merge-test commit `53466d34c4480f79d7c9ebff08299dfbfa05e1c2`, which merged

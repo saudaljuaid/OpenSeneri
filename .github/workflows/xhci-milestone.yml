@@ -80,15 +80,15 @@ jobs:
               run: |
                   set -o pipefail
                   make iso
-                  cp build/sapote.iso evidence/xhci/Sapote-v0.4.0.iso
+                  cp build/phipia.iso evidence/xhci/Phipia-v0.4.0.iso
                   proof=evidence/xhci/xhci-proof-transcript.txt
                   expected_lines=(
-                      'Sapote: xHCI foundation robustness controls 17/17 passed'
-                      'Sapote: xHCI controller ready'
-                      'Sapote: USB device descriptor DMA completed: 18 bytes'
-                      'Sapote: xHCI MSI-X descriptor completion count 1'
-                      'Sapote: xHCI DMA ownership CPU-CONTROLLER-CPU complete'
-                      'Sapote: xHCI teardown complete'
+                      'Phipia: xHCI foundation robustness controls 17/17 passed'
+                      'Phipia: xHCI controller ready'
+                      'Phipia: USB device descriptor DMA completed: 18 bytes'
+                      'Phipia: xHCI MSI-X descriptor completion count 1'
+                      'Phipia: xHCI DMA ownership CPU-CONTROLLER-CPU complete'
+                      'Phipia: xHCI teardown complete'
                       'ST XHCI descriptor 18 msix 1 ownership CPU-CONTROLLER-CPU teardown clean robustness 19'
                   )
                   for expected_line in "${expected_lines[@]}"; do
@@ -113,7 +113,7 @@ jobs:
                       exit 1
                   fi
                   {
-                      printf 'Sapote xHCI Host Foundation verification\n'
+                      printf 'Phipia xHCI Host Foundation verification\n'
                       printf 'commit: %s\n' "$GITHUB_SHA"
                       printf 'tree: %s\n' "$(git rev-parse 'HEAD^{tree}')"
                       printf 'scenarios per sweep: %s\n' "$scenario_count"
@@ -133,7 +133,7 @@ jobs:
                       printf 'Contract: qemu-test-xhci and the source assertions in xhci.c/test.c.\n'
                   } >evidence/xhci/controlled-robustness-results.txt
                   (cd evidence/xhci && sha256sum \
-                      Sapote-v0.4.0.iso \
+                      Phipia-v0.4.0.iso \
                       xhci-proof-transcript.txt \
                       verification-summary.txt \
                       controlled-robustness-results.txt >SHA256SUMS)
@@ -142,7 +142,7 @@ jobs:
             - name: Upload the bounded milestone evidence
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
-                  name: sapote-xhci-milestone-${{ github.sha }}
+                  name: phipia-xhci-milestone-${{ github.sha }}
                   path: evidence/xhci
                   if-no-files-found: error
                   retention-days: 30

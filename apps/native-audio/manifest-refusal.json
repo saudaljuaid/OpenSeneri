@@ -1,0 +1,14 @@
+{
+  "name": "Phipia Native Audio Refusal",
+  "identifier": "AUDIONO",
+  "executable": "AUDIONO.APP",
+  "abi_version": 1,
+  "data_namespace": "AUDIONO",
+  "memory_limit": 1048576,
+  "max_handles": 1,
+  "max_threads": 1,
+  "capabilities": [
+    "console"
+  ],
+  "arguments": ["refusal"]
+}

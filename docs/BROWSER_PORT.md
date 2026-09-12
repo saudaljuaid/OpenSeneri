@@ -1,84 +1,49 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 
-# Future browser-engine port plan
+# Browser port assessment
 
-Sapote 2.1.0 does not contain a browser, browser icon, HTML renderer,
-JavaScript engine, or HTTPS client. This document selects a concrete direction
-so the networking ABI is judged against a real consumer instead of an invented
-demo.
+Phipia does not ship a browser engine. NetSurf's framebuffer frontend is the
+selected port candidate because it has its own layout engine, a small portable
+surface, and no dependency on a host GUI toolkit. No NetSurf source is vendored
+or included in the compatibility claims.
 
-## Candidate: NetSurf framebuffer frontend
+Any import must pin and audit one upstream revision and its complete dependency
+closure.
 
-[NetSurf](https://www.netsurf-browser.org/about/) is the preferred first port.
-It has its own C layout engine, emphasizes a small footprint and portability,
-and already has a framebuffer frontend whose plotters draw the browser UI and
-page without requiring a host GUI toolkit. The project explicitly welcomes
-[new platform ports](https://www.netsurf-browser.org/developers/). Those traits
-fit Sapote better than Chromium, Firefox, or a large C++/JIT engine.
+## Port boundary
 
-This is a design selection, not a vendored dependency or compatibility claim.
-A port must pin and audit one exact upstream source commit and all transitive
-libraries before any NetSurf code enters this repository.
+1. **Freestanding build.** Build the NetSurf core, framebuffer frontend,
+   LibCSS, Hubbub/LibDOM, and admitted image libraries as a static native
+   application.
+2. **Frontend surface.** Use a bounded Phipia window, damage rectangles, and
+   native keyboard and pointer events through the public ABI.
+3. **URL fetcher.** Implement NetSurf callbacks over DNS and native streams,
+   including deadlines, cancellation, reset, and partial I/O.
+4. **Resources and cache.** Keep application resources on read-only System and
+   a bounded synchronized cache under the application Data root.
+5. **TLS.** Apply the browser release criteria in `TLS_EVALUATION.md`; the
+   bounded SDK trust-store profile is not a browser origin policy.
+6. **Isolation.** Run fetched content in a private process generation with
+   explicit quotas and teardown.
 
-## Port layers
+## Required services
 
-1. **Freestanding build.** Establish a separate Ring 3 target and static link
-   of the NetSurf core, framebuffer frontend, LibCSS, Hubbub/LibDOM, parser and
-   image dependencies. Replace hosted libc assumptions with a measured native
-   runtime; do not extend the Linux-compatibility allowlist to disguise gaps.
-2. **Process service.** Add authenticated process creation, multiple user
-   mappings, bounded heap growth, exit, clock, sleep, and event delivery. Keep
-   executable aliases W^X and make every allocation visible to a resource
-   census.
-3. **Frontend surface.** Expose a bounded shared or copied pixel surface,
-   damage rectangles, keyboard/pointer events, clipboard refusal, and one
-   Sapote Redwood window. The NetSurf plotter API remains above this seam.
-4. **URL fetcher.** Implement the NetSurf fetch callbacks over networking ABI
-   v1: DNS, stream open/connect/read/write/shutdown/close, poll, cancel, and
-   monotonic deadlines. HTTP parsing should move to the browser only after its
-   parser has equivalent or stronger bounds; the kernel HTTP helper remains
-   available for downloads.
-5. **Resource loader.** Add read-only application resources on the System
-   volume and a separate bounded cache on Data. Cache writes use temporary-file
-   sync-and-replace. No web content may write System.
-6. **TLS gate.** HTTPS remains disabled until every prerequisite in
-   `TLS_EVALUATION.md` is implemented and independently tested. Plain HTTP UI
-   must visibly state that transport is unauthenticated.
-7. **Content isolation.** Run the frontend and fetched content in a private
-   process generation. Add per-origin storage only after path, quota, eviction,
-   and teardown policies exist. Downloads require an explicit user action and
-   an 8.3 destination under Data.
+The port requires a browser-scale allocation policy, bounded asynchronous work,
+Unicode text and scalable fonts, certificate-store maintenance, content
+encoding, cookies, cache policy, origin-scoped storage, watchdogs, quotas, and
+update handling. Hosted libc sockets, signals, dynamic loading, and general file
+descriptors are not part of the Phipia native ABI.
 
-## Missing platform contracts
+## Acceptance
 
-The current kernel lacks several services a browser engine normally assumes:
+Each stage needs host parser tests, a QEMU scenario, matching resource censuses,
+malformed-input controls, and framebuffer evidence. The acceptance sequence is:
 
-- a general allocator ABI and more than one long-lived native process;
-- threads, thread-local storage, mutexes/condition variables, and asynchronous
-  worker completion;
-- locale, Unicode normalization/shaping, scalable fonts, clipboard and IME;
-- dynamic loading, sockets compatible with a hosted libc, signals and files as
-  general descriptors;
-- wall-clock/calendar time and a maintained root certificate store;
-- TLS, compression/content-encoding, cookies, cache policy and same-origin
-  storage;
-- robust crash containment, watchdogs, per-process quotas, and update delivery.
+1. an offline static page and image;
+2. input, scrolling, navigation, and bounded history;
+3. deterministic HTTP loading through the offline peer;
+4. cancellation, timeout, reset, and out-of-memory recovery;
+5. synchronized user-approved downloads to Data;
+6. independently reviewed TLS and HTTPS behavior.
 
-The first executable target is an offline, pinned HTML/CSS fixture rendered in
-a private process with no networking. Plain HTTP against the offline peer comes
-next. Internet URLs, JavaScript, downloads, and HTTPS remain separate projects.
-
-## Acceptance sequence
-
-Each stage needs host parser tests, a real QEMU scenario, resource-census
-equality, malformed-input controls, and authentic framebuffer evidence:
-
-1. offline static page and image;
-2. input, scrolling, navigation and bounded history;
-3. deterministic plain-HTTP A/CNAME/redirect page load;
-4. cancellation, timeout, reset and out-of-memory recovery;
-5. synchronized user-approved Data download;
-6. only then, independently reviewed TLS and HTTPS.
-
-Until all six pass, Sapote release notes must say “browser foundation” or
-“future browser port plan,” never “browser support.”
+Release notes describe only the stages supported by completed evidence.

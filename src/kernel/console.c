@@ -2,8 +2,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/console.h>
-#include <sapote/screen.h>
+#include <phipia/console.h>
+#include <phipia/screen.h>
 
 #define VGA_WIDTH 80U
 #define VGA_HEIGHT 25U
@@ -225,7 +225,7 @@ _Noreturn void console_halt(void)
 
 _Noreturn void console_panic(const char *message)
 {
-    console_write("Sapote PANIC: ");
+    console_write("Phipia PANIC: ");
     console_write(message);
     console_putc('\n');
     console_halt();

@@ -16,10 +16,10 @@ jobs:
     bounded-evidence:
         name: bounded-nvme-evidence
         runs-on: ubuntu-24.04
-        # Ten complete 112-scenario TCG sweeps take about 105 minutes on the
-        # hosted runner.  Keep enough headroom for evidence assembly instead
-        # of cancelling a healthy ninth sweep at the old 90-minute ceiling.
-        timeout-minutes: 150
+        # The complete 117-scenario matrix now includes the four-boot signed
+        # package lifecycle. Keep the full hosted-runner allowance so all ten
+        # serial TCG sweeps and evidence assembly can complete.
+        timeout-minutes: 360
         steps:
             - name: Check out source
               uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -63,8 +63,8 @@ jobs:
                   # qemu-test-%, so request each one explicitly before copying.
                   for log in build/tests/*/serial.log; do
                       scenario=$(basename "$(dirname "$log")")
-                      make "build/tests/${scenario}/sapote.iso"
-                      cp "build/tests/${scenario}/sapote.iso" \
+                      make "build/tests/${scenario}/phipia.iso"
+                      cp "build/tests/${scenario}/phipia.iso" \
                           "evidence/nvme/scenario-isos/${scenario}.iso"
                   done
             - name: Record the CI hardware-accelerator safety boundary
@@ -81,16 +81,16 @@ jobs:
               run: |
                   set -o pipefail
                   make iso
-                  cp build/sapote.iso evidence/nvme/Sapote-nvme-regression.iso
+                  cp build/phipia.iso evidence/nvme/Phipia-nvme-regression.iso
                   proof=evidence/nvme/nvme-proof-transcript.txt
                   expected_lines=(
-                      'Sapote: NVMe foundation robustness controls 20/20 passed'
-                      'Sapote: NVMe controller ready'
-                      'Sapote: NVMe namespace ready'
-                      'Sapote: NVMe block read completed: 4096 bytes'
-                      'Sapote: NVMe MSI-X read completion count 1'
-                      'Sapote: NVMe DMA ownership CPU-CONTROLLER-CPU complete'
-                      'Sapote: NVMe teardown complete'
+                      'Phipia: NVMe foundation robustness controls 20/20 passed'
+                      'Phipia: NVMe controller ready'
+                      'Phipia: NVMe namespace ready'
+                      'Phipia: NVMe block read completed: 4096 bytes'
+                      'Phipia: NVMe MSI-X read completion count 1'
+                      'Phipia: NVMe DMA ownership CPU-CONTROLLER-CPU complete'
+                      'Phipia: NVMe teardown complete'
                       'ST NVME read 4096 msix 1 ownership CPU-CONTROLLER-CPU teardown clean robustness 22'
                   )
                   for expected_line in "${expected_lines[@]}"; do
@@ -124,7 +124,7 @@ jobs:
                           | awk '{print $1}'
                   )
                   {
-                      printf 'Sapote NVMe Block Storage Foundation verification\n'
+                      printf 'Phipia NVMe Block Storage Foundation verification\n'
                       printf 'commit: %s\n' "$GITHUB_SHA"
                       printf 'tree: %s\n' "$(git rev-parse 'HEAD^{tree}')"
                       printf 'scenarios per sweep: %s\n' "$scenario_count"
@@ -145,17 +145,20 @@ jobs:
                       printf 'Result: %s\n' "$proof_record"
                       printf 'Contract: qemu-test-nvme and the source assertions in nvme.c/test.c.\n'
                   } >evidence/nvme/controlled-robustness-results.txt
-                  (cd evidence/nvme && sha256sum \
-                      Sapote-nvme-regression.iso \
-                      nvme-proof-transcript.txt \
-                      verification-summary.txt \
-                      controlled-robustness-results.txt >SHA256SUMS)
+                  (
+                      cd evidence/nvme
+                      find . -type f ! -name SHA256SUMS -print0 \
+                          | LC_ALL=C sort -z \
+                          | xargs -0 -r sha256sum >SHA256SUMS
+                  )
                   cat evidence/nvme/verification-summary.txt
-                  cat evidence/nvme/SHA256SUMS
+                  printf 'SHA256SUMS members: %s\n' \
+                      "$(wc -l <evidence/nvme/SHA256SUMS)"
+                  sha256sum evidence/nvme/SHA256SUMS
             - name: Upload the bounded milestone evidence
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
-                  name: sapote-nvme-milestone-${{ github.sha }}
+                  name: phipia-nvme-milestone-${{ github.sha }}
                   path: evidence/nvme
                   if-no-files-found: error
                   retention-days: 30

@@ -3,13 +3,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/apic.h>
-#include <sapote/cpu.h>
-#include <sapote/interrupts.h>
-#include <sapote/ioapic.h>
-#include <sapote/pic.h>
-#include <sapote/pit.h>
-#include <sapote/pm_timer.h>
+#include <phipia/apic.h>
+#include <phipia/cpu.h>
+#include <phipia/interrupts.h>
+#include <phipia/ioapic.h>
+#include <phipia/pic.h>
+#include <phipia/pit.h>
+#include <phipia/pm_timer.h>
 
 #define PIT_INPUT_FREQUENCY UINT32_C(1193182)
 #define PIT_CHANNEL_ZERO UINT16_C(0x40)

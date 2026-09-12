@@ -1,14 +1,14 @@
 /*
- * Sapote native port of the model and animation engine from:
+ * Phipia native port of the model and animation engine from:
  *   https://github.com/saudaljuaid/3d-dock (commit 8ab14d0)
  *
  * The upstream source is MIT licensed.  Its Cairo/X11 renderer and libm
- * doubles cannot execute in Sapote's freestanding kernel, so this file keeps
+ * doubles cannot execute in Phipia's freestanding kernel, so this file keeps
  * the same raised-cosine curve, resting-grid measurement, eased-width layout,
  * pointer anchoring, 1.95x magnification, time constants, press squash and
  * decaying launch bounce in deterministic Q16.16 fixed point.
  */
-#include <sapote/dock3d.h>
+#include <phipia/dock3d.h>
 
 #include <limits.h>
 

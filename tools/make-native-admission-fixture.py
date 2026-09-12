@@ -13,11 +13,11 @@ import fat32_image
 
 
 def load_package_module() -> object:
-    path = Path(__file__).with_name("sapote-package.py")
+    path = Path(__file__).with_name("phipia-package.py")
     specification = importlib.util.spec_from_file_location(
-        "sapote_package_tool", path)
+        "phipia_package_tool", path)
     if specification is None or specification.loader is None:
-        raise RuntimeError("could not load the Sapote package implementation")
+        raise RuntimeError("could not load the Phipia package implementation")
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
     return module

@@ -3,9 +3,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/boot.h>
-#include <sapote/framebuffer.h>
-#include <sapote/paging.h>
+#include <phipia/boot.h>
+#include <phipia/framebuffer.h>
+#include <phipia/paging.h>
 
 /*
  * Every pixel on the screen, addressable, and nothing above that.

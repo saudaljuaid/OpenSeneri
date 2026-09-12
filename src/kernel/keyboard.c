@@ -3,10 +3,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/cpu.h>
-#include <sapote/interrupts.h>
-#include <sapote/ioapic.h>
-#include <sapote/keyboard.h>
+#include <phipia/cpu.h>
+#include <phipia/interrupts.h>
+#include <phipia/ioapic.h>
+#include <phipia/keyboard.h>
 
 /*
  * The PS/2 keyboard.
@@ -71,6 +71,7 @@
 #define KEYBOARD_SCANCODE_LEFT_SHIFT UINT8_C(0x2A)
 #define KEYBOARD_SCANCODE_RIGHT_SHIFT UINT8_C(0x36)
 #define KEYBOARD_SCANCODE_LEFT_CONTROL UINT8_C(0x1D)
+#define KEYBOARD_SCANCODE_LEFT_ALT UINT8_C(0x38)
 #define KEYBOARD_SCANCODE_CAPS_LOCK UINT8_C(0x3A)
 
 /*
@@ -281,6 +282,8 @@ static void handle_byte(uint8_t byte)
     } else if (make == KEYBOARD_SCANCODE_LEFT_CONTROL) {
         /* Only the ordinary set-1 code is the bounded left-Control contract. */
         state.control = !extended && event.pressed;
+    } else if (make == KEYBOARD_SCANCODE_LEFT_ALT) {
+        state.alt = !extended && event.pressed;
     } else if (make == KEYBOARD_SCANCODE_CAPS_LOCK && event.pressed) {
         state.caps_lock = !state.caps_lock;
     }
@@ -290,6 +293,7 @@ static void handle_byte(uint8_t byte)
         : '\0';
     event.shift = state.shift;
     event.control = state.control;
+    event.alt = state.alt;
 
     enqueue(&event);
 }
@@ -506,11 +510,7 @@ enum keyboard_status keyboard_read(struct keyboard_event *event)
         return KEYBOARD_STATUS_CONTROLLER_REFUSED;
     }
 
-    /*
-     * The queue is written from interrupt context and read from thread context,
-     * so the read is bracketed rather than trusted to be atomic. This is one
-     * processor; the day there is a second, this becomes a lock.
-     */
+    /* Serialize the single-core interrupt writer with the thread reader. */
     enabled = cpu_interrupts_enabled();
 
     if (enabled) {

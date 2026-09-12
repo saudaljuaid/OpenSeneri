@@ -1,4 +1,4 @@
-# Sapote v1.1.0 BusyBox cat syscall contract
+# Phipia v1.1.0 BusyBox cat syscall contract
 #
 # This is the normalized independent trace of the exact binary identified
 # below. The host execve that installs the image is not part of the in-kernel

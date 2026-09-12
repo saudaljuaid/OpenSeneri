@@ -25,12 +25,12 @@ const MAGIC: [u8; 4] = *b"SNF1";
 /// property of the format rather than a policy: a wider cell needs a wider row.
 const MAX_WIDTH: u32 = 8;
 
-/// A Sapote policy bound. The smallest mode the kernel accepts is 640x480, so a
+/// A Phipia policy bound. The smallest mode the kernel accepts is 640x480, so a
 /// cell taller than this could not fit a single row of text on screen.
 const MAX_HEIGHT: u32 = 32;
 
 /// What reading the table can conclude. Mirrored by `enum font_status` in
-/// `include/sapote/font.h`; a compile-time assertion on the C side keeps the
+/// `include/phipia/font.h`; a compile-time assertion on the C side keeps the
 /// two in step.
 #[repr(i32)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -8,7 +8,7 @@ mod fat16;
 #[path = "../src/rust/linux_fat16.rs"]
 mod linux_fat16;
 
-static BUSYBOX: &[u8] = include_bytes!(env!("SAPOTE_UNAME_BUSYBOX_BINARY"));
+static BUSYBOX: &[u8] = include_bytes!(env!("PHIPIA_UNAME_BUSYBOX_BINARY"));
 
 #[test]
 fn pinned_uname_payload_is_exact() {

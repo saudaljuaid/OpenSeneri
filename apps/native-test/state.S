@@ -4,16 +4,16 @@
 .section .text, "ax", @progbits
 .code64
 
-.global sapote_application_entry_probe
-.type sapote_application_entry_probe, @function
-sapote_application_entry_probe:
+.global phipia_application_entry_probe
+.type phipia_application_entry_probe, @function
+phipia_application_entry_probe:
     fxsave64 native_initial_fpu_state(%rip)
     /* crt0 must preserve the loader's argc/argv/environment registers. */
     movq $0x11, %rdi
     movq $0x22, %rsi
     movq $0x33, %rdx
     ret
-.size sapote_application_entry_probe, . - sapote_application_entry_probe
+.size phipia_application_entry_probe, . - phipia_application_entry_probe
 
 .global native_state_round_trip
 .type native_state_round_trip, @function
@@ -41,7 +41,7 @@ native_state_round_trip:
 
     movq $0x0301, %rdi
     movq 0(%rsp), %rsi
-    call sapote_syscall1
+    call phipia_syscall1
     movdqu %xmm15, 24(%rsp)
     fstpt 40(%rsp)
     testq %rax, %rax

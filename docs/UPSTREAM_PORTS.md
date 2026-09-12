@@ -12,5 +12,5 @@ to the port.
 | SQLite | `https://www.sqlite.org/2024/sqlite-amalgamation-3460000.zip` | SQLite 3.46.0 amalgamation | `712a7d09d2a22652fb06a49af516e051979a3984adb067da86760e60ed51a7f5` | `ports/sqlite/LICENSE` (public-domain dedication) |
 
 `ports/*/source/SHA256SUMS` is consumed by the build, not merely documentary.
-Sapote-specific VFS, test application, manifests, and build scripts are
+Phipia-specific VFS, test application, manifests, and build scripts are
 GPL-3.0-only. Upstream notices remain unmodified.

@@ -6,7 +6,7 @@
 //! 13.3. Sector fields are little-endian and are decoded from checked slices;
 //! no packed structure ever points into a controller-owned block.
 
-/// The namespace and FAT sector size supported by this milestone.
+/// The supported namespace and FAT sector size.
 pub const BLOCK_BYTES: usize = 4096;
 /// The one accepted total-sector count.
 pub const TOTAL_SECTORS: u64 = 4096;
@@ -18,8 +18,8 @@ pub const FILE_BYTES: u32 = 128;
 pub const FILE_CLUSTER: u16 = 2;
 /// The number of parser controls represented by controls 1 through 22.
 pub const ROBUSTNESS_CONTROLS: u32 = 22;
-/// Canonical on-disk 8.3 bytes for `SAPOTE.BIN`.
-pub const SAPOTE_NAME: [u8; 11] = *b"SAPOTE  BIN";
+/// Canonical on-disk 8.3 bytes for `PHIPIA.BIN`.
+pub const PHIPIA_NAME: [u8; 11] = *b"PHIPIA  BIN";
 /// SHA-256 of the deterministic 128-byte fixture payload.
 pub const PAYLOAD_SHA256: [u8; 32] = [
     0xD3, 0x99, 0xF0, 0x65, 0xC9, 0xF2, 0x1E, 0x2F,
@@ -516,7 +516,7 @@ pub fn parse_bpb(
 
 /// Validate and copy the one canonical root query.
 pub fn make_query(name: &[u8]) -> Result<RootQuery, Status> {
-    if !canonical_name(name) || name != SAPOTE_NAME {
+    if !canonical_name(name) || name != PHIPIA_NAME {
         return Err(Status::NameMalformed);
     }
     let canonical = [
@@ -536,7 +536,7 @@ pub fn find_root(
     exact_block(block)?;
     validate_geometry(geometry)?;
     if !canonical_name(&query.canonical_name)
-        || query.canonical_name != SAPOTE_NAME
+        || query.canonical_name != PHIPIA_NAME
     {
         return Err(Status::NameMalformed);
     }
@@ -692,7 +692,7 @@ pub fn validate_extent(
     fat: &FatState,
 ) -> Result<Extent, Status> {
     validate_geometry(geometry)?;
-    if entry.canonical_name != SAPOTE_NAME || entry.attribute != ATTR_ARCHIVE {
+    if entry.canonical_name != PHIPIA_NAME || entry.attribute != ATTR_ARCHIVE {
         return Err(Status::UnsupportedEntry);
     }
     let maximum_cluster = geometry.cluster_count
@@ -923,7 +923,7 @@ fn put_u32(block: &mut [u8], offset: usize, value: u32) {
 fn make_bpb(block: &mut [u8; BLOCK_BYTES]) {
     block.fill(0);
     block[0..3].copy_from_slice(&[0xEB, 0x3C, 0x90]);
-    block[3..11].copy_from_slice(b"SAPOTE  ");
+    block[3..11].copy_from_slice(b"PHIPIA  ");
     put_u16(block, BPB_BYTES_PER_SECTOR, BLOCK_BYTES as u16);
     block[BPB_SECTORS_PER_CLUSTER] = 1;
     put_u16(block, BPB_RESERVED_SECTORS, 1);
@@ -940,7 +940,7 @@ fn make_bpb(block: &mut [u8; BLOCK_BYTES]) {
 #[cfg(test)]
 fn make_root(block: &mut [u8; BLOCK_BYTES]) {
     block.fill(0);
-    block[..11].copy_from_slice(&SAPOTE_NAME);
+    block[..11].copy_from_slice(&PHIPIA_NAME);
     block[11] = ATTR_ARCHIVE;
     put_u16(block, 26, FILE_CLUSTER);
     put_u32(block, 28, FILE_BYTES);
@@ -1061,7 +1061,7 @@ pub fn self_test() -> u32 {
     make_bpb(&mut block);
 
     // Establish canonical query, root entry, and extent before corruptions.
-    let query = match make_query(&SAPOTE_NAME) { Ok(value) => value, Err(_) => return 0 };
+    let query = match make_query(&PHIPIA_NAME) { Ok(value) => value, Err(_) => return 0 };
     make_root(&mut block);
     let entry = match find_root(&block, &geometry, &query, FILE_BYTES) {
         Ok(value) => value,
@@ -1095,7 +1095,7 @@ pub fn self_test() -> u32 {
     block.fill(0);
     if !status_is(find_root(&block, &geometry, &query, FILE_BYTES), Status::TargetAbsent) { return 0; }
     make_root(&mut block);
-    block[32..43].copy_from_slice(&SAPOTE_NAME);
+    block[32..43].copy_from_slice(&PHIPIA_NAME);
     block[43] = ATTR_ARCHIVE;
     if !status_is(find_root(&block, &geometry, &query, FILE_BYTES), Status::TargetDuplicate) { return 0; }
     make_root(&mut block);
@@ -1113,7 +1113,7 @@ pub fn self_test() -> u32 {
     make_root(&mut block);
     block[11] = 0x40;
     if !status_is(find_root(&block, &geometry, &query, FILE_BYTES), Status::UnsupportedEntry) { return 0; }
-    let malformed = *b"sapote  BIN";
+    let malformed = *b"phipia  BIN";
     if !status_is(make_query(&malformed), Status::NameMalformed) { return 0; }
     make_root(&mut block);
     block[0] = b's';

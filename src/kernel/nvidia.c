@@ -1,48 +1,26 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /*
- * Five bounded drivers for the register contracts an NVIDIA board publishes.
+ * Bounded NVIDIA PCI, MMIO, timer, and video-BIOS identification probes.
+ * Register definitions come from envytools, Nouveau, NVK, NVIDIA's open
+ * modules, and the PCI specifications listed in docs/NVIDIA.md.
  *
- * Sapote has thirteen bounded drivers already, and every one of them was
- * written the same way: read the registers the vendor's own document says
- * carry the device's identity, check what came back against a property that
- * document guarantees, and refuse the device rather than report whatever was
- * found. NVIDIA publishes no such document for its graphics parts. What exists
- * instead is a body of public material that is, in aggregate, better evidence
- * than a datasheet: the envytools project's reverse-engineered register
- * database, the Nouveau driver that has run on this silicon in the Linux tree
- * for fifteen years, Mesa's NVK back end, and NVIDIA's own open GPU kernel
- * modules and published headers. Every offset and every rule below comes from
- * that material, and the comment above each one says which part of it.
- *
- * The honest limit, stated once here and again in docs/NVIDIA.md: none of this
- * has touched NVIDIA silicon. No such device was reachable from the machine
- * this was written on, and QEMU models none, so the bind path is code that has
- * never run against the hardware it describes. What is proved on every boot is
- * everything that does not need the device -- the identity decode against the
- * published encoding, the VBIOS parser against a reference image pinned three
- * independent ways, the refusal of every function that is not NVIDIA's, and a
- * resource census that is identical afterwards.
- *
- * No driver here enables bus mastering or allocates DMA, so none of them can
- * reach memory: without an IOMMU that is the difference between a driver that
- * cannot corrupt the kernel and one that is merely not expected to. Exactly
- * one of them writes a register -- the ROM shadow-disable bit the PROM window
- * requires -- and it restores what it found and reads it back to prove it.
+ * Bus mastering stays disabled and no probe allocates DMA. The video-BIOS
+ * probe temporarily changes the ROM shadow bit and restores it before return.
  */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/clock.h>
-#include <sapote/cpu.h>
-#include <sapote/dma.h>
-#include <sapote/interrupt_vector.h>
-#include <sapote/memory.h>
-#include <sapote/msix.h>
-#include <sapote/nvidia.h>
-#include <sapote/paging.h>
-#include <sapote/pci.h>
-#include <sapote/pci_resource.h>
+#include <phipia/clock.h>
+#include <phipia/cpu.h>
+#include <phipia/dma.h>
+#include <phipia/interrupt_vector.h>
+#include <phipia/memory.h>
+#include <phipia/msix.h>
+#include <phipia/nvidia.h>
+#include <phipia/paging.h>
+#include <phipia/pci.h>
+#include <phipia/pci_resource.h>
 
 /* PCI Code and ID Assignment Specification 1.19 section 1. */
 #define NVIDIA_CLASS_DISPLAY UINT8_C(0x03)
@@ -300,10 +278,10 @@ struct nvidia_census {
 };
 
 /* The freestanding Rust validator; C never parses a VBIOS byte itself. */
-extern uint32_t sapote_nvbios_self_test(void);
-extern uint32_t sapote_nvbios_controls(void);
-extern size_t sapote_nvbios_reference(uint8_t *out, size_t capacity);
-extern int sapote_nvbios_parse(
+extern uint32_t phipia_nvbios_self_test(void);
+extern uint32_t phipia_nvbios_controls(void);
+extern size_t phipia_nvbios_reference(uint8_t *out, size_t capacity);
+extern int phipia_nvbios_parse(
     const uint8_t *input,
     size_t input_len,
     struct nvidia_vbios_image *out
@@ -794,7 +772,7 @@ static enum nvidia_status probe_video_bios(
         return NVIDIA_STATUS_ROM_NOT_RESTORED;
     }
     zero_bytes(&image, sizeof(image));
-    status = sapote_nvbios_parse(vbios_window, sizeof(vbios_window), &image);
+    status = phipia_nvbios_parse(vbios_window, sizeof(vbios_window), &image);
     probe->identity = ((uint64_t)image.vendor_id << 16U) | image.device_id;
     probe->detail = image.image_bytes;
     if (status != 0) {
@@ -810,7 +788,7 @@ static enum nvidia_status probe_video_bios(
  * Driver four, and the only one that binds a function other than the graphics
  * one. Every NVIDIA board since Fermi carries an HD Audio controller beside
  * the GPU for the audio a display link carries, and it answers the same
- * register contract Sapote's ICH9 driver already proves: a version, and a
+ * register contract Phipia's ICH9 driver already proves: a version, and a
  * count of the streams the controller has. This driver resets nothing: the
  * audio function of a board that may be driving a live display is not
  * something to reset blind.
@@ -1059,15 +1037,7 @@ static enum nvidia_status probe_express_link(
     return NVIDIA_STATUS_OK;
 }
 
-/*
- * Driver nine. Configuration space only, like driver eight, and the last fact
- * about the part that is not about the chip: which board it is on. NVIDIA
- * sells this silicon to add-in-board partners, so a card's subsystem vendor is
- * theirs rather than NVIDIA's, and the subsystem device is the model of card.
- *
- * Sapote already drives xHCI properly, so the USB host controller such a board
- * also carries is deliberately not a second, lesser driver here.
- */
+/* Driver nine: validate the add-in board's subsystem identity. */
 static enum nvidia_status probe_board_identity(
     const struct nvidia_driver_record *record,
     const struct pci_function *function,
@@ -1090,11 +1060,7 @@ static enum nvidia_status probe_board_identity(
     }
     probe->identity = subsystem;
     probe->detail = identity;
-    /*
-     * A board that reports no subsystem at all, or an open bus, has not
-     * answered. Every other value is a real partner identifier and this kernel
-     * has no business having opinions about which ones exist.
-     */
+    /* Reject absent and open-bus subsystem identifiers. */
     if (subsystem == 0U || subsystem == UINT32_MAX ||
         (subsystem & UINT32_C(0xFFFF)) == 0U ||
         (subsystem & UINT32_C(0xFFFF)) == UINT32_C(0xFFFF)) {
@@ -1107,20 +1073,7 @@ static enum nvidia_status probe_board_identity(
     return NVIDIA_STATUS_OK;
 }
 
-/*
- * Driver ten, and the first of three in a row that read a capability every PCI
- * function carries rather than anything NVIDIA-specific. Driver eight is a
- * fourth of that kind. Their place in a set of NVIDIA drivers is as
- * cross-checks and not as vendor knowledge, which docs/NVIDIA.md says outright
- * rather than counting them as expertise they are not.
- *
- * This one asks the function what power state it is in, and the only answer
- * consistent with drivers zero through seven having just read its
- * memory-mapped registers is D0, because every lower state turns that decoder
- * off. A function that says otherwise is one whose configuration space and
- * whose register window disagree about what it is doing, and that is worth
- * refusing over.
- */
+/* Driver ten: require a valid power-management capability in D0. */
 static enum nvidia_status probe_power_management(
     const struct nvidia_driver_record *record,
     const struct pci_function *function,
@@ -1168,8 +1121,8 @@ static enum nvidia_status probe_power_management(
  * Driver eleven. Configuration space only. Message-signalled interrupts are
  * delivered as a memory write to the local APIC, so a function that arrives
  * with them already enabled can interrupt this kernel without this kernel ever
- * having agreed to it. Nothing in Sapote enabled them on this function and
- * nothing outside Sapote may have: this driver's whole job is to say so out
+ * having agreed to it. Nothing in Phipia enabled them on this function and
+ * nothing outside Phipia may have: this driver's whole job is to say so out
  * loud, and to check the count fields against the encodings the specification
  * actually defines rather than assuming a device fills them in sanely.
  */
@@ -1227,22 +1180,8 @@ static enum nvidia_status probe_message_interrupts(
 }
 
 /*
- * Driver twelve. Configuration space only, and the other half of the Express
- * capability driver eight reads: what kind of port this is, and how large a
- * transaction it agreed to accept.
- *
- * A graphics function is an endpoint, and the specification gives endpoints
- * three encodings rather than one: a plain endpoint behind a root port or a
- * switch, a legacy endpoint, and a root complex integrated endpoint for a part
- * that hangs off the root complex with no port above it. All three are
- * accepted here. What is refused is everything that is not an endpoint at all
- * -- a root port, either kind of switch port, either kind of bridge, an event
- * collector -- because a function answering to the display class while
- * describing itself as a port is not the thing this kernel went looking for.
- *
- * And a function programmed to accept a payload larger than it says it
- * supports has been misconfigured by whatever ran before this kernel, which is
- * worth knowing before anything is asked of it.
+ * Driver twelve: accept PCIe endpoint encodings and verify that the configured
+ * payload size does not exceed the advertised maximum.
  */
 static enum nvidia_status probe_express_device(
     const struct nvidia_driver_record *record,
@@ -1701,7 +1640,7 @@ static enum nvidia_status bind_one(
 
     /*
      * A driver that reads only configuration space takes nothing at all: no
-     * claim, no mapping, no command-register change. Sapote has no IOMMU, and
+     * claim, no mapping, no command-register change. Phipia has no IOMMU, and
      * the cheapest way to be sure a driver cannot reach memory is for it never
      * to have been given a window.
      */
@@ -1836,7 +1775,7 @@ static bool reference_vbios_agrees(void)
 {
     static uint8_t written[NVIDIA_REFERENCE_VBIOS_BYTES];
 
-    if (sapote_nvbios_reference(written, sizeof(written)) !=
+    if (phipia_nvbios_reference(written, sizeof(written)) !=
             sizeof(written)) {
         return false;
     }
@@ -1964,8 +1903,8 @@ bool nvidia_foundation_self_test(size_t *completed_tests)
     ++completed;
 
     /* The Rust validator runs every control it declares. */
-    if (sapote_nvbios_controls() != NVIDIA_VBIOS_ROBUSTNESS_CONTROLS ||
-        sapote_nvbios_self_test() != NVIDIA_VBIOS_ROBUSTNESS_CONTROLS) {
+    if (phipia_nvbios_controls() != NVIDIA_VBIOS_ROBUSTNESS_CONTROLS ||
+        phipia_nvbios_self_test() != NVIDIA_VBIOS_ROBUSTNESS_CONTROLS) {
         return false;
     }
     ++completed;
@@ -1985,7 +1924,7 @@ bool nvidia_foundation_self_test(size_t *completed_tests)
 
     /* And it parses through the same boundary a real image would. */
     zero_bytes(&image, sizeof(image));
-    if (sapote_nvbios_parse(reference, reference_length, &image) != 0 ||
+    if (phipia_nvbios_parse(reference, reference_length, &image) != 0 ||
         image.vendor_id != NVIDIA_VENDOR_ID ||
         image.device_id != NVIDIA_REFERENCE_VBIOS_DEVICE ||
         image.image_bytes != NVIDIA_REFERENCE_VBIOS_BYTES ||
@@ -1997,7 +1936,7 @@ bool nvidia_foundation_self_test(size_t *completed_tests)
 
     /* A truncated image is refused rather than read past. */
     zero_bytes(&image, sizeof(image));
-    if (sapote_nvbios_parse(reference, 16U, &image) == 0 ||
+    if (phipia_nvbios_parse(reference, 16U, &image) == 0 ||
         image.image_bytes != 0U) {
         return false;
     }
@@ -2005,7 +1944,7 @@ bool nvidia_foundation_self_test(size_t *completed_tests)
 
     /* So is a null one. */
     zero_bytes(&image, sizeof(image));
-    if (sapote_nvbios_parse(NULL, reference_length, &image) == 0) {
+    if (phipia_nvbios_parse(NULL, reference_length, &image) == 0) {
         return false;
     }
     ++completed;

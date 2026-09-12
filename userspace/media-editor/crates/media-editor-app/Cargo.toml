@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-3.0-only
+[package]
+name = "media-editor-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Media Editor application: what runs on Phipia."
+
+[dependencies]
+media-editor-abi = { path = "../media-editor-abi" }
+media-editor-audio = { path = "../media-editor-audio" }
+media-editor-core = { path = "../media-editor-core" }
+media-editor-io = { path = "../media-editor-io" }
+media-editor-media = { path = "../media-editor-media" }
+media-editor-model = { path = "../media-editor-model" }
+media-editor-render = { path = "../media-editor-render" }
+
+[lints.rust]
+warnings = "deny"
+missing_docs = "deny"
+unsafe_code = "forbid"

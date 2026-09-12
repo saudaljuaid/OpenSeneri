@@ -3,13 +3,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/acpi_util.h>
-#include <sapote/boot.h>
+#include <phipia/acpi_util.h>
+#include <phipia/boot.h>
 
 bool acpi_span_is_early_mapped(uint64_t address, uint64_t length)
 {
-    return address < SAPOTE_EARLY_PHYSICAL_LIMIT &&
-        length <= SAPOTE_EARLY_PHYSICAL_LIMIT - address;
+    return address < PHIPIA_EARLY_PHYSICAL_LIMIT &&
+        length <= PHIPIA_EARLY_PHYSICAL_LIMIT - address;
 }
 
 uint8_t acpi_byte_sum(const void *data, size_t size)

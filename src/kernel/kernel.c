@@ -6,14 +6,18 @@
  */
 #include <stdint.h>
 
-#include <sapote/boot_ledger.h>
-#include <sapote/boot_plan.h>
-#include <sapote/console.h>
-#include <sapote/fat32_fs.h>
-#include <sapote/native_process.h>
-#include <sapote/shell.h>
-#include <sapote/test.h>
-#include <sapote/ui.h>
+#include <phipia/boot_ledger.h>
+#include <phipia/boot_plan.h>
+#include <phipia/console.h>
+#include <phipia/ext4_fs.h>
+#include <phipia/fat32_fs.h>
+#include <phipia/native_process.h>
+#include <phipia/package_platform_trust.h>
+#include <phipia/package_service.h>
+#include <phipia/package_upload.h>
+#include <phipia/shell.h>
+#include <phipia/test.h>
+#include <phipia/ui.h>
 
 _Noreturn void kernel_main(uint32_t magic, uintptr_t boot_information);
 
@@ -25,12 +29,70 @@ _Noreturn void kernel_main(uint32_t magic, uintptr_t boot_information);
 static struct boot_context installed_context;
 static struct boot_ledger installed_ledger;
 
+static void initialize_package_trust(void)
+{
+    enum package_trust_status status = package_platform_trust_initialize();
+    if (status != PACKAGE_TRUST_STATUS_OK ||
+        package_platform_trust_key_count() == 0U) {
+        console_panic("immutable package trust table refused");
+    }
+}
+
+static void recover_package_state(void)
+{
+    enum phipfs_status filesystem_status = phipfs_mount(PHIPFS_VOLUME_DATA);
+
+    if (filesystem_status != PHIPFS_STATUS_OK &&
+        filesystem_status != PHIPFS_STATUS_ALREADY_MOUNTED) {
+        console_write("Phipia: package recovery unavailable: ");
+        console_write(phipfs_status_string(filesystem_status));
+        console_putc('\n');
+        return;
+    }
+    struct package_service_report report;
+    enum package_service_status status = package_service_recover(&report);
+
+    if (status == PACKAGE_SERVICE_STATUS_ABSENT) {
+        console_write("Phipia: package transaction state absent\n");
+        return;
+    }
+    if (status != PACKAGE_SERVICE_STATUS_OK) {
+        console_write("Phipia: package recovery refused: ");
+        console_write(package_service_status_string(status));
+        console_write("; state ");
+        console_write(package_state_status_string(report.state_status));
+        console_write("; filesystem ");
+        console_write(phipfs_status_string(report.filesystem_status));
+        console_putc('\n');
+        console_panic("unsafe package transaction state");
+    }
+    console_write("Phipia: package generation ");
+    console_write_u64(report.generation);
+    console_write(" verified files ");
+    console_write_u64(report.files_verified);
+    console_write(" resources released\n");
+}
+
+static void initialize_package_uploads(void)
+{
+    struct package_upload_report report;
+    enum package_upload_status status = package_upload_initialize(&report);
+
+    if (status != PACKAGE_UPLOAD_STATUS_OK) {
+        console_write("Phipia: package upload service unavailable: ");
+        console_write(package_upload_status_string(status));
+        console_write("; filesystem ");
+        console_write(phipfs_status_string(report.filesystem_status));
+        console_putc('\n');
+    }
+}
+
 static void report_ledger_refusal(
     const struct boot_ledger *ledger,
     const struct boot_context *context
 )
 {
-    console_write("Sapote: Boot Ledger refusal: ");
+    console_write("Phipia: Boot Ledger refusal: ");
     console_write(boot_ledger_status_string(ledger->status));
 
     if (ledger->refusal_stage != BOOT_STAGE_INVALID) {
@@ -59,6 +121,7 @@ _Noreturn void kernel_main(uint32_t magic, uintptr_t boot_information)
 
     /* Reversible bootstrap: named planner refusals need somewhere to speak. */
     console_initialize();
+    initialize_package_trust();
     boot_context_initialize(&installed_context, magic, boot_information);
 
     /* Pure and bounded; runs before PAT, WBINVD or CR3 replacement. */
@@ -92,22 +155,32 @@ _Noreturn void kernel_main(uint32_t magic, uintptr_t boot_information)
     }
 
     boot_ledger_publish(&installed_ledger);
-    console_write("Sapote: Boot Ledger installed proof passed\n");
-    if (!sapfs_self_test(&filesystem_tests)) {
+    console_write("Phipia: Boot Ledger installed proof passed\n");
+    if (!phipfs_self_test(&filesystem_tests)) {
         console_panic("FAT32 store self-test failed");
     }
-    console_write("Sapote: FAT32 store controls ");
+    console_write("Phipia: FAT32 store controls ");
     console_write_u64(filesystem_tests);
     console_write("/6 passed\n");
-    sapfs_initialize();
+    if (installed_context.test_scenario == KERNEL_TEST_EXT4_RECOVERY &&
+        !ext4_backend_test_configure_power_cut(
+            installed_context.information.command_line,
+            installed_context.information.command_line_length)) {
+        console_panic("invalid ext4 power-cut configuration");
+    }
+    phipfs_initialize();
+    if (installed_context.test_scenario == KERNEL_TEST_NORMAL) {
+        recover_package_state();
+        initialize_package_uploads();
+    }
     if (!native_process_self_test(&native_process_tests)) {
         console_panic("native userspace foundation self-test failed");
     }
-    console_write("Sapote: native userspace controls ");
+    console_write("Phipia: native userspace controls ");
     console_write_u64(native_process_tests);
     console_write(" passed\n");
     if (ui_is_active() && ui_flush() != UI_STATUS_OK) {
-        console_write("Sapote: Redwood ledger status redraw failed\n");
+        console_write("Phipia: ledger status redraw failed\n");
     }
 
     if (installed_context.test_scenario == KERNEL_TEST_NORMAL) {
@@ -118,8 +191,8 @@ _Noreturn void kernel_main(uint32_t magic, uintptr_t boot_information)
         kernel_test_complete_boot_ledger(&installed_context);
     }
 
-    if (installed_context.test_scenario == KERNEL_TEST_REDWOOD_PROOF) {
-        kernel_test_complete_redwood_proof();
+    if (installed_context.test_scenario == KERNEL_TEST_PHIPIA_PROOF) {
+        kernel_test_complete_phipia_proof();
     }
 
     if (installed_context.test_scenario == KERNEL_TEST_DEVICE_SUBSTRATE) {
@@ -150,23 +223,23 @@ _Noreturn void kernel_main(uint32_t magic, uintptr_t boot_information)
         kernel_test_complete_linux_uname();
     }
 
-    if (installed_context.test_scenario == KERNEL_TEST_REDWOOD_PROOF_USERLAND) {
-        kernel_test_complete_redwood_proof_userland();
+    if (installed_context.test_scenario == KERNEL_TEST_PHIPIA_PROOF_USERLAND) {
+        kernel_test_complete_phipia_proof_userland();
     }
 
     if (installed_context.test_scenario ==
-            KERNEL_TEST_REDWOOD_PROOF_USERLAND_ABSENT) {
-        kernel_test_complete_redwood_proof_userland_absent();
+            KERNEL_TEST_PHIPIA_PROOF_USERLAND_ABSENT) {
+        kernel_test_complete_phipia_proof_userland_absent();
     }
 
     if (installed_context.test_scenario ==
-            KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE) {
-        kernel_test_complete_redwood_proof_userland_interactive();
+            KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE) {
+        kernel_test_complete_phipia_proof_userland_interactive();
     }
 
     if (installed_context.test_scenario ==
-            KERNEL_TEST_REDWOOD_PROOF_USERLAND_INTERACTIVE_ABSENT) {
-        kernel_test_complete_redwood_proof_userland_interactive_absent();
+            KERNEL_TEST_PHIPIA_PROOF_USERLAND_INTERACTIVE_ABSENT) {
+        kernel_test_complete_phipia_proof_userland_interactive_absent();
     }
 
     if (installed_context.test_scenario >= KERNEL_TEST_FAT32_SYSTEM &&
@@ -228,6 +301,30 @@ _Noreturn void kernel_main(uint32_t magic, uintptr_t boot_information)
 
     if (installed_context.test_scenario == KERNEL_TEST_NATIVE_RELAUNCH) {
         kernel_test_complete_native_relaunch();
+    }
+
+    if (installed_context.test_scenario == KERNEL_TEST_NATIVE_AUDIO) {
+        kernel_test_complete_native_audio();
+    }
+
+    if (installed_context.test_scenario == KERNEL_TEST_NATIVE_SDL) {
+        kernel_test_complete_native_sdl();
+    }
+
+    if (installed_context.test_scenario == KERNEL_TEST_NATIVE_DYNAMIC) {
+        kernel_test_complete_native_dynamic();
+    }
+
+    if (installed_context.test_scenario == KERNEL_TEST_NATIVE_HTTPS) {
+        kernel_test_complete_native_https();
+    }
+
+    if (installed_context.test_scenario == KERNEL_TEST_NATIVE_PHIP) {
+        kernel_test_complete_native_phip();
+    }
+
+    if (installed_context.test_scenario == KERNEL_TEST_EXT4_RECOVERY) {
+        kernel_test_complete_ext4_recovery();
     }
 
     if (installed_context.test_scenario >=

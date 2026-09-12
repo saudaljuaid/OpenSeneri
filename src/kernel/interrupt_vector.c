@@ -3,10 +3,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/apic.h>
-#include <sapote/cpu.h>
-#include <sapote/interrupt_vector.h>
-#include <sapote/interrupts.h>
+#include <phipia/apic.h>
+#include <phipia/cpu.h>
+#include <phipia/interrupt_vector.h>
+#include <phipia/interrupts.h>
 
 #define DYNAMIC_VECTOR_COUNT \
     ((size_t)INTERRUPT_DYNAMIC_LIMIT - (size_t)INTERRUPT_DYNAMIC_BASE)

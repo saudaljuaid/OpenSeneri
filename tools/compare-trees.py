@@ -26,7 +26,7 @@ def main() -> int:
         names = sorted(set(first) | set(second))
         differences = [name for name in names if first.get(name) != second.get(name)]
         raise SystemExit("SDK trees differ: " + ", ".join(differences))
-    print(f"Sapote SDK reproducibility passed: {len(first)} byte-identical files")
+    print(f"Phipia SDK reproducibility passed: {len(first)} byte-identical files")
     return 0
 
 

@@ -2,7 +2,7 @@
 
 # Boot Ledger
 
-Sapote models startup as a validated dependency graph instead of a call list in
+Phipia models startup as a validated dependency graph instead of a call list in
 `kernel_main`. Each descriptor names a stable stage ID, phase, prerequisites,
 provided capabilities, optional policy, irreversible class, and execution
 function.
@@ -11,7 +11,7 @@ function.
 validates and orders them. `src/kernel/kernel.c` executes the resulting plan and
 checks the installed receipts before publishing it read-only.
 
-## Why it exists
+## Purpose
 
 Boot code combines discovery, irreversible machine transitions, optional
 hardware, and tests. A visually plausible call order does not prove that:
@@ -42,7 +42,7 @@ Stages fall into six broad phases:
 5. services: timers, PCI, threads, scheduler, DMA, devices, storage, processes,
    and measured Linux profiles;
 6. proofs and presentation: closing checks, the optional networking/entropy
-   availability decision, desktop activation, and the installed Sapote Redwood
+   availability decision, desktop activation, and the installed Phipia
    proof.
 
 Within those phases, declared capabilities—not descriptor insertion order—form
@@ -94,7 +94,7 @@ absence, mutation detection, and the permanent transcript contract. See
 
 ## Operator surface
 
-Sapote Redwood exposes a read-only summary of installed stages and capabilities.
+Phipia exposes a read-only summary of installed stages and capabilities.
 It does not control or replay startup. The serial transcript remains the full
 diagnostic record, while `boot_report.c` formats discovery data without making
 policy decisions.

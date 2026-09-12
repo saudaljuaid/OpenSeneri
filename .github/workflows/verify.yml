@@ -14,8 +14,8 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
-    sapstudio-foundation:
-        name: sapstudio-foundation
+    media-editor-foundation:
+        name: media-editor-foundation
         runs-on: ubuntu-24.04
         timeout-minutes: 25
         steps:
@@ -23,13 +23,13 @@ jobs:
               uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
             - name: Install the bare-metal Rust target
               run: rustup target add x86_64-unknown-none
-            - name: Verify the mirrored SapStudio foundation
-              run: make -C userspace/sapstudio verify
+            - name: Verify the Media Editor foundation
+              run: make -C userspace/media-editor verify
 
     build-and-boot:
         name: build-and-boot
         runs-on: ubuntu-24.04
-        timeout-minutes: 20
+        timeout-minutes: 60
         steps:
             - name: Check out source
               uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -38,8 +38,8 @@ jobs:
                   sudo sed -i '\|azure.archive.ubuntu.com|d' /etc/apt/apt-mirrors.txt
                   sudo apt-get update
                   sudo apt-get install --yes --no-install-recommends \
-                      binutils clang ffmpeg gcc grub-common grub-pc-bin lld make mtools \
-                      qemu-system-x86 xorriso
+                      binutils clang e2fsprogs ffmpeg gcc grub-common grub-pc-bin lld make mtools \
+                      python3-cryptography qemu-system-x86 xorriso
             - name: Install the Rust bare-metal target
               run: rustup target add x86_64-unknown-none
             - name: Record QEMU fixture capabilities
@@ -50,38 +50,44 @@ jobs:
                   qemu-system-x86_64 -device nvme,help
             - name: Verify the kernel artifact
               run: make verify
-            - name: Capture Sapote Redwood from QEMU
+            - name: Capture the functional Phipia desktop from QEMU
               run: |
                   make iso
-                  python3 tools/capture-redwood.py \
-                      --iso build/sapote.iso \
-                      --system build/userspace/sapote-system-fat32.raw \
-                      --data build/userspace/sapote-data-fat32.raw \
-                      --output build/redwood-captures \
+                  python3 tools/capture-phipia.py \
+                      --iso build/phipia.iso \
+                      --system build/userspace/phipia-system-fat32.raw \
+                      --data build/userspace/phipia-data-fat32.raw \
+                      --output build/phipia-captures \
                       --ffmpeg ffmpeg
                   python3 tools/fat32_image.py inspect \
-                      build/redwood-captures/sapote-redwood-data.raw \
-                      --report build/redwood-captures/fat32-report.json
+                      build/phipia-captures/phipia-data.raw \
+                      --report build/phipia-captures/fat32-report.json
                   python3 - <<'PY'
                   import json
                   import subprocess
                   from pathlib import Path
 
-                  captures = Path("build/redwood-captures")
+                  captures = Path("build/phipia-captures")
                   required = (
-                      "sapote-settings-all.png",
-                      "sapote-settings-desktop.png",
-                      "sapote-settings-appearance-light.png",
-                      "sapote-settings-appearance-dark.png",
-                      "sapote-redwood-files.png",
-                      "sapote-redwood-notes.png",
-                      "sapote-redwood-studio.png",
-                      "sapote-ui-redesign-final-dock.png",
+                      "phipia-desktop.png",
+                      "phipia-taskbar.png",
+                      "phipia-files-windowed.png",
+                      "phipia-files-maximized.png",
+                      "phipia-files-minimized.png",
+                      "phipia-files-restored.png",
+                      "phipia-notes-formatted.png",
+                      "phipia-paint-working.png",
+                      "phipia-media-editor.png",
+                      "phipia-media-editor-exported.png",
+                      "phipia-settings.png",
+                      "phipia-store.png",
+                      "phipia-task-manager.png",
+                      "phipia-desktop-restored.png",
                   )
                   for name in required:
                       if not (captures / name).is_file():
                           raise SystemExit(f"missing QEMU UI evidence: {name}")
-                  video = captures / "sapote-ui-redesign-25s.mp4"
+                  video = captures / "phipia-massive-update-25s.mp4"
                   duration = float(subprocess.check_output((
                       "ffprobe", "-v", "error", "-show_entries",
                       "format=duration", "-of", "default=nk=1:nw=1",
@@ -94,19 +100,25 @@ jobs:
                   # QEMU deliberately has no webcam source. Camera's real
                   # publisher/snapshot contract is exercised by make verify;
                   # the UI must not invent PHOTO00.BMP without a device.
-                  for name in ("NEW1.TXT", "SAPSTUDI.SAP", "EXPORT.BMP"):
+                  for name in (
+                      "NOTES.TXT", "MEDIAEDT.PHI", "PHIPMED.PHI",
+                      "EXPORT.BMP",
+                  ):
                       if name not in names:
                           raise SystemExit(f"missing retained guest artifact: {name}")
                   PY
-            - name: Upload Sapote Redwood captures
+            - name: Upload Phipia desktop captures
+              if: always()
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
-                  name: sapote-redwood-captures
-                  path: build/redwood-captures
+                  name: phipia-desktop-captures
+                  path: build/phipia-captures
                   if-no-files-found: error
             - name: Prove faults and interrupts in QEMU
               run: |
-                  make qemu-test-redwood-proof-userland-interactive
+                  make qemu-test-ext4-recovery
+                  make qemu-test-ext4-powercuts
+                  make qemu-test-phipia-proof-userland-interactive
                   make qemu-test-fat32-data
                   make qemu-test-fat32-nested qemu-test-fat32-growth \
                       qemu-test-fat32-random qemu-test-fat32-truncate \
@@ -116,3 +128,10 @@ jobs:
                       qemu-test-fat32-cache qemu-test-fat32-immutable \
                       qemu-test-fat32-handles
                   make qemu-tests
+            - name: Upload ext4 durability evidence
+              if: ${{ always() }}
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: phipia-ext4-powercuts
+                  path: build/tests/ext4-powercuts
+                  if-no-files-found: error

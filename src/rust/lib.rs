@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The parts of Sapote written in Rust.
+//! The parts of Phipia written in Rust.
 //!
-//! Sapote is a C kernel. Rust is used here for one specific job: parsing input
+//! Phipia is a C kernel. Rust is used here for one specific job: parsing input
 //! this kernel did not produce. A bounds check that the compiler inserts and
 //! cannot be talked out of is worth more on a byte stream from outside than
 //! anywhere else, because that is where a missing one becomes an attacker's
@@ -12,9 +12,11 @@
 //! writing them in Rust would wrap every line in `unsafe` and buy nothing but
 //! a second language in the boot path. `docs/RUST.md` argues that split.
 //!
-//! The whole crate compiles with no heap and no operating system. Unsafe code is
-//! confined to ABI entry points that turn validated C pointers into Rust slices
-//! or write results through validated C pointers.
+//! The whole crate compiles with no operating system. The ext4 parser uses
+//! Phipia's bounded kernel heap through the allocator boundary in [`abi`]; the
+//! older parsers remain allocation-free. Unsafe code is confined to that ABI
+//! boundary, which turns validated C pointers into Rust slices, writes results
+//! through validated C pointers, and calls the kernel allocator and block I/O.
 
 #![no_std]
 #![deny(warnings)]
@@ -23,6 +25,8 @@
 
 pub mod abi;
 pub mod elf64;
+pub(crate) mod elf64_dynamic;
+pub(crate) mod ext4;
 pub mod fat16;
 pub(crate) mod fat32;
 pub(crate) mod linux_fat16;
@@ -37,11 +41,11 @@ pub mod wallpaper;
 
 /// Where a Rust panic goes.
 ///
-/// Nothing in this crate panics: every fallible path returns a status instead,
-/// and the crate is built with `panic=abort` so unwinding does not exist. This
-/// is the backstop for a bounds check the compiler inserted that this code did
-/// not anticipate - which is exactly the class of bug Rust is here to convert
-/// from silent corruption into a stop.
+/// Phipia-authored fallible paths return a status, while compiler-inserted
+/// bounds checks in the reviewed ext4 dependency may still trap. The crate is
+/// built with `panic=abort`, so those traps cannot unwind. This handler turns
+/// an unanticipated metadata-parser defect into a kernel stop rather than
+/// silent corruption.
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     abi::panic()

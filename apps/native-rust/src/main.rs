@@ -6,7 +6,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
-use sapote::{File, OPEN_CREATE, OPEN_TRUNCATE, OPEN_WRITE, Startup, Thread,
+use phipia::{File, OPEN_CREATE, OPEN_TRUNCATE, OPEN_WRITE, Startup, Thread,
     VOLUME_DATA, console_write, monotonic_ns, random, sleep_until, thread_exit};
 
 static THREAD_VALUE: AtomicU32 = AtomicU32::new(0);
@@ -43,10 +43,10 @@ fn application(startup: Startup) -> i32 {
     drop(file);
     let now = match monotonic_ns() { Ok(value) => value, Err(_) => return 17 };
     if sleep_until(now + 100_000).is_err() { return 18; }
-    if console_write(b"SAPOTE RUST PASS alloc file time entropy thread\n").is_err() {
+    if console_write(b"PHIPIA RUST PASS alloc file time entropy thread\n").is_err() {
         return 19;
     }
     0
 }
 
-sapote::sapote_main!(application);
+phipia::phipia_main!(application);

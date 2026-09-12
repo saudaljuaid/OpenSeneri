@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-#ifndef SAPOTE_STDIO_H
-#define SAPOTE_STDIO_H
+#ifndef PHIPIA_STDIO_H
+#define PHIPIA_STDIO_H
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -18,7 +18,7 @@
 #define _IOFBF 2
 
 typedef int64_t fpos_t;
-typedef struct sapote_FILE FILE;
+typedef struct phipia_FILE FILE;
 
 extern FILE *stdin;
 extern FILE *stdout;

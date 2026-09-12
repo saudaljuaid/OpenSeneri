@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# The shipping image. Deliberately outside the workspace: it is the only crate
+# that cannot be built for the host, because it has no `main`, no standard
+# library, and an entry point that only Phipia calls. Keeping it separate means
+# `cargo test` at the workspace root never tries.
+[package]
+name = "media-editor-image"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+repository = "https://github.com/saudaljuaid/Phipia"
+description = "The Media Editor program image for Phipia."
+
+[[bin]]
+name = "media-editor"
+path = "src/main.rs"
+
+[dependencies]
+media-editor-app = { path = "../crates/media-editor-app" }
+media-editor-rt = { path = "../crates/media-editor-rt" }
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false
+codegen-units = 1
+overflow-checks = true
+debug = true
+
+[profile.dev]
+panic = "abort"
+overflow-checks = true
+
+[lints.rust]
+warnings = "deny"
+missing_docs = "deny"

@@ -17,13 +17,13 @@ const MAGIC: [u8; 4] = *b"SRL1";
 /// One length byte then four RGBA bytes.
 const RUN_SIZE: usize = 5;
 
-/// A Sapote policy bound. The framebuffer this draws into is at least this
+/// A Phipia policy bound. The framebuffer this draws into is at least this
 /// wide on every mode the kernel accepts, and a header claiming more is a
 /// header describing a different image than the one that was built.
 const MAX_DIMENSION: u32 = 1024;
 
 /// What a decode can conclude. Mirrored by `enum logo_status` in
-/// `include/sapote/logo.h`; the two are kept in step by a compile-time
+/// `include/phipia/logo.h`; the two are kept in step by a compile-time
 /// assertion on the C side.
 #[repr(i32)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -341,11 +341,7 @@ pub fn self_test() -> bool {
         return false;
     }
 
-    // A run that alone exceeds the whole image.
-    //
-    // Five rather than four: a run of exactly the remaining pixels is legal,
-    // and using it here meant this case fell through to the trailing-bytes
-    // check instead - which is what the first run of this test found.
+    // Five exceeds the four-pixel output; a run of exactly four is valid.
     broken = good;
     broken[8] = 5;
 

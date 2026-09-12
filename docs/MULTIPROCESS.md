@@ -1,19 +1,12 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 
-# Several processes
+# Multiple processes
 
-Until this increment Sapote ran one user process. Not one at a time — one ever.
-The v0.7.0 Ring 3 proof built a private address space, entered it, and tore it
-down before anything else could exist; `paging.c` held exactly one private
-hierarchy, so "another process" was not a state the kernel could be in, and
-there was no saved register set to come back to. Every userspace path above it,
-including the measured BusyBox profiles, inherited that shape.
+Phipia can hold up to four user processes and schedule them cooperatively.
 
-This page describes what replaced it.
+## Process state
 
-## What is true now
-
-Sapote holds up to four user processes at once. Each owns:
+Phipia holds up to four user processes at once. Each owns:
 
 - its own four-level hierarchy, built from the installed one and validated the
   same way;
@@ -32,21 +25,12 @@ and returns to the scheduler instead of to CPL3. Resuming is the same journey
 backwards, so the program continues at the instruction after the one it left
 on, with the registers it left with.
 
-## What is deliberately not true
+## Scheduling model
 
-The schedule is **cooperative**. Processes run with interrupts masked, so a
-process that never yields is a process that keeps the processor. Making the
-schedule preemptive would mean taking the local APIC timer interrupt in CPL3
-and routing it through this path, and that timer is the clock every bounded
-deadline in the kernel is built on. That is a separate change with separate
-evidence, and Sapote does not claim it.
-
-There is also no fork, no exec, no process identifier space, no priority, no
-inter-process communication, no shared memory, no signals, no wait, and no way
-for a user program to create another one. The four processes are created by the
-kernel from one bounded executable. This is multiprocessing in the sense that
-several processes exist, run interleaved, are isolated from each other, and
-fail independently — not in the sense of a process API.
+Scheduling is cooperative, with interrupts masked while a process runs. A
+process retains the CPU until it yields or exits. The kernel creates up to four
+processes from one bounded executable; the interface has no process creation,
+fork, exec, IPC, signals, priorities, shared memory, or wait API.
 
 ## The program
 
@@ -112,7 +96,7 @@ running on.
 
 ## Where it runs
 
-- `include/sapote/multiprocess.h` and `src/kernel/multiprocess.c` hold the
+- `include/phipia/multiprocess.h` and `src/kernel/multiprocess.c` hold the
   process table and the scheduler.
 - `src/arch/x86_64/process.S` gained one function,
   `process_enter_user_context`, which enters CPL3 from a saved register set. It

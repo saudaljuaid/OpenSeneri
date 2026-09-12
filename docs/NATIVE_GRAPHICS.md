@@ -8,7 +8,7 @@ xRGB8888 content up to 1280×720. Success returns a window handle, an event-queu
 handle, and a process-local RW/NX surface address with explicit width, height,
 and byte stride.
 
-The application owns only content pixels. Redwood owns chrome, focus, stacking,
+The application owns only content pixels. Phipia owns chrome, focus, stacking,
 movement, close/maximize/minimize controls, Dock behavior, animation, and
 composition. A maximized native surface is scaled into the larger content
 area and pointer coordinates are mapped back into its original geometry. The
@@ -29,5 +29,5 @@ Pointer capture is explicit and ends on release, close, fault, or process exit.
 
 Applications use `WAIT_READABLE` on the queue. Waiting parks the native thread,
 so another application continues rendering while input is absent. Closing the
-window or queue invalidates that handle immediately; the surface and Redwood
+window or queue invalidates that handle immediately; the surface and Phipia
 slot disappear when both object references are gone or during process cleanup.

@@ -1,6 +1,6 @@
-# Contributing to Sapote
+# Contributing to Phipia
 
-Sapote is a small freestanding kernel. Changes should stay narrow, preserve the
+Phipia is a small freestanding kernel. Changes should stay narrow, preserve the
 existing trust boundaries, and arrive with evidence that matches their risk.
 
 ## Set up a development host
@@ -49,7 +49,7 @@ The pull request's `build-and-boot` check must pass on its latest commit. See
 - Warnings are errors. Keep arithmetic bounded, waits timed, mappings W^X, and
   device ownership explicit.
 - PCI drivers must claim resources before enabling them. DMA teardown disables
-  bus mastering before memory is reclaimed. Sapote has no IOMMU.
+  bus mastering before memory is reclaimed. Phipia has no IOMMU.
 - Preserve supervisor-only kernel mappings and validate every user pointer over
   its complete range before copying.
 - Keep fixtures ordinary local files attached read-only to emulated QEMU
@@ -58,7 +58,7 @@ The pull request's `build-and-boot` check must pass on its latest commit. See
 - Generated kernels, ISOs, fixtures, toolchains, and editor state are not
   committed.
 
-The current architecture and deliberately bounded feature set are summarized in
+The current architecture and bounded feature set are summarized in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The measured Linux compatibility
 surface is specified in
 [`docs/LINUX_SYSCALL_ABI.md`](docs/LINUX_SYSCALL_ABI.md); widening it requires a

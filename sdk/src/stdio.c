@@ -15,8 +15,8 @@
 #define FILE_STATIC 16U
 #define FILE_BUFFER_DIRTY 32U
 
-struct sapote_FILE {
-    sapote_handle_t handle;
+struct phipia_FILE {
+    phipia_handle_t handle;
     unsigned int flags;
     unsigned int error;
     unsigned int eof;
@@ -27,13 +27,13 @@ struct sapote_FILE {
     volatile uint32_t lock;
 };
 
-static struct sapote_FILE input_stream = {
+static struct phipia_FILE input_stream = {
     0U, FILE_READ | FILE_CONSOLE | FILE_STATIC, 0U, 0U, {0}, 0U, 0U, -1, 0U
 };
-static struct sapote_FILE output_stream = {
+static struct phipia_FILE output_stream = {
     0U, FILE_WRITE | FILE_CONSOLE | FILE_STATIC, 0U, 0U, {0}, 0U, 0U, -1, 0U
 };
-static struct sapote_FILE error_stream = {
+static struct phipia_FILE error_stream = {
     0U, FILE_WRITE | FILE_CONSOLE | FILE_STATIC, 0U, 0U, {0}, 0U, 0U, -1, 0U
 };
 FILE *stdin = &input_stream;
@@ -53,11 +53,11 @@ static int flush_locked(FILE *stream)
         long result;
 
         if ((stream->flags & FILE_CONSOLE) != 0U) {
-            result = sapote_syscall2(SAPOTE_SYS_CONSOLE_WRITE,
+            result = phipia_syscall2(PHIPIA_SYS_CONSOLE_WRITE,
                 (uint64_t)(uintptr_t)(stream->buffer + offset),
                 stream->length - offset);
         } else {
-            result = sapote_file_write(stream->handle,
+            result = phipia_file_write(stream->handle,
                 stream->buffer + offset, stream->length - offset);
         }
         if (result <= 0) {
@@ -85,9 +85,9 @@ int fflush(FILE *stream)
         }
         return result;
     }
-    sapote_runtime_lock(&stream->lock);
+    phipia_runtime_lock(&stream->lock);
     result = flush_locked(stream);
-    sapote_runtime_unlock(&stream->lock);
+    phipia_runtime_unlock(&stream->lock);
     return result;
 }
 
@@ -102,47 +102,47 @@ static int mode_flags(const char *mode, uint32_t *open_flags)
     update = strchr(mode, '+') != NULL;
     if (mode[0] == 'r') {
         flags = FILE_READ | (update ? FILE_WRITE : 0);
-        *open_flags = SAPOTE_OPEN_READ |
-            (update ? SAPOTE_OPEN_WRITE : 0U);
+        *open_flags = PHIPIA_OPEN_READ |
+            (update ? PHIPIA_OPEN_WRITE : 0U);
     } else if (mode[0] == 'w') {
         flags = FILE_WRITE | (update ? FILE_READ : 0);
-        *open_flags = SAPOTE_OPEN_WRITE | SAPOTE_OPEN_CREATE |
-            SAPOTE_OPEN_TRUNCATE | (update ? SAPOTE_OPEN_READ : 0U);
+        *open_flags = PHIPIA_OPEN_WRITE | PHIPIA_OPEN_CREATE |
+            PHIPIA_OPEN_TRUNCATE | (update ? PHIPIA_OPEN_READ : 0U);
     } else if (mode[0] == 'a') {
         flags = FILE_WRITE | FILE_APPEND | (update ? FILE_READ : 0);
-        *open_flags = SAPOTE_OPEN_WRITE | SAPOTE_OPEN_CREATE |
-            (update ? SAPOTE_OPEN_READ : 0U);
+        *open_flags = PHIPIA_OPEN_WRITE | PHIPIA_OPEN_CREATE |
+            (update ? PHIPIA_OPEN_READ : 0U);
     }
     return flags;
 }
 
 FILE *fopen(const char *path, const char *mode)
 {
-    struct sapote_runtime_path parsed;
+    struct phipia_runtime_path parsed;
     uint32_t open_flags = 0U;
     const int flags = mode_flags(mode, &open_flags);
     long handle;
     FILE *stream;
 
-    if (flags == 0 || sapote_runtime_path(path, &parsed) != 0) {
+    if (flags == 0 || phipia_runtime_path(path, &parsed) != 0) {
         errno = EINVAL;
         return NULL;
     }
-    handle = sapote_file_open(parsed.volume, parsed.text, open_flags);
+    handle = phipia_file_open(parsed.volume, parsed.text, open_flags);
     if (handle < 0) {
         errno = (int)-handle;
         return NULL;
     }
     stream = calloc(1U, sizeof(*stream));
     if (stream == NULL) {
-        (void)sapote_handle_close((sapote_handle_t)handle);
+        (void)phipia_handle_close((phipia_handle_t)handle);
         return NULL;
     }
-    stream->handle = (sapote_handle_t)handle;
+    stream->handle = (phipia_handle_t)handle;
     stream->flags = (unsigned int)flags;
     stream->pushed = -1;
     if ((flags & FILE_APPEND) != 0 &&
-        sapote_file_seek(stream->handle, 0, SAPOTE_SEEK_END) < 0) {
+        phipia_file_seek(stream->handle, 0, PHIPIA_SEEK_END) < 0) {
         (void)fclose(stream);
         return NULL;
     }
@@ -163,7 +163,7 @@ FILE *freopen(const char *path, const char *mode, FILE *stream)
         return NULL;
     }
     (void)fflush(stream);
-    (void)sapote_handle_close(stream->handle);
+    (void)phipia_handle_close(stream->handle);
     *stream = *replacement;
     free(replacement);
     return stream;
@@ -178,7 +178,7 @@ int fclose(FILE *stream)
         return EOF;
     }
     result = fflush(stream);
-    if (sapote_handle_close(stream->handle) < 0) {
+    if (phipia_handle_close(stream->handle) < 0) {
         result = EOF;
     }
     free(stream);
@@ -204,7 +204,7 @@ static size_t read_locked(void *pointer, size_t bytes, FILE *stream)
         stream->pushed = -1;
     }
     if ((stream->flags & FILE_CONSOLE) != 0U && completed < bytes) {
-        const long result = sapote_console_read(output + completed,
+        const long result = phipia_console_read(output + completed,
             bytes - completed);
 
         if (result < 0) {
@@ -227,7 +227,7 @@ static size_t read_locked(void *pointer, size_t bytes, FILE *stream)
             completed += chunk;
             continue;
         }
-        const long result = sapote_file_read(stream->handle, stream->buffer,
+        const long result = phipia_file_read(stream->handle, stream->buffer,
             sizeof(stream->buffer));
 
         if (result < 0) {
@@ -256,9 +256,9 @@ size_t fread(void *pointer, size_t size, size_t count, FILE *stream)
         return 0U;
     }
     bytes = size * count;
-    sapote_runtime_lock(&stream->lock);
+    phipia_runtime_lock(&stream->lock);
     completed = read_locked(pointer, bytes, stream);
-    sapote_runtime_unlock(&stream->lock);
+    phipia_runtime_unlock(&stream->lock);
     return size == 0U ? 0U : completed / size;
 }
 
@@ -278,8 +278,8 @@ static size_t write_locked(const void *pointer, size_t bytes, FILE *stream)
         long seek_result = 0;
 
         if ((stream->flags & FILE_CONSOLE) == 0U && unread != 0U) {
-            seek_result = sapote_file_seek(stream->handle, -(int64_t)unread,
-                SAPOTE_SEEK_CURRENT);
+            seek_result = phipia_file_seek(stream->handle, -(int64_t)unread,
+                PHIPIA_SEEK_CURRENT);
         }
         if (seek_result < 0) {
             stream->error = 1U;
@@ -322,9 +322,9 @@ size_t fwrite(const void *pointer, size_t size, size_t count, FILE *stream)
         return 0U;
     }
     bytes = size * count;
-    sapote_runtime_lock(&stream->lock);
+    phipia_runtime_lock(&stream->lock);
     completed = write_locked(pointer, bytes, stream);
-    sapote_runtime_unlock(&stream->lock);
+    phipia_runtime_unlock(&stream->lock);
     return size == 0U ? 0U : completed / size;
 }
 
@@ -337,9 +337,9 @@ int fseek(FILE *stream, long offset, int origin)
         errno = EINVAL;
         return -1;
     }
-    sapote_runtime_lock(&stream->lock);
+    phipia_runtime_lock(&stream->lock);
     if (flush_locked(stream) == EOF) {
-        sapote_runtime_unlock(&stream->lock);
+        phipia_runtime_unlock(&stream->lock);
         return -1;
     }
     if ((stream->flags & FILE_READ) != 0U && origin == SEEK_CUR) {
@@ -349,8 +349,8 @@ int fseek(FILE *stream, long offset, int origin)
     stream->length = 0U;
     stream->pushed = -1;
     stream->eof = 0U;
-    result = sapote_file_seek(stream->handle, offset, (uint32_t)origin);
-    sapote_runtime_unlock(&stream->lock);
+    result = phipia_file_seek(stream->handle, offset, (uint32_t)origin);
+    phipia_runtime_unlock(&stream->lock);
     if (result < 0) {
         errno = (int)-result;
         return -1;
@@ -366,14 +366,14 @@ long ftell(FILE *stream)
         errno = EINVAL;
         return -1L;
     }
-    sapote_runtime_lock(&stream->lock);
-    result = sapote_file_seek(stream->handle, 0, SAPOTE_SEEK_CURRENT);
+    phipia_runtime_lock(&stream->lock);
+    result = phipia_file_seek(stream->handle, 0, PHIPIA_SEEK_CURRENT);
     if (result >= 0 && (stream->flags & FILE_BUFFER_DIRTY) != 0U) {
         result += (long)stream->length;
     } else if (result >= 0 && (stream->flags & FILE_READ) != 0U) {
         result -= (long)(stream->length - stream->position);
     }
-    sapote_runtime_unlock(&stream->lock);
+    phipia_runtime_unlock(&stream->lock);
     if (result < 0) {
         errno = (int)-result;
         return -1L;
@@ -602,30 +602,30 @@ int sprintf(char *output, const char *text, ...)
 
 int remove(const char *path)
 {
-    struct sapote_runtime_path parsed;
-    struct sapote_path request;
+    struct phipia_runtime_path parsed;
+    struct phipia_path request;
     long result;
-    if (sapote_runtime_path(path, &parsed) != 0) return -1;
+    if (phipia_runtime_path(path, &parsed) != 0) return -1;
     request.address = (uint64_t)(uintptr_t)parsed.text;
     request.length = (uint32_t)parsed.length;
     request.volume = parsed.volume; request.reserved = 0U;
-    result = sapote_syscall2(SAPOTE_SYS_PATH_UNLINK,
+    result = phipia_syscall2(PHIPIA_SYS_PATH_UNLINK,
         (uint64_t)(uintptr_t)&request, 0U);
-    return sapote_result(result);
+    return phipia_result(result);
 }
 int rename(const char *source, const char *destination)
 {
-    struct sapote_runtime_path from, to;
-    struct sapote_rename_request request;
-    if (sapote_runtime_path(source, &from) != 0 ||
-        sapote_runtime_path(destination, &to) != 0) return -1;
-    request.size = sizeof(request); request.version = SAPOTE_ABI_VERSION;
-    request.source = (struct sapote_path){(uint64_t)(uintptr_t)from.text,
+    struct phipia_runtime_path from, to;
+    struct phipia_rename_request request;
+    if (phipia_runtime_path(source, &from) != 0 ||
+        phipia_runtime_path(destination, &to) != 0) return -1;
+    request.size = sizeof(request); request.version = PHIPIA_ABI_VERSION;
+    request.source = (struct phipia_path){(uint64_t)(uintptr_t)from.text,
         (uint32_t)from.length, from.volume, 0U};
-    request.destination = (struct sapote_path){(uint64_t)(uintptr_t)to.text,
+    request.destination = (struct phipia_path){(uint64_t)(uintptr_t)to.text,
         (uint32_t)to.length, to.volume, 0U};
     request.flags = 0U; request.reserved = 0U;
-    return sapote_result(sapote_syscall1(SAPOTE_SYS_PATH_RENAME,
+    return phipia_result(phipia_syscall1(PHIPIA_SYS_PATH_RENAME,
         (uint64_t)(uintptr_t)&request));
 }
 int setvbuf(FILE *stream, char *buffer, int mode, size_t size)

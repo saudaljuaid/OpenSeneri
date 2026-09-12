@@ -2,17 +2,21 @@
 
 # Native userspace ABI v1
 
-The Sapote native ABI is the kernel contract for static Ring 3 applications.
+The Phipia native ABI is the kernel contract for static Ring 3 applications.
 It is separate from the three measured Linux/BusyBox profiles. The canonical
-machine-readable definitions are under `include/sapote/abi/`; the SDK installs
-the same headers under `sdk/include/sapote/abi/`.
+machine-readable definitions are under `include/phipia/abi/`; the SDK installs
+the same headers under `sdk/include/phipia/abi/`.
 
 ## Calling and result convention
 
 On x86_64, `RAX` contains the syscall number. Arguments zero through five use
 `RDI`, `RSI`, `RDX`, `R10`, `R8`, and `R9`. `SYSCALL` destroys `RCX` and `R11`.
+Native syscall entry switches to a dedicated, bounded 64 KiB kernel stack.
+Its low-end canary is checked during disarm; the TSS `RSP0` stack remains
+reserved for privilege-changing interrupts and is not reused by deep filesystem
+or package-service syscall paths.
 Results are returned in `RAX`: zero or a positive value is success and a
-negative `sapote_errno` value is failure. Unknown numbers return `-ENOSYS`.
+negative `phipia_errno` value is failure. Unknown numbers return `-ENOSYS`.
 
 Every public record uses fixed-width fields, begins with `size` and `version`
 where evolution is expected, and names its reserved fields. Callers set every
@@ -34,10 +38,12 @@ foreign-process, immutable executable, or read-only output mapping.
 | `0x0000` | ABI version, exit, console read/write, handle close/duplicate | Writes are immediate. Console read parks the thread until keyboard input. Close consumes one handle immediately; duplicate creates another reference to the same typed object. |
 | `0x0100` | anonymous map and unmap | Synchronous. Maps are private, page-granular, RW/NX or R/NX, optionally guarded, and charged to the manifest limit. Successful unmap consumes the complete named mapping. |
 | `0x0200` | file, directory, path mutation, stat, seek, sync, free space | Synchronous bounded FAT32 operations. Open calls return owned typed handles. Reads and writes may return a documented partial byte count; metadata mutations either publish a valid result or fail. |
-| `0x0300` | monotonic time, sleep, wait, entropy, timers, cancellation | Sleep and wait park only the calling native thread. Wait copies at most eight items into the kernel and copies the full set back on completion. Timeout is `-ETIMEDOUT`; cancellation is `-ECANCELED`. |
+| `0x0300` | monotonic/realtime clocks, sleep, wait, entropy, timers, cancellation | Realtime is UTC Unix seconds. Sleep, wait, and every deadline remain monotonic. Sleep and wait park only the calling native thread. Wait copies at most eight items into the kernel and copies the full set back on completion. Timeout is `-ETIMEDOUT`; cancellation is `-ECANCELED`. |
 | `0x0400` | window creation, surface present, event read, pointer capture | Window creation returns owned window and event-queue handles plus one process-local RW/NX surface mapping. Present consumes no ownership. Event read is nonblocking; wait on the queue before retrying. |
 | `0x0500` | DNS, TCP, UDP, address query | Open calls return owned stream/datagram handles. Deadlines are absolute monotonic nanoseconds. Shutdown changes stream direction state but does not close the handle. |
 | `0x0600` | thread create/exit/join, FS-base TLS, futex wait/wake | Create returns an owned thread handle. Join parks and reports the target exit status; the handle is still closed explicitly. Futex wait compares one aligned user `u32` before parking. |
+| `0x0700` | PCM output open, submit, volume, drain | Open returns a typed HDA output handle. Submission is one fixed 4 KiB PCM chunk; drain may park the calling thread. |
+| `0x0800` | package upload and transaction control | Requires the privileged `packages` capability. Upload bytes live only in a kernel-private Data path; the controller separately authenticates repository metadata, binds each payload, snapshots installed authority, and enters bootstrap or prepare/commit. |
 
 ## Per-call contract
 
@@ -92,12 +98,14 @@ is immutable; writable Data paths are rooted below the application namespace.
 | `0x0300 TIME_MONOTONIC()` | Nanoseconds | I | Reads the monotonic clock; no resource change. |
 | `0x0301 SLEEP_UNTIL(deadline_ns)` | `0` | P | Parks the caller until the absolute deadline. Process teardown cancels the saved wait state. A past deadline returns immediately. |
 | `0x0302 WAIT(*request)` | Ready count or `-ETIMEDOUT` | P | Copies at most eight items before parking and copies the complete set back on wake. Handles remain caller-owned; close or cancellation makes the observed item report its defined state. |
-| `0x0303 RANDOM(buffer, length)` | Bytes written | K | Borrows a writable range and fills it in bounded chunks. A positive partial result is reported only for bytes already copied. |
+| `0x0303 RANDOM(buffer, length)` | Bytes written | K | Borrows a writable range and fills it from the bounded non-cryptographic generator. A positive partial result is reported only for bytes already copied; cryptographic callers use `RANDOM_STRONG`. |
 | `0x0304 TIMER_CREATE()` | Owned timer handle | I | Creates an initially disarmed typed wait object. Close explicitly or at process exit. |
 | `0x0305 TIMER_SET(*request)` | `0` | I | Replaces the timer's absolute deadline. The timer remains owned and reusable; setting does not transfer it to a waiter. |
 | `0x0306 CANCEL(handle)` | `0` | K | Disarms a timer or sets cancellation on a stream/datagram object. It neither closes nor consumes the handle; unsupported handle types fail. |
+| `0x0307 TIME_REALTIME()` | UTC Unix seconds or `-EIO` | K | Performs one bounded coherent CMOS/RTC read. It owns no object. RTC validity does not affect monotonic deadlines. |
+| `0x0308 RANDOM_STRONG(buffer, length)` | Bytes written or `-EIO` | K | Bypasses the non-cryptographic generator and copies only repetition-checked RDSEED/RDRAND output. It fails closed when strong hardware entropy is unavailable. |
 
-### Redwood window, surface, and input
+### Phipia window, surface, and input
 
 | Number and signature | Result | Mode | Ownership, concurrency, and cleanup |
 | --- | --- | --- | --- |
@@ -138,6 +146,33 @@ for applications that must keep another userspace thread runnable.
 | `0x0605 FUTEX_WAIT(*request)` | `0`, `-EAGAIN`, or timeout | P | Atomically validates and compares one aligned mapped `u32` before parking. The word remains userspace-owned; process teardown cancels the wait. |
 | `0x0606 FUTEX_WAKE(*request)` | Threads woken | I | Wakes up to the bounded requested count for one exact process-local address. It never owns or modifies the futex word. |
 
+### Package upload and transaction control
+
+| Number and signature | Result | Mode | Ownership, concurrency, and cleanup |
+| --- | --- | --- | --- |
+| `0x0800 PACKAGE_UPLOAD_OPEN()` | Owned package-upload handle | K | Allocates one of four kernel slots and a private 8.3-safe Data file. The file is inaccessible through the caller's application namespace. |
+| `0x0801 PACKAGE_UPLOAD_WRITE(*request)` | Bytes written | K | Copies at most 4 KiB into the private file and advances an incremental kernel SHA-256. Any storage failure poisons the upload so it can only be closed. |
+| `0x0802 PACKAGE_UPLOAD_SEAL(*request)` | `0` | K | Closes the writer, requires exact nonzero length and SHA-256 from the privileged caller, then flushes Data. The all-or-nothing output reports actual length, digest, and sealed/durable flags; it does not authenticate the metadata's origin. |
+| `0x0803 PACKAGE_CONTROL_OPEN_INSTALL(*request)` | Owned package-control handle | K | With `OPEN_INSTALL`, copies and authenticates the sealed repository upload with platform trust, realtime freshness, and the durable repository rollback floor, snapshots recovered installed authority, and produces one bounded install/update plan. `OPEN_REPAIR` retains authenticated installed metadata even when owned bytes are damaged and plans exact signed replacements. `OPEN_REMOVE` requires an invalid repository handle and derives a dependency-safe removal plan solely from authenticated installed state. |
+| `0x0804 PACKAGE_CONTROL_ITEM(*request)` | `0` | K | Copies one exact plan item, including its repository-bound length, SHA-256, and download path. No pointer into privileged parser state is exposed. |
+| `0x0805 PACKAGE_CONTROL_ATTACH(*request)` | `0` | K | Requires a sealed upload whose length and digest match the named plan item, copies it into the controller, and re-authenticates the signed package against the repository entry. The upload handle remains caller-owned. |
+| `0x0806 PACKAGE_CONTROL_COMMIT(*request)` | `0` | K | Rebuilds and encodes canonical state, then bootstraps generation one or prepares and commits an update or removal. A durability refusal after prepare leaves the control handle retryable; `PREPARED` and `COMMITTED` report the exact state. |
+
+The installed VFS currently bounds one staged file at 16 MiB, so the upload
+ABI publishes that real limit even though package format v3 can represent a
+larger host-side container. A final close durably unlinks the upload; duplicate
+handles share it and only the last close performs cleanup.
+
+One package-control session may be live system-wide. Its native handle may be
+duplicated; the final close releases the authenticated repository snapshot,
+installed-state snapshot, and copied payloads. Process teardown performs the
+same close. The v1 control profile admits at most eight changed packages with
+4 MiB of aggregate package bytes. Removal is exposed without a repository or
+payload upload. `phip repair` uses the repair flag with a signed repository and
+the same payload-binding path. Install/update/repair advance a checksummed,
+monotonic repository-version floor before package staging, so a signed older
+index remains refused across reboot and crash recovery.
+
 Directory enumeration reports the canonical printable form of each accepted
 ASCII 8.3 name in lower case. Path lookup remains case-insensitive.
 
@@ -146,7 +181,7 @@ DNS and stream/datagram operations pump bounded protocol state, recheck their
 absolute deadline and completion state, then halt the core until a device or
 timer interrupt. They never poll in a userspace or kernel spin loop.
 
-`include/sapote/abi/base.h` is the syscall-number and error-number registry.
+`include/phipia/abi/base.h` is the syscall-number and error-number registry.
 The service-specific headers define exact records, limits, flags, event values,
 pixel format, IPv4 endpoint encoding, and static size checks.
 

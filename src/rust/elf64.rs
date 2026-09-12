@@ -4,7 +4,7 @@
 //! System V ELF Object File Format 4.3 defines the byte fields.  This module
 //! decodes them individually from a checked slice.  It never overlays an ELF
 //! structure, retains caller storage, allocates, or performs machine-state
-//! work.  Sapote-specific collision policy remains in C.
+//! work.  Phipia-specific collision policy remains in C.
 
 /// The accepted file length of the v0.7.0 Ring 3 proof executable.
 pub const FILE_BYTES: usize = 128;

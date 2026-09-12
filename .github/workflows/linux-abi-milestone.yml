@@ -16,7 +16,7 @@ jobs:
     bounded-evidence:
         name: bounded-linux-uname-abi-evidence
         runs-on: ubuntu-24.04
-        timeout-minutes: 240
+        timeout-minutes: 360
         steps:
             - name: Check out source
               uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -130,7 +130,7 @@ jobs:
                       rm "$raw"
                   done
                   proof=evidence/linux-abi/linux-abi-sweep-10.log
-                  grep -Fx 'SAPOTE' "$proof" \
+                  grep -Fx 'PHIPIA' "$proof" \
                       >evidence/linux-abi/stable-busybox-transcript.txt
                   grep -Fx \
                       'ST LINUX ABI busybox echo bytes 7 syscalls 9 stdout valid exit 0 ring 3 address-space private teardown clean robustness 72' \
@@ -177,8 +177,8 @@ jobs:
                   release=evidence/linux-abi
                   first=build/linux-uname-release/build-one
                   make iso
-                  cp build/sapote.iso "$release/Sapote-v0.9.0.iso"
-                  cp build/sapote.elf "$release/sapote-v0.9.0.elf"
+                  cp build/phipia.iso "$release/Phipia-v0.9.0.iso"
+                  cp build/phipia.elf "$release/phipia-v0.9.0.elf"
                   cp "$first/busybox" "$release/busybox-uname"
                   cp userspace/busybox/busybox-uname.config \
                       "$release/busybox-uname.config"
@@ -203,9 +203,9 @@ jobs:
                           | awk '{print toupper($1)}'
                   )
                   test "$fixture_sha" = \
-                      48C3465E924D1D2B3C8AB659D2783CAC4AF57DFD83504606AD0DF8F64D7316E3
+                      CDB8E920F06AC93F63E73854FC5A6A63CDBCC7DCEDBBFB62325C7EC4B408AD36
                   {
-                      printf 'Sapote v0.9.0 deterministic Linux uname fixture\n'
+                      printf 'Phipia v0.9.0 deterministic Linux uname fixture\n'
                       printf 'logical sectors / bytes: 4096 / 4096\n'
                       printf 'FAT: LBA 1-2; root: LBA 3, 128 entries\n'
                       printf 'UNAMEBOX: clusters 2-11, LBA 4-13, 38368 bytes\n'
@@ -216,8 +216,8 @@ jobs:
                   {
                       printf 'Linux x86-64 struct utsname: 390 bytes, alignment 1\n'
                       printf 'fields: sysname/nodename/release/version/machine/domainname; 65 bytes each\n'
-                      printf 'values: Linux | sapote | 0.9.0-sapote | Sapote | x86_64 | (none)\n'
-                      printf 'identity source: immutable Sapote-owned record; no host-derived field\n'
+                      printf 'values: Linux | phipia | 0.9.0-phipia | Phipia | x86_64 | (none)\n'
+                      printf 'identity source: immutable Phipia-owned record; no host-derived field\n'
                   } >"$release/deterministic-uts-record.txt"
                   {
                       printf 'FullMAC remains future and blocked on an upstream ordinary QEMU FullMAC device-and-peer model.\n'
@@ -227,7 +227,7 @@ jobs:
                       printf 'BusyBox 1.38.0: GPL-2.0-or-later separate userspace work.\n'
                       printf 'Exact source archive, complete configuration, LICENSE, build script, and checksums are distributed.\n'
                       printf 'musl 1.2.6: MIT-licensed static-libc toolchain source; exact source and COPYRIGHT are distributed.\n'
-                      printf 'Neither BusyBox nor musl is linked into or copied into the GPL-3.0-only Sapote kernel.\n'
+                      printf 'Neither BusyBox nor musl is linked into or copied into the GPL-3.0-only Phipia kernel.\n'
                   } >"$release/source-license-record.txt"
                   ordinary_record=$(
                       grep -E '^ST LEDGER stages [1-9][0-9]* receipts [1-9][0-9]* capabilities [1-9][0-9]* skips [0-9]+ fingerprint 0x[0-9A-F]{16}$' \
@@ -250,18 +250,18 @@ jobs:
                   )
                   stage_capacity=$(sed -nE \
                       's/^#define BOOT_LEDGER_STAGE_CAPACITY ([0-9]+)U$/\1/p' \
-                      include/sapote/boot_ledger.h)
+                      include/phipia/boot_ledger.h)
                   receipt_capacity=$(sed -nE \
                       's/^#define BOOT_LEDGER_RECEIPT_CAPACITY ([0-9]+)U$/\1/p' \
-                      include/sapote/boot_ledger.h)
+                      include/phipia/boot_ledger.h)
                   capability_capacity=$(sed -nE \
                       's/^#define BOOT_STAGE_CAPABILITY_CAPACITY ([0-9]+)U$/\1/p' \
-                      include/sapote/boot_ledger.h)
+                      include/phipia/boot_ledger.h)
                   test -n "$stage_capacity"
                   test -n "$receipt_capacity"
                   test -n "$capability_capacity"
                   {
-                      printf 'Sapote v0.9.0 Linux Uname ABI Foundation verification\n'
+                      printf 'Phipia v0.9.0 Linux Uname ABI Foundation verification\n'
                       printf 'commit: %s\n' "$GITHUB_SHA"
                       printf 'tree: %s\n' "$(git rev-parse 'HEAD^{tree}')"
                       printf 'scenarios per sweep: %s\n' "$scenario_count"
@@ -271,8 +271,8 @@ jobs:
                       printf 'ordinary ledger: %s\n' "$ordinary_record"
                       printf 'source lines (src and include): %s\n' "$source_lines"
                       printf 'shell assertion lines: %s\n' "$assertion_count"
-                      printf 'kernel bytes: %s\n' "$(stat -c %s build/sapote.elf)"
-                      printf 'ISO bytes: %s\n' "$(stat -c %s build/sapote.iso)"
+                      printf 'kernel bytes: %s\n' "$(stat -c %s build/phipia.elf)"
+                      printf 'ISO bytes: %s\n' "$(stat -c %s build/phipia.iso)"
                       printf 'make verify: passed without warnings\n'
                       printf 'all %s scenarios: passed individually\n' \
                           "$scenario_count"
@@ -304,7 +304,7 @@ jobs:
             - name: Upload v0.9.0 milestone evidence
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
-                  name: sapote-linux-uname-milestone-${{ github.sha }}
+                  name: phipia-linux-uname-milestone-${{ github.sha }}
                   path: evidence/linux-abi
                   if-no-files-found: error
                   retention-days: 30

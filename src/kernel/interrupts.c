@@ -3,16 +3,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/apic.h>
-#include <sapote/console.h>
-#include <sapote/cpu.h>
-#include <sapote/interrupts.h>
-#include <sapote/ioapic.h>
-#include <sapote/interrupt_vector.h>
-#include <sapote/native_process.h>
-#include <sapote/pic.h>
-#include <sapote/thread.h>
-#include <sapote/test.h>
+#include <phipia/apic.h>
+#include <phipia/console.h>
+#include <phipia/cpu.h>
+#include <phipia/interrupts.h>
+#include <phipia/ioapic.h>
+#include <phipia/interrupt_vector.h>
+#include <phipia/native_process.h>
+#include <phipia/pic.h>
+#include <phipia/thread.h>
+#include <phipia/test.h>
 
 #define IDT_GATE_PRESENT UINT8_C(0x80)
 #define IDT_GATE_INTERRUPT UINT8_C(0x0E)
@@ -284,7 +284,7 @@ static _Noreturn void fatal_interrupt(struct interrupt_frame *frame)
     }
 
     fatal_depth = 1U;
-    console_write("Sapote FATAL INTERRUPT\n");
+    console_write("Phipia FATAL INTERRUPT\n");
     console_write("  vector=");
     console_write_u64(frame->vector);
     console_write(" name=");

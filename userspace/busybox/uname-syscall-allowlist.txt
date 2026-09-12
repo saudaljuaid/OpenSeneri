@@ -1,7 +1,7 @@
-# Sapote v0.9.0 BusyBox uname syscall contract
+# Phipia v0.9.0 BusyBox uname syscall contract
 #
 # This is the normalized independent trace of the exact binary identified
-# below. Addresses whose host values vary are expressed by their Sapote fixture
+# below. Addresses whose host values vary are expressed by their Phipia fixture
 # meaning. The host execve that installs the image is not part of the in-kernel
 # allowlist.
 #

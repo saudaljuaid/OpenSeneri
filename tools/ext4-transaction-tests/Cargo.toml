@@ -1,0 +1,10 @@
+[package]
+name = "phipia-ext4-transaction-tests"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.86"
+license = "GPL-3.0-only"
+publish = false
+
+[dependencies]
+ext4plus = { path = "../../vendor/ext4plus", default-features = false, features = ["std", "sync"] }

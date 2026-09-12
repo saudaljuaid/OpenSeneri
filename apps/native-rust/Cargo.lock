@@ -3,12 +3,12 @@
 version = 4
 
 [[package]]
-name = "sapote"
+name = "phipia"
 version = "0.1.0"
 
 [[package]]
-name = "sapote-native-rust-proof"
+name = "phipia-native-rust-proof"
 version = "0.1.0"
 dependencies = [
- "sapote",
+ "phipia",
 ]

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-only
+[package]
+name = "media-editor-abi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The one boundary between Media Editor and Phipia."
+
+[dependencies]
+media-editor-core = { path = "../media-editor-core" }
+
+[lints.rust]
+warnings = "deny"
+missing_docs = "deny"

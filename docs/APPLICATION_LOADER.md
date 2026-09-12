@@ -2,10 +2,14 @@
 
 # Native application loader and security model
 
-`native_process_spawn()` accepts a manifest path on the read-only System FAT32
-volume. It reads the fixed binary manifest and named executable once, passes
-both byte slices to the safe Rust validator, and installs mappings only after
-validation succeeds.
+`native_process_spawn()` accepts a manifest path on the read-only System
+volume. The privileged `native_process_launch_installed()` path accepts only
+the canonical `pkgstate/gen/<high>/<low>/root/...` generation namespace on
+Data. In either case the executable must be a safe basename beside its
+manifest. The loader reads both files once, passes their byte slices to the safe
+Rust validator, and installs mappings only after validation succeeds. This
+allows a package-service-verified immutable generation to launch after reboot
+without copying its executable back to System.
 
 Version 1 admits x86_64 little-endian static `ET_EXEC` images. It permits at
 most 32 program headers and 16 `PT_LOAD` segments inside
@@ -24,8 +28,8 @@ own bounded stack and guard.
 
 Initial registers pass `argc`, `argv`, and environment in `RDI`, `RSI`, and
 `RDX`. The deterministic stack contains the manifest arguments, a
-`SAPOTE_ABI=1` environment entry, and an auxiliary vector containing page size,
-entry address, Sapote ABI version, and TLS image/size/alignment records. All
+`PHIPIA_ABI=1` environment entry, and an auxiliary vector containing page size,
+entry address, Phipia ABI version, and TLS image/size/alignment records. All
 padding is zero and the resulting stack obeys the x86_64 alignment contract.
 
 Every partial failure unwinds installed pages, aliases, frames, handles, TLS,
@@ -33,3 +37,24 @@ and address-space state. A userspace exception marks only its thread/process as
 faulted; the scheduler restores the kernel CR3 and FS base before cleanup. A
 failed image or crashed application must leave the native resource census equal
 to the pre-launch census.
+
+## Dynamic native images
+
+When static admission refuses only the ELF type, the loader reuses the
+manifest/executable authentication boundary and attempts bounded `ET_DYN`
+admission. A root with dependencies must name an authenticated System-volume
+catalog. Each exact SONAME is resolved relative to that catalog's packaged
+resource directory, hashed before parsing, and loaded once in breadth-first
+`DT_NEEDED` order.
+
+Installed Data-volume images are currently restricted to static executables;
+dynamic dependency catalogs remain System-volume-only until package generation
+resolution binds every DSO to the same authenticated installed authority.
+
+Relocation occurs in private kernel heap buffers. The mapper then installs
+non-overlapping root/library mappings with final R, RX, RW, and RELRO
+permissions, creates the combined variant-II TLS template, removes writable
+executable aliases, and enters constructors through a generated RX trampoline.
+`SYS_EXIT` is redirected once through the reverse destructor trampoline before
+ordinary teardown. See [`DYNAMIC_LINKING.md`](DYNAMIC_LINKING.md) for admitted
+relocations, trust relationships, bounds, evidence, and deliberate limits.

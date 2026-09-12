@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-#ifndef SAPOTE_ERRNO_H
-#define SAPOTE_ERRNO_H
+#ifndef PHIPIA_ERRNO_H
+#define PHIPIA_ERRNO_H
 
 extern _Thread_local int errno;
 
@@ -18,6 +18,7 @@ extern _Thread_local int errno;
 #define EISDIR 21
 #define EINVAL 22
 #define ENOSPC 28
+#define EROFS 30
 #define EMFILE 24
 #define EPIPE 32
 #define ERANGE 34

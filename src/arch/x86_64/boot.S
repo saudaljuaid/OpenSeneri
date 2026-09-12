@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Sapote: Multiboot2 entry and the controlled transition to long mode. */
+/* Phipia: Multiboot2 entry and the controlled transition to long mode. */
 .set MB2_HEADER_MAGIC, 0xE85250D6
 .set MB2_BOOT_MAGIC,   0x36D76289
 .set MB2_ARCH_I386,    0
@@ -45,7 +45,7 @@ multiboot_header:
     .long 8
 multiboot_header_end:
 
-.section .boot.text, "ax"
+.section .boot.text32, "ax"
 .code32
 .global _start
 .type _start, @function
@@ -142,8 +142,11 @@ _start:
 .halt32:
     hlt
     jmp .halt32
+.size _start, . - _start
 
+.section .boot.text64, "ax"
 .code64
+.type long_mode_start, @function
 long_mode_start:
     movw $0x10, %ax
     movw %ax, %ds
@@ -161,7 +164,7 @@ long_mode_start:
     cli
     hlt
     jmp .halt64
-.size _start, . - _start
+.size long_mode_start, . - long_mode_start
 
 .section .rodata, "a"
 .balign 8

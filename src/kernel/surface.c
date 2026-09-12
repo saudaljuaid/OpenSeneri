@@ -3,11 +3,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/framebuffer.h>
-#include <sapote/cpu.h>
-#include <sapote/heap.h>
-#include <sapote/paging.h>
-#include <sapote/surface.h>
+#include <phipia/framebuffer.h>
+#include <phipia/cpu.h>
+#include <phipia/heap.h>
+#include <phipia/paging.h>
+#include <phipia/surface.h>
 
 /*
  * A cached picture and the one rectangle that changed.

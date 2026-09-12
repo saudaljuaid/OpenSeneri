@@ -1,0 +1,10 @@
+BearSSL release: 0.6
+Official repository: https://www.bearssl.org/git/BearSSL
+Tag: v0.6 (annotated tag object 7d8e767e79bb1750345e571ec89cca1da13b52df)
+Commit: 8ef7680081c61b486622f2d983c0d3d21e83caad
+Commit date: 2018-08-14 22:41:04 +0200
+Git tree: 3d0709034c2b5eb735d43ff639411ac31e76153b
+License: MIT (LICENSE.txt)
+
+Vendored paths: inc, src, LICENSE.txt, README.txt
+Excluded paths: build, conf, mk, samples, T0, test, tools, T0Comp.exe

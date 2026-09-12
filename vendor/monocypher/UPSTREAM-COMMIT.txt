@@ -1,0 +1,13 @@
+Monocypher release: 4.0.3
+Official repository: https://github.com/LoupVaillant/Monocypher
+Tag: 4.0.3 (lightweight tag)
+Commit: ab2b16dd619ad5f6979a4fbe69cfa324a6fcc35f
+Commit date: 2026-06-15 23:17:36 +0200
+Git tree: eccc366491fc98c4149401d580ce41081a7854b1
+License: BSD-2-Clause OR CC0-1.0 (LICENCE.md)
+
+Vendored paths: src/monocypher.c, src/monocypher.h,
+src/optional/monocypher-ed25519.c,
+src/optional/monocypher-ed25519.h, LICENCE.md
+Excluded paths: developer build system, documentation, tests, benchmarks,
+generated vectors, deprecated APIs, and unrelated repository metadata

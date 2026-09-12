@@ -1,0 +1,12 @@
+{
+  "name": "Dynamic shared-library proof",
+  "identifier": "DYNROOT",
+  "executable": "DYNROOT.APP",
+  "dynamic_catalog": "DYN/DYNROOT.CAT",
+  "resource_directory": "DYN",
+  "data_namespace": "DYNROOT",
+  "memory_limit": 67108864,
+  "max_handles": 16,
+  "max_threads": 1,
+  "capabilities": ["console"]
+}

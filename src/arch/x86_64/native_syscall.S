@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Native Sapote ABI v1 SYSCALL entry; every call returns through the scheduler. */
+/* Native Phipia ABI v1 SYSCALL entry; every call returns through the scheduler. */
 
 .set USER_DATA_SELECTOR, 0x2B
 .set USER_CODE_SELECTOR, 0x33

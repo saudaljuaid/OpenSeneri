@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-#include <sapote/runtime.h>
-#include <sapote/window.h>
+#include <phipia/runtime.h>
+#include <phipia/window.h>
 
 #include <errno.h>
 #include <stdbool.h>
@@ -75,13 +75,13 @@ static uint32_t read_u32(const uint8_t *bytes)
         (uint32_t)bytes[2] << 16U | (uint32_t)bytes[3] << 24U;
 }
 
-static bool read_exact(sapote_handle_t handle, void *buffer, size_t length)
+static bool read_exact(phipia_handle_t handle, void *buffer, size_t length)
 {
     uint8_t *bytes = buffer;
     size_t completed = 0U;
 
     while (completed < length) {
-        const long result = sapote_file_read(handle, bytes + completed,
+        const long result = phipia_file_read(handle, bytes + completed,
             length - completed);
 
         if (result <= 0) {
@@ -96,11 +96,11 @@ static bool load_inter_font(void)
 {
     uint8_t header[FONT_HEADER_BYTES];
     uint8_t extra;
-    long opened = sapote_file_open(SAPOTE_VOLUME_SYSTEM, "FONT.SUF",
-        SAPOTE_OPEN_READ);
+    long opened = phipia_file_open(PHIPIA_VOLUME_SYSTEM, "FONT.SUF",
+        PHIPIA_OPEN_READ);
     size_t total;
 
-    if (opened < 0 || !read_exact((sapote_handle_t)opened, header,
+    if (opened < 0 || !read_exact((phipia_handle_t)opened, header,
             sizeof(header)) || memcmp(header, "SUF2", 4U) != 0 ||
             header[4] != 2U || header[5] != FONT_HEADER_BYTES ||
             header[6] != 16U || header[7] != 19U || header[11] != 16U ||
@@ -108,21 +108,21 @@ static bool load_inter_font(void)
             read_u32(header + 16U) != 95U ||
             read_u32(header + 20U) > FONT_MAX_BYTES - FONT_HEADER_BYTES) {
         if (opened >= 0) {
-            (void)sapote_handle_close((sapote_handle_t)opened);
+            (void)phipia_handle_close((phipia_handle_t)opened);
         }
         return false;
     }
     total = FONT_HEADER_BYTES + (size_t)read_u32(header + 20U);
     inter_font = malloc(total);
     if (inter_font == NULL) {
-        (void)sapote_handle_close((sapote_handle_t)opened);
+        (void)phipia_handle_close((phipia_handle_t)opened);
         return false;
     }
     memcpy(inter_font, header, sizeof(header));
-    if (!read_exact((sapote_handle_t)opened, inter_font + sizeof(header),
+    if (!read_exact((phipia_handle_t)opened, inter_font + sizeof(header),
             total - sizeof(header)) ||
-            sapote_file_read((sapote_handle_t)opened, &extra, 1U) != 0 ||
-            sapote_handle_close((sapote_handle_t)opened) != 0) {
+            phipia_file_read((phipia_handle_t)opened, &extra, 1U) != 0 ||
+            phipia_handle_close((phipia_handle_t)opened) != 0) {
         free(inter_font);
         inter_font = NULL;
         return false;
@@ -148,14 +148,14 @@ static uint32_t crc32(const uint8_t *bytes, size_t length)
 static bool load_tool_icons(void)
 {
     uint8_t extra;
-    long opened = sapote_file_open(SAPOTE_VOLUME_SYSTEM, "TOOLS.A8",
-        SAPOTE_OPEN_READ);
+    long opened = phipia_file_open(PHIPIA_VOLUME_SYSTEM, "TOOLS.A8",
+        PHIPIA_OPEN_READ);
 
     tool_icons = malloc(TOOL_ICON_FILE_BYTES);
     if (opened < 0 || tool_icons == NULL ||
-            !read_exact((sapote_handle_t)opened, tool_icons,
+            !read_exact((phipia_handle_t)opened, tool_icons,
                 TOOL_ICON_FILE_BYTES) ||
-            sapote_file_read((sapote_handle_t)opened, &extra, 1U) != 0 ||
+            phipia_file_read((phipia_handle_t)opened, &extra, 1U) != 0 ||
             memcmp(tool_icons, "SCI1", 4U) != 0 || tool_icons[4] != 1U ||
             tool_icons[5] != TOOL_ICON_WIDTH ||
             tool_icons[6] != TOOL_ICON_HEIGHT || tool_icons[7] != TOOL_COUNT ||
@@ -163,13 +163,13 @@ static bool load_tool_icons(void)
             crc32(tool_icons + TOOL_ICON_HEADER_BYTES,
                 TOOL_COUNT * TOOL_ICON_BYTES) != read_u32(tool_icons + 12U)) {
         if (opened >= 0) {
-            (void)sapote_handle_close((sapote_handle_t)opened);
+            (void)phipia_handle_close((phipia_handle_t)opened);
         }
         free(tool_icons);
         tool_icons = NULL;
         return false;
     }
-    if (sapote_handle_close((sapote_handle_t)opened) != 0) {
+    if (phipia_handle_close((phipia_handle_t)opened) != 0) {
         free(tool_icons);
         tool_icons = NULL;
         return false;
@@ -585,7 +585,7 @@ static int32_t clamp_artboard_y(int32_t y)
     return y;
 }
 
-static struct sapote_rect brush_damage(int32_t from_x, int32_t from_y,
+static struct phipia_rect brush_damage(int32_t from_x, int32_t from_y,
     int32_t to_x, int32_t to_y, int32_t radius)
 {
     int32_t left = from_x < to_x ? from_x : to_x;
@@ -597,13 +597,13 @@ static struct sapote_rect brush_damage(int32_t from_x, int32_t from_y,
     top = clamp_artboard_y(top - radius);
     right = clamp_artboard_x(right + radius);
     bottom = clamp_artboard_y(bottom + radius);
-    return (struct sapote_rect){
+    return (struct phipia_rect){
         (uint32_t)left, (uint32_t)top,
         (uint32_t)(right - left + 1), (uint32_t)(bottom - top + 1)
     };
 }
 
-static struct sapote_rect shape_damage(int32_t from_x, int32_t from_y,
+static struct phipia_rect shape_damage(int32_t from_x, int32_t from_y,
     int32_t to_x, int32_t to_y)
 {
     int32_t left = from_x < to_x ? from_x : to_x;
@@ -615,7 +615,7 @@ static struct sapote_rect shape_damage(int32_t from_x, int32_t from_y,
     top = clamp_artboard_y(top - 2);
     right = clamp_artboard_x(right + 2);
     bottom = clamp_artboard_y(bottom + 2);
-    return (struct sapote_rect){
+    return (struct phipia_rect){
         (uint32_t)left, (uint32_t)top,
         (uint32_t)(right - left + 1), (uint32_t)(bottom - top + 1)
     };
@@ -647,16 +647,16 @@ static void draw_shape(struct canvas *canvas, enum drawing_tool tool,
     }
 }
 
-static int present(sapote_handle_t window, uint32_t x, uint32_t y,
+static int present(phipia_handle_t window, uint32_t x, uint32_t y,
     uint32_t width, uint32_t height)
 {
-    const struct sapote_rect damage = {x, y, width, height};
-    return sapote_surface_present(window, &damage, 1U) < 0 ? -1 : 0;
+    const struct phipia_rect damage = {x, y, width, height};
+    return phipia_surface_present(window, &damage, 1U) < 0 ? -1 : 0;
 }
 
 int main(int argc, char **argv, char **environment)
 {
-    struct sapote_window_create_response response = {0};
+    struct phipia_window_create_response response = {0};
     struct canvas canvas;
     uint64_t started;
     uint32_t partial_presents = 0U;
@@ -682,16 +682,16 @@ int main(int argc, char **argv, char **environment)
 
     (void)environment;
     if (!load_inter_font() || !load_tool_icons()) {
-        puts("SAPOTE CANVAS RESOURCE FAIL");
+        puts("PHIPIA CANVAS RESOURCE FAIL");
         return 19;
     }
-    const int create_status = sapote_window_create("Untitled", CANVAS_WIDTH,
+    const int create_status = phipia_window_create("Untitled", CANVAS_WIDTH,
         CANVAS_HEIGHT, &response);
 
     if (create_status != 0 ||
         response.surface_address == 0U ||
         response.stride_bytes != CANVAS_WIDTH * sizeof(uint32_t)) {
-        printf("SAPOTE CANVAS CREATE FAIL status=%d errno=%d surface=%llu "
+        printf("PHIPIA CANVAS CREATE FAIL status=%d errno=%d surface=%llu "
             "stride=%u expected=%u\n", create_status, errno,
             (unsigned long long)response.surface_address,
             response.stride_bytes, CANVAS_WIDTH * (uint32_t)sizeof(uint32_t));
@@ -704,21 +704,21 @@ int main(int argc, char **argv, char **environment)
     if (present(response.window, 0U, 0U, CANVAS_WIDTH, CANVAS_HEIGHT) != 0) {
         return 21;
     }
-    printf("SAPOTE CANVAS READY width=%u height=%u\n", response.width,
+    printf("PHIPIA CANVAS READY width=%u height=%u\n", response.width,
         response.height);
-    started = sapote_monotonic_ns();
+    started = phipia_monotonic_ns();
     while (running != 0 && (proof_mode == 0 ||
-            sapote_monotonic_ns() - started < RUN_NS)) {
-        const uint64_t now = sapote_monotonic_ns();
-        struct sapote_event event;
+            phipia_monotonic_ns() - started < RUN_NS)) {
+        const uint64_t now = phipia_monotonic_ns();
+        struct phipia_event event;
         long wait_result;
 
-        wait_result = sapote_event_wait(response.events, now + FRAME_NS);
-        if (wait_result < 0 && wait_result != -SAPOTE_ETIMEDOUT) {
+        wait_result = phipia_event_wait(response.events, now + FRAME_NS);
+        if (wait_result < 0 && wait_result != -PHIPIA_ETIMEDOUT) {
             return 23;
         }
-        while (sapote_event_read(response.events, &event) > 0) {
-            if (event.type == SAPOTE_EVENT_FOCUS) {
+        while (phipia_event_read(response.events, &event) > 0) {
+            if (event.type == PHIPIA_EVENT_FOCUS) {
                 ++focus_events;
                 focused = event.value != 0U;
                 stroke_rect(&canvas, ARTBOARD_X - 1U, ARTBOARD_Y - 1U,
@@ -731,8 +731,8 @@ int main(int argc, char **argv, char **environment)
                     return 24;
                 }
                 ++partial_presents;
-            } else if (event.type == SAPOTE_EVENT_KEY &&
-                event.value != SAPOTE_KEY_RELEASED) {
+            } else if (event.type == PHIPIA_EVENT_KEY &&
+                event.value != PHIPIA_KEY_RELEASED) {
                 ++key_events;
                 selected_color = (selected_color + 1U) %
                     (sizeof(palette_colors) / sizeof(palette_colors[0]));
@@ -743,7 +743,7 @@ int main(int argc, char **argv, char **environment)
                     return 25;
                 }
                 ++partial_presents;
-            } else if (event.type == SAPOTE_EVENT_POINTER_MOVE) {
+            } else if (event.type == PHIPIA_EVENT_POINTER_MOVE) {
                 ++pointer_events;
                 if (drawing != 0 && (selected_tool == TOOL_BRUSH ||
                         selected_tool == TOOL_ERASER)) {
@@ -751,7 +751,7 @@ int main(int argc, char **argv, char **environment)
                     const int32_t y = clamp_artboard_y(event.y);
                     const int32_t radius = selected_tool == TOOL_ERASER ?
                         ERASER_RADIUS : brush_sizes[selected_size];
-                    const struct sapote_rect damage = brush_damage(previous_x,
+                    const struct phipia_rect damage = brush_damage(previous_x,
                         previous_y, x, y, radius);
                     uint64_t present_started;
 
@@ -761,19 +761,19 @@ int main(int argc, char **argv, char **environment)
                     previous_x = x;
                     previous_y = y;
                     ++stroke_segments;
-                    present_started = sapote_monotonic_ns();
+                    present_started = phipia_monotonic_ns();
                     if (present(response.window, damage.x, damage.y,
                             damage.width, damage.height) != 0) {
                         return 26;
                     }
-                    present_elapsed += sapote_monotonic_ns() - present_started;
+                    present_elapsed += phipia_monotonic_ns() - present_started;
                     if (damage.width * damage.height > maximum_damage_pixels) {
                         maximum_damage_pixels = damage.width * damage.height;
                     }
                     ++present_samples;
                     ++partial_presents;
                 }
-            } else if (event.type == SAPOTE_EVENT_POINTER_BUTTON) {
+            } else if (event.type == PHIPIA_EVENT_POINTER_BUTTON) {
                 ++pointer_events;
                 if (event.value != 0U) {
                     const enum drawing_tool tool = tool_at(event.x, event.y);
@@ -814,10 +814,10 @@ int main(int argc, char **argv, char **environment)
                         origin_y = clamp_artboard_y(event.y);
                         previous_x = origin_x;
                         previous_y = origin_y;
-                        (void)sapote_pointer_capture(response.window, 1);
+                        (void)phipia_pointer_capture(response.window, 1);
                         if (selected_tool == TOOL_BRUSH ||
                                 selected_tool == TOOL_ERASER) {
-                            const struct sapote_rect damage = brush_damage(
+                            const struct phipia_rect damage = brush_damage(
                                 origin_x, origin_y, origin_x, origin_y, radius);
                             uint64_t present_started;
 
@@ -825,12 +825,12 @@ int main(int argc, char **argv, char **environment)
                                 selected_tool == TOOL_ERASER ? COLOR_PAPER :
                                     palette_colors[selected_color]);
                             ++stroke_segments;
-                            present_started = sapote_monotonic_ns();
+                            present_started = phipia_monotonic_ns();
                             if (present(response.window, damage.x, damage.y,
                                     damage.width, damage.height) != 0) {
                                 return 26;
                             }
-                            present_elapsed += sapote_monotonic_ns() -
+                            present_elapsed += phipia_monotonic_ns() -
                                 present_started;
                             if (damage.width * damage.height >
                                     maximum_damage_pixels) {
@@ -847,7 +847,7 @@ int main(int argc, char **argv, char **environment)
                             selected_tool == TOOL_ELLIPSE) {
                         const int32_t x = clamp_artboard_x(event.x);
                         const int32_t y = clamp_artboard_y(event.y);
-                        const struct sapote_rect damage = shape_damage(origin_x,
+                        const struct phipia_rect damage = shape_damage(origin_x,
                             origin_y, x, y);
 
                         draw_shape(&canvas, selected_tool, origin_x, origin_y,
@@ -860,24 +860,24 @@ int main(int argc, char **argv, char **environment)
                         ++partial_presents;
                     }
                     drawing = 0;
-                    (void)sapote_pointer_capture(response.window, 0);
+                    (void)phipia_pointer_capture(response.window, 0);
                 }
-            } else if (event.type == SAPOTE_EVENT_CLOSE) {
+            } else if (event.type == PHIPIA_EVENT_CLOSE) {
                 running = 0;
             }
         }
     }
-    printf("SAPOTE CANVAS PASS focus=%u key=%u pointer=%u strokes=%u colors=%u partial=%u\n",
+    printf("PHIPIA CANVAS PASS focus=%u key=%u pointer=%u strokes=%u colors=%u partial=%u\n",
         focus_events, key_events, pointer_events, stroke_segments,
         color_changes, partial_presents);
     if (present_samples != 0U) {
-        printf("SAPOTE PERF canvas brush_damage_samples=%u max_pixels=%u total_ns=%llu average_ns=%llu\n",
+        printf("PHIPIA PERF canvas brush_damage_samples=%u max_pixels=%u total_ns=%llu average_ns=%llu\n",
             present_samples, maximum_damage_pixels,
             (unsigned long long)present_elapsed,
             (unsigned long long)(present_elapsed / present_samples));
     }
-    if (sapote_handle_close(response.events) < 0 ||
-        sapote_handle_close(response.window) < 0 || partial_presents == 0U ||
+    if (phipia_handle_close(response.events) < 0 ||
+        phipia_handle_close(response.window) < 0 || partial_presents == 0U ||
         focus_events == 0U || (proof_mode != 0 && key_events != 0U &&
             color_changes == 0U)) {
         return 27;

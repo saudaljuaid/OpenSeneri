@@ -3,9 +3,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/clock.h>
-#include <sapote/cpu.h>
-#include <sapote/random.h>
+#include <phipia/clock.h>
+#include <phipia/cpu.h>
+#include <phipia/random.h>
 
 #define CPUID_BASIC UINT32_C(0)
 #define CPUID_FEATURES UINT32_C(1)
@@ -16,6 +16,18 @@
 
 static struct random_state state;
 static uint64_t generator[4];
+static uint64_t last_hardware_word;
+static bool last_hardware_word_valid;
+
+static void secure_zero(void *memory, size_t length)
+{
+    volatile uint8_t *bytes = memory;
+
+    while (length != 0U) {
+        *bytes++ = 0U;
+        --length;
+    }
+}
 
 static uint64_t rotate_left(uint64_t value, unsigned int count)
 {
@@ -75,6 +87,28 @@ static bool hardware_rdseed(uint64_t *value)
     return false;
 }
 
+static bool hardware_strong_word(uint64_t *value)
+{
+    uint64_t candidate;
+
+    if (value == NULL) {
+        return false;
+    }
+    for (size_t attempt = 0U; attempt < HARDWARE_ATTEMPTS; ++attempt) {
+        if (!(hardware_rdseed(&candidate) || hardware_rdrand(&candidate))) {
+            continue;
+        }
+        if (last_hardware_word_valid && candidate == last_hardware_word) {
+            continue;
+        }
+        last_hardware_word = candidate;
+        last_hardware_word_valid = true;
+        *value = candidate;
+        return true;
+    }
+    return false;
+}
+
 static uint64_t generator_next(void)
 {
     const uint64_t result = rotate_left(generator[1] * UINT64_C(5), 7U) *
@@ -126,6 +160,8 @@ void random_initialize(void)
     /* This construction is useful entropy, but is not an audited CSPRNG. */
     state.capability = hardware_ok ? RANDOM_CAPABILITY_INITIALIZED :
         RANDOM_CAPABILITY_DEGRADED;
+    last_hardware_word = hardware;
+    last_hardware_word_valid = hardware_ok;
     hardware = 0U;
     seed = 0U;
 }
@@ -156,6 +192,50 @@ enum random_status random_bytes(void *destination, size_t length)
     }
     word = 0U;
     state.bytes_issued += length;
+    return RANDOM_STATUS_OK;
+}
+
+enum random_status random_strong_bytes(void *destination, size_t length)
+{
+    uint8_t staging[RANDOM_MAX_REQUEST_BYTES];
+    size_t completed = 0U;
+
+    if (destination == NULL && length != 0U) {
+        return RANDOM_STATUS_NULL_ARGUMENT;
+    }
+    if (length > RANDOM_MAX_REQUEST_BYTES) {
+        return RANDOM_STATUS_TOO_LARGE;
+    }
+    if (length == 0U) {
+        return RANDOM_STATUS_OK;
+    }
+    if (state.capability != RANDOM_CAPABILITY_INITIALIZED) {
+        return RANDOM_STATUS_NOT_STRONG;
+    }
+    while (completed < length) {
+        uint64_t word;
+        size_t chunk = length - completed;
+
+        if (!hardware_strong_word(&word)) {
+            state.capability = RANDOM_CAPABILITY_DEGRADED;
+            secure_zero(staging, sizeof(staging));
+            return RANDOM_STATUS_NOT_STRONG;
+        }
+        if (chunk > sizeof(word)) {
+            chunk = sizeof(word);
+        }
+        for (size_t index = 0U; index < chunk; ++index) {
+            staging[completed + index] = (uint8_t)word;
+            word >>= 8U;
+        }
+        completed += chunk;
+    }
+    for (size_t index = 0U; index < length; ++index) {
+        ((uint8_t *)destination)[index] = staging[index];
+    }
+    secure_zero(staging, sizeof(staging));
+    state.bytes_issued += length;
+    ++state.reseed_count;
     return RANDOM_STATUS_OK;
 }
 
@@ -198,6 +278,9 @@ bool random_self_test(void)
     }
     return random_bytes(NULL, 1U) == RANDOM_STATUS_NULL_ARGUMENT &&
         random_bytes(first, RANDOM_MAX_REQUEST_BYTES + 1U) ==
+            RANDOM_STATUS_TOO_LARGE &&
+        random_strong_bytes(NULL, 1U) == RANDOM_STATUS_NULL_ARGUMENT &&
+        random_strong_bytes(first, RANDOM_MAX_REQUEST_BYTES + 1U) ==
             RANDOM_STATUS_TOO_LARGE;
 }
 
@@ -217,7 +300,8 @@ const char *random_status_string(enum random_status status)
         "ok",
         "null random destination",
         "random request exceeds the bounded limit",
-        "random source is not initialized"
+        "random source is not initialized",
+        "strong hardware entropy is unavailable"
     };
 
     _Static_assert(sizeof(messages) / sizeof(messages[0]) ==

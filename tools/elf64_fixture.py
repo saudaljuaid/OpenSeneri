@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Construct and independently verify Sapote's exact ELF64 proof payload."""
+"""Construct and independently verify Phipia's exact ELF64 proof payload."""
 
 from __future__ import annotations
 

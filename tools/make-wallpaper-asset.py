@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Sapote's bounded SPW3 photographic wallpaper collection.
+"""Build Phipia's bounded SPW3 photographic wallpaper collection.
 
 Each committed PNG is cropped to 4:3, resampled to 1024x768 with bilinear
 filtering and stored as deterministic little-endian RGB565. The kernel can

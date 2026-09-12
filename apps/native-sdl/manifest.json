@@ -1,0 +1,20 @@
+{
+  "name": "Phipia SDL 2 Proof",
+  "identifier": "SDLPROOF",
+  "executable": "SDL.APP",
+  "abi_version": 1,
+  "data_namespace": "SDLPROOF",
+  "memory_limit": 33554432,
+  "max_handles": 12,
+  "max_threads": 3,
+  "capabilities": [
+    "console",
+    "data-read",
+    "data-write",
+    "time",
+    "threads",
+    "window",
+    "input",
+    "audio"
+  ]
+}

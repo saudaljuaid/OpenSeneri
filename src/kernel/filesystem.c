@@ -8,8 +8,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/filesystem.h>
-#include <sapote/fat32_fs.h>
+#include <phipia/filesystem.h>
+#include <phipia/fat32_fs.h>
 
 #define FILESYSTEM_LINUX_READ_FAILURE_AFTER_OPEN 13U
 #define FILESYSTEM_LINUX_READ_FAILURE_MAX 13U
@@ -141,7 +141,7 @@ enum fat16_test_offset {
 };
 
 static const uint8_t fat16_test_name[FAT16_CANONICAL_NAME_BYTES] = {
-    'S', 'A', 'P', 'O', 'T', 'E', ' ', ' ', 'B', 'I', 'N'
+    'P', 'H', 'I', 'P', 'I', 'A', ' ', ' ', 'B', 'I', 'N'
 };
 
 static const uint8_t fat16_test_sha256[FAT16_SHA256_BYTES] = {
@@ -229,7 +229,7 @@ static bool fat16_parse_bpb_status(
 {
     struct fat16_geometry output;
 
-    return sapote_fat16_parse_bpb(block, length, namespace_blocks,
+    return phipia_fat16_parse_bpb(block, length, namespace_blocks,
         namespace_block_bytes, &output) == expected;
 }
 
@@ -243,7 +243,7 @@ static bool fat16_find_root_status(
 {
     struct fat16_root_entry output;
 
-    return sapote_fat16_find_root(block, FAT16_BLOCK_BYTES, geometry,
+    return phipia_fat16_find_root(block, FAT16_BLOCK_BYTES, geometry,
         query, destination_bytes, &output) == expected;
 }
 
@@ -255,7 +255,7 @@ static bool fat16_parse_fat_status(
 {
     struct fat16_fat_state output;
 
-    return sapote_fat16_parse_fat(block, FAT16_BLOCK_BYTES, geometry,
+    return phipia_fat16_parse_fat(block, FAT16_BLOCK_BYTES, geometry,
         &output) == expected;
 }
 
@@ -277,7 +277,7 @@ static bool control_rust_parser(void)
     };
 
     fat16_test_make_bpb(block);
-    if (sapote_fat16_parse_bpb(block, sizeof(block), FAT16_TOTAL_SECTORS,
+    if (phipia_fat16_parse_bpb(block, sizeof(block), FAT16_TOTAL_SECTORS,
             FAT16_BLOCK_BYTES, &geometry) != FAT16_STATUS_OK ||
         geometry.cluster_count != UINT64_C(4092) ||
         geometry.first_data_sector != UINT64_C(4)) {
@@ -444,7 +444,7 @@ static bool control_rust_parser(void)
     for (size_t index = 0U; index < sizeof(query_bytes); ++index) {
         query_bytes[index] = fat16_test_name[index];
     }
-    if (sapote_fat16_make_query(query_bytes, sizeof(query_bytes), &query) !=
+    if (phipia_fat16_make_query(query_bytes, sizeof(query_bytes), &query) !=
             FAT16_STATUS_OK) {
         return false;
     }
@@ -454,12 +454,12 @@ static bool control_rust_parser(void)
         return false;
     }
     fat16_test_make_root(block);
-    if (sapote_fat16_find_root(block, sizeof(block), &geometry, &query,
+    if (phipia_fat16_find_root(block, sizeof(block), &geometry, &query,
             FAT16_FILE_BYTES, &entry) != FAT16_STATUS_OK) {
         return false;
     }
     fat16_test_make_fat(block);
-    if (sapote_fat16_parse_fat(block, sizeof(block), &geometry, &fat) !=
+    if (phipia_fat16_parse_fat(block, sizeof(block), &geometry, &fat) !=
             FAT16_STATUS_OK) {
         return false;
     }
@@ -469,7 +469,7 @@ static bool control_rust_parser(void)
         return false;
     }
     fat16_test_make_fat(block);
-    if (sapote_fat16_validate_extent(&geometry, &entry, &fat, &extent) !=
+    if (phipia_fat16_validate_extent(&geometry, &entry, &fat, &extent) !=
             FAT16_STATUS_OK || extent.lba != UINT64_C(4) ||
         extent.fat_value < UINT16_C(0xFFF8)) {
         return false;
@@ -548,11 +548,11 @@ static bool control_rust_parser(void)
     for (size_t index = 1U; index < sizeof(query_bytes); ++index) {
         query_bytes[index] = fat16_test_name[index];
     }
-    if (sapote_fat16_make_query(query_bytes, sizeof(query_bytes), &query) !=
+    if (phipia_fat16_make_query(query_bytes, sizeof(query_bytes), &query) !=
             FAT16_STATUS_NAME_MALFORMED) {
         return false;
     }
-    if (sapote_fat16_make_query(fat16_test_name, sizeof(fat16_test_name),
+    if (phipia_fat16_make_query(fat16_test_name, sizeof(fat16_test_name),
             &query) != FAT16_STATUS_OK) {
         return false;
     }
@@ -620,18 +620,18 @@ static bool control_rust_parser(void)
 
     /* 21: malformed geometry is refused before translation can overflow. */
     fat16_test_make_root(block);
-    if (sapote_fat16_find_root(block, sizeof(block), &geometry, &query,
+    if (phipia_fat16_find_root(block, sizeof(block), &geometry, &query,
             FAT16_FILE_BYTES, &entry) != FAT16_STATUS_OK) {
         return false;
     }
     fat16_test_make_fat(block);
-    if (sapote_fat16_parse_fat(block, sizeof(block), &geometry, &fat) !=
+    if (phipia_fat16_parse_fat(block, sizeof(block), &geometry, &fat) !=
             FAT16_STATUS_OK) {
         return false;
     }
     corrupt_geometry = geometry;
     corrupt_geometry.first_data_sector = UINT64_MAX;
-    enum fat16_status status = sapote_fat16_validate_extent(
+    enum fat16_status status = phipia_fat16_validate_extent(
         &corrupt_geometry, &entry, &fat, &extent);
     if (status != FAT16_STATUS_SPAN_OVERFLOW &&
         status != FAT16_STATUS_SPAN_RANGE) {
@@ -654,7 +654,7 @@ static bool control_rust_parser(void)
     for (size_t index = 0U; index < sizeof(geometry); ++index) {
         ((uint8_t *)&geometry)[index] = UINT8_C(0xA5);
     }
-    if (sapote_fat16_parse_bpb(block, 1U, FAT16_TOTAL_SECTORS,
+    if (phipia_fat16_parse_bpb(block, 1U, FAT16_TOTAL_SECTORS,
             FAT16_BLOCK_BYTES, &geometry) != FAT16_STATUS_TRUNCATED ||
         !all_zero(&geometry, sizeof(geometry))) {
         return false;
@@ -662,18 +662,18 @@ static bool control_rust_parser(void)
     for (size_t index = 0U; index < sizeof(payload_bytes); ++index) {
         payload_bytes[index] = (uint8_t)((index * 73U + 19U) & 0xFFU);
     }
-    if (sapote_fat16_validate_payload(payload_bytes, sizeof(payload_bytes),
+    if (phipia_fat16_validate_payload(payload_bytes, sizeof(payload_bytes),
             &payload) != FAT16_STATUS_OK ||
         payload.byte_count != FAT16_FILE_BYTES || payload.deterministic != 1U ||
         !equal_bytes(payload.sha256, fat16_test_sha256,
             sizeof(fat16_test_sha256)) ||
-        sapote_fat16_validate_payload(payload_bytes,
+        phipia_fat16_validate_payload(payload_bytes,
             sizeof(payload_bytes) - 1U, &payload) !=
             FAT16_STATUS_PAYLOAD_LENGTH) {
         return false;
     }
     payload_bytes[64] ^= 1U;
-    return sapote_fat16_validate_payload(payload_bytes,
+    return phipia_fat16_validate_payload(payload_bytes,
         sizeof(payload_bytes), &payload) == FAT16_STATUS_PAYLOAD_CONTENT;
 }
 
@@ -979,7 +979,7 @@ enum filesystem_status filesystem_file_prove(
 )
 {
     static const uint8_t canonical_name[FAT16_CANONICAL_NAME_BYTES] =
-        {'S', 'A', 'P', 'O', 'T', 'E', ' ', ' ', 'B', 'I', 'N'};
+        {'P', 'H', 'I', 'P', 'I', 'A', ' ', ' ', 'B', 'I', 'N'};
     struct nvme_filesystem_read_session session = {0};
     struct filesystem_validated_volume volume = {0};
     struct filesystem_cpu_file_content content = {0};
@@ -1003,7 +1003,7 @@ enum filesystem_status filesystem_file_prove(
     zero_bytes(&entry, sizeof(entry));
     zero_bytes(&fat, sizeof(fat));
     zero_bytes(&extent, sizeof(extent));
-    if (sapote_fat16_make_query(canonical_name, sizeof(canonical_name),
+    if (phipia_fat16_make_query(canonical_name, sizeof(canonical_name),
             &query) != FAT16_STATUS_OK) {
         return FILESYSTEM_STATUS_PARSER_FAILURE;
     }
@@ -1027,7 +1027,7 @@ enum filesystem_status filesystem_file_prove(
 
     result = read_block(&session, &state, 0U, 1U, &block, &block_length);
     if (result != FILESYSTEM_STATUS_OK ||
-        sapote_fat16_parse_bpb(block, block_length,
+        phipia_fat16_parse_bpb(block, block_length,
             volume.candidate.namespace_blocks,
             volume.candidate.logical_block_bytes,
             &volume.geometry) != FAT16_STATUS_OK) {
@@ -1048,7 +1048,7 @@ enum filesystem_status filesystem_file_prove(
     result = read_block(&session, &state,
         volume.geometry.first_fat_sector, 2U, &block, &block_length);
     if (result != FILESYSTEM_STATUS_OK ||
-        sapote_fat16_parse_fat(block, block_length, &volume.geometry,
+        phipia_fat16_parse_fat(block, block_length, &volume.geometry,
             &fat) != FAT16_STATUS_OK) {
         result = result == FILESYSTEM_STATUS_OK ?
             FILESYSTEM_STATUS_PARSER_FAILURE : result;
@@ -1060,9 +1060,9 @@ enum filesystem_status filesystem_file_prove(
     result = read_block(&session, &state,
         volume.geometry.first_root_sector, 3U, &block, &block_length);
     if (result != FILESYSTEM_STATUS_OK ||
-        sapote_fat16_find_root(block, block_length, &volume.geometry,
+        phipia_fat16_find_root(block, block_length, &volume.geometry,
             &query, sizeof(content.bytes), &entry) != FAT16_STATUS_OK ||
-        sapote_fat16_validate_extent(&volume.geometry, &entry, &fat,
+        phipia_fat16_validate_extent(&volume.geometry, &entry, &fat,
             &extent) != FAT16_STATUS_OK ||
         !equal_bytes(entry.canonical_name, canonical_name,
             sizeof(canonical_name))) {
@@ -1081,7 +1081,7 @@ enum filesystem_status filesystem_file_prove(
     result = read_block(&session, &state, extent.lba, 4U,
         &block, &block_length);
     if (result != FILESYSTEM_STATUS_OK || block_length < entry.file_size ||
-        sapote_fat16_validate_payload(block, entry.file_size,
+        phipia_fat16_validate_payload(block, entry.file_size,
             &content.payload) != FAT16_STATUS_OK) {
         result = result == FILESYSTEM_STATUS_OK ?
             FILESYSTEM_STATUS_CONTENT : result;
@@ -1199,7 +1199,7 @@ enum filesystem_status filesystem_private_read_open(
 )
 {
     static const uint8_t canonical_name[FAT16_CANONICAL_NAME_BYTES] =
-        {'S', 'A', 'P', 'O', 'T', 'E', ' ', ' ', 'B', 'I', 'N'};
+        {'P', 'H', 'I', 'P', 'I', 'A', ' ', ' ', 'B', 'I', 'N'};
     struct fat16_geometry geometry;
     struct fat16_root_query query;
     struct fat16_root_entry entry;
@@ -1227,7 +1227,7 @@ enum filesystem_status filesystem_private_read_open(
     zero_bytes(&entry, sizeof(entry));
     zero_bytes(&fat, sizeof(fat));
     zero_bytes(&extent, sizeof(extent));
-    if (sapote_fat16_make_query(canonical_name, sizeof(canonical_name),
+    if (phipia_fat16_make_query(canonical_name, sizeof(canonical_name),
             &query) != FAT16_STATUS_OK) {
         return FILESYSTEM_STATUS_PARSER_FAILURE;
     }
@@ -1253,7 +1253,7 @@ enum filesystem_status filesystem_private_read_open(
     result = read_block(&private_read_runtime.session,
         &private_read_runtime.state, 0U, 1U, &block, &block_length);
     if (result != FILESYSTEM_STATUS_OK ||
-        sapote_fat16_parse_bpb(block, block_length,
+        phipia_fat16_parse_bpb(block, block_length,
             private_read_runtime.session.namespace_blocks,
             private_read_runtime.session.logical_block_bytes,
             &geometry) != FAT16_STATUS_OK) {
@@ -1272,7 +1272,7 @@ enum filesystem_status filesystem_private_read_open(
         &private_read_runtime.state, geometry.first_fat_sector, 2U,
         &block, &block_length);
     if (result != FILESYSTEM_STATUS_OK ||
-        sapote_fat16_parse_fat(block, block_length, &geometry, &fat) !=
+        phipia_fat16_parse_fat(block, block_length, &geometry, &fat) !=
             FAT16_STATUS_OK) {
         result = result == FILESYSTEM_STATUS_OK ?
             FILESYSTEM_STATUS_PARSER_FAILURE : result;
@@ -1284,9 +1284,9 @@ enum filesystem_status filesystem_private_read_open(
         &private_read_runtime.state, geometry.first_root_sector, 3U,
         &block, &block_length);
     if (result != FILESYSTEM_STATUS_OK ||
-        sapote_fat16_find_root(block, block_length, &geometry, &query,
+        phipia_fat16_find_root(block, block_length, &geometry, &query,
             (uint32_t)destination_bytes, &entry) != FAT16_STATUS_OK ||
-        sapote_fat16_validate_extent(&geometry, &entry, &fat, &extent) !=
+        phipia_fat16_validate_extent(&geometry, &entry, &fat, &extent) !=
             FAT16_STATUS_OK ||
         !equal_bytes(entry.canonical_name, canonical_name,
             sizeof(canonical_name))) {
@@ -1439,12 +1439,12 @@ static enum linux_fat16_status linux_profile_make_query(
 {
     switch (profile) {
     case LINUX_READ_PROFILE_UNAME:
-        return sapote_linux_uname_fat16_make_query(query);
+        return phipia_linux_uname_fat16_make_query(query);
     case LINUX_READ_PROFILE_CAT:
-        return sapote_linux_cat_fat16_make_query(query);
+        return phipia_linux_cat_fat16_make_query(query);
     case LINUX_READ_PROFILE_ECHO:
     default:
-        return sapote_linux_fat16_make_query(query);
+        return phipia_linux_fat16_make_query(query);
     }
 }
 
@@ -1460,14 +1460,14 @@ static enum linux_fat16_status linux_profile_find_root(
 {
     switch (profile) {
     case LINUX_READ_PROFILE_UNAME:
-        return sapote_linux_uname_fat16_find_root(block, block_length,
+        return phipia_linux_uname_fat16_find_root(block, block_length,
             geometry, query, destination_bytes, entry);
     case LINUX_READ_PROFILE_CAT:
-        return sapote_linux_cat_fat16_find_root(block, block_length,
+        return phipia_linux_cat_fat16_find_root(block, block_length,
             geometry, query, destination_bytes, entry);
     case LINUX_READ_PROFILE_ECHO:
     default:
-        return sapote_linux_fat16_find_root(block, block_length, geometry,
+        return phipia_linux_fat16_find_root(block, block_length, geometry,
             query, destination_bytes, entry);
     }
 }
@@ -1483,14 +1483,14 @@ static enum linux_fat16_status linux_profile_build_chain(
 {
     switch (profile) {
     case LINUX_READ_PROFILE_UNAME:
-        return sapote_linux_uname_fat16_build_chain(fat, fat_length,
+        return phipia_linux_uname_fat16_build_chain(fat, fat_length,
             geometry, entry, chain);
     case LINUX_READ_PROFILE_CAT:
-        return sapote_linux_cat_fat16_build_chain(fat, fat_length,
+        return phipia_linux_cat_fat16_build_chain(fat, fat_length,
             geometry, entry, chain);
     case LINUX_READ_PROFILE_ECHO:
     default:
-        return sapote_linux_fat16_build_chain(fat, fat_length, geometry,
+        return phipia_linux_fat16_build_chain(fat, fat_length, geometry,
             entry, chain);
     }
 }
@@ -1504,14 +1504,14 @@ static enum linux_fat16_status linux_profile_validate_payload(
 {
     switch (profile) {
     case LINUX_READ_PROFILE_UNAME:
-        return sapote_linux_uname_fat16_validate_payload(destination,
+        return phipia_linux_uname_fat16_validate_payload(destination,
             destination_bytes, payload);
     case LINUX_READ_PROFILE_CAT:
-        return sapote_linux_cat_fat16_validate_payload(destination,
+        return phipia_linux_cat_fat16_validate_payload(destination,
             destination_bytes, payload);
     case LINUX_READ_PROFILE_ECHO:
     default:
-        return sapote_linux_fat16_validate_payload(destination,
+        return phipia_linux_fat16_validate_payload(destination,
             destination_bytes, payload);
     }
 }
@@ -1565,32 +1565,32 @@ static enum filesystem_status filesystem_linux_read_open_profile(
         return FILESYSTEM_STATUS_PRIVATE_BUSY;
     }
     if (failure_boundary == 0U &&
-        sapfs_drive(SAPFS_VOLUME_SYSTEM).mounted) {
-        sapfs_handle handle;
+        phipfs_drive(PHIPFS_VOLUME_SYSTEM).mounted) {
+        phipfs_handle handle;
         size_t read_bytes = 0U;
-        uint64_t before = sapfs_completion_count(SAPFS_VOLUME_SYSTEM);
+        uint64_t before = phipfs_completion_count(PHIPFS_VOLUME_SYSTEM);
         uint64_t after;
-        enum sapfs_status open_status = sapfs_open(SAPFS_VOLUME_SYSTEM,
-            fat32_path, SAPFS_ACCESS_READ, &handle);
+        enum phipfs_status open_status = phipfs_open(PHIPFS_VOLUME_SYSTEM,
+            fat32_path, PHIPFS_ACCESS_READ, &handle);
 
-        if (open_status != SAPFS_STATUS_OK) {
-            return open_status == SAPFS_STATUS_NOT_FOUND ?
+        if (open_status != PHIPFS_STATUS_OK) {
+            return open_status == PHIPFS_STATUS_NOT_FOUND ?
                 FILESYSTEM_STATUS_ABSENT : FILESYSTEM_STATUS_NVME_FAILURE;
         }
-        open_status = sapfs_read(handle, destination, destination_bytes,
+        open_status = phipfs_read(handle, destination, destination_bytes,
             &read_bytes);
-        if (sapfs_close(handle) != SAPFS_STATUS_OK &&
-            open_status == SAPFS_STATUS_OK) {
-            open_status = SAPFS_STATUS_STALE_HANDLE;
+        if (phipfs_close(handle) != PHIPFS_STATUS_OK &&
+            open_status == PHIPFS_STATUS_OK) {
+            open_status = PHIPFS_STATUS_STALE_HANDLE;
         }
-        if (open_status != SAPFS_STATUS_OK || read_bytes != destination_bytes ||
+        if (open_status != PHIPFS_STATUS_OK || read_bytes != destination_bytes ||
             linux_profile_validate_payload(profile, destination,
                 destination_bytes, &payload) != LINUX_FAT16_STATUS_OK ||
             payload.deterministic != 1U || payload.byte_count != file_bytes) {
             zero_bytes(destination, destination_bytes);
             return FILESYSTEM_STATUS_LINUX_PAYLOAD;
         }
-        after = sapfs_completion_count(SAPFS_VOLUME_SYSTEM);
+        after = phipfs_completion_count(PHIPFS_VOLUME_SYSTEM);
         if (after <= before || after - before > UINT32_MAX) {
             zero_bytes(destination, destination_bytes);
             return FILESYSTEM_STATUS_OWNERSHIP;
@@ -1656,7 +1656,7 @@ static enum filesystem_status filesystem_linux_read_open_profile(
         result = FILESYSTEM_STATUS_CONTROLLED_FAILURE;
         goto fail;
     }
-    if (sapote_fat16_parse_bpb(block, block_length,
+    if (phipia_fat16_parse_bpb(block, block_length,
             private_read_runtime.session.namespace_blocks,
             private_read_runtime.session.logical_block_bytes,
             &geometry) != FAT16_STATUS_OK) {

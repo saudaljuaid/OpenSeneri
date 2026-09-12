@@ -3,8 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/acpi.h>
-#include <sapote/acpi_util.h>
+#include <phipia/acpi.h>
+#include <phipia/acpi_util.h>
 
 #define ACPI_RSDP_V1_SIZE 20U
 #define ACPI_RSDP_V2_SIZE 36U
@@ -33,7 +33,7 @@ _Static_assert(offsetof(struct acpi_rsdp, length) == ACPI_RSDP_V1_SIZE,
                "ACPI 1.0 RSDP prefix changed");
 
 static const char rsdp_signature[8] = {'R', 'S', 'D', ' ', 'P', 'T', 'R', ' '};
-static const char test_oem_id[6] = {'S', 'A', 'P', 'O', 'T', 'E'};
+static const char test_oem_id[6] = {'P', 'H', 'I', 'P', 'I', 'A'};
 
 static void root_reset(struct acpi_root *root)
 {

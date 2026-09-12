@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/cpu.h>
+#include <phipia/cpu.h>
 
 #define GDT_ENTRY_COUNT 7U
 #define TSS_DESCRIPTOR_INDEX 3U
@@ -354,9 +354,9 @@ const char *cpu_status_string(enum cpu_status status)
     case CPU_STATUS_BAD_STACK:
         return "emergency stack validation failed";
     case CPU_STATUS_GDTR_MISMATCH:
-        return "GDTR does not reference the Sapote GDT";
+        return "GDTR does not reference the Phipia GDT";
     case CPU_STATUS_TR_MISMATCH:
-        return "task register does not reference the Sapote TSS";
+        return "task register does not reference the Phipia TSS";
     default:
         return "unknown CPU table status";
     }

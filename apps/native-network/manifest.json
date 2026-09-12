@@ -1,5 +1,5 @@
 {
-  "name": "Sapote Native Network Client",
+  "name": "Phipia Native Network Client",
   "identifier": "NETAPP",
   "executable": "NETAPP.APP",
   "data_namespace": "NETAPP",
@@ -13,5 +13,5 @@
     "time",
     "network"
   ],
-  "arguments": ["http://sapote.test/welcome.txt"]
+  "arguments": ["http://phipia.test/welcome.txt"]
 }

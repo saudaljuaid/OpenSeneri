@@ -1,0 +1,19 @@
+{
+  "name": "Phipia Package Repair",
+  "identifier": "PHIPREP",
+  "executable": "PHIPR.APP",
+  "data_namespace": "PHIP",
+  "memory_limit": 67108864,
+  "max_handles": 24,
+  "max_threads": 1,
+  "capabilities": [
+    "console",
+    "data-read",
+    "data-write",
+    "time",
+    "entropy",
+    "network",
+    "packages"
+  ],
+  "arguments": ["repair"]
+}

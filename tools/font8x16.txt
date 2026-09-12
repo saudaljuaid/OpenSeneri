@@ -1,4 +1,4 @@
-# Sapote console font - 8 wide, 16 tall, ASCII 0x20 to 0x7E.
+# Phipia console font - 8 wide, 16 tall, ASCII 0x20 to 0x7E.
 #
 # Glyph bitmaps derived from GNU Unifont, which is free software under the
 # GNU General Public License version 2 or, at your option, any later version.
@@ -16,7 +16,7 @@
 #
 # This file is the source. tools/make-font-asset.py packs it into the blob
 # the kernel embeds, using only the Python standard library, so building
-# Sapote never needs a font library or the original OTF.
+# Phipia never needs a font library or the original OTF.
 #
 # A '#' is a lit pixel and a '.' is not. Edit the art, rebuild, done.
 

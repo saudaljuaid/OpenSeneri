@@ -1,0 +1,871 @@
+// Copyright 2024 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+//! Provides parsing and serialization of inodes, as well as functions for reading and writing inodes to disk.
+
+use crate::block_group::BlockGroupIndex;
+use crate::block_index::FsBlockIndex;
+use crate::checksum::Checksum;
+use crate::error::{CorruptKind, Ext4Error};
+use crate::file_blocks::FileBlocks;
+use crate::file_type::FileType;
+use crate::metadata::Metadata;
+use crate::path::PathBuf;
+use crate::superblock::Superblock;
+use crate::util::{
+    read_u16le, read_u32le, u32_from_hilo, u32_to_hilo, u64_from_hilo,
+    u64_to_hilo, write_u16le, write_u32le,
+};
+use crate::{Ext4, IncompatibleFeatures};
+use alloc::vec;
+use alloc::vec::Vec;
+use bitflags::bitflags;
+use core::num::{NonZeroU16, NonZeroU32};
+use core::time::Duration;
+
+/// Inode index.
+///
+/// This is always nonzero.
+pub(crate) type InodeIndex = NonZeroU32;
+
+/// Options for creating a new inode.
+pub struct InodeCreationOptions {
+    /// File type of the new inode.
+    pub file_type: FileType,
+    /// Mode bits of the new inode, should match file type.
+    pub mode: InodeMode,
+    /// User ID of the new inode.
+    pub uid: u32,
+    /// Group ID of the new inode.
+    pub gid: u32,
+    /// Creation, modification, and access time of the new inode.
+    pub time: Duration,
+    /// Inode flags for the new inode. EXTENTS is not supported and will be ignored if set.
+    pub flags: InodeFlags,
+}
+
+bitflags! {
+    /// Inode flags.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+    pub struct InodeFlags: u32 {
+        /// File is immutable.
+        const IMMUTABLE = 0x10;
+
+        /// Directory is encrypted.
+        const DIRECTORY_ENCRYPTED = 0x800;
+
+        /// Directory has hashed indexes.
+        const DIRECTORY_HTREE = 0x1000;
+
+        /// File is huge.
+        const HUGE_FILE = 0x4_0000;
+
+        /// Inode uses extents.
+        const EXTENTS = 0x8_0000;
+
+        /// Verity protected data.
+        const VERITY = 0x10_0000;
+
+        /// Inode stores a large extended attribute value in its data blocks.
+        const EXTENDED_ATTRIBUTES = 0x20_0000;
+
+        /// Inode has inline data.
+        const INLINE_DATA = 0x1000_0000;
+
+        // TODO: other flags
+    }
+}
+
+bitflags! {
+    /// Inode mode.
+    ///
+    /// The mode bitfield stores file permissions in the lower bits and
+    /// file type in the upper bits.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+    pub struct InodeMode: u16 {
+        /// Other execute permission.
+        const S_IXOTH = 0x0001;
+        /// Other write permission.
+        const S_IWOTH = 0x0002;
+        /// Other read permission.
+        const S_IROTH = 0x0004;
+
+        /// Group execute permission.
+        const S_IXGRP = 0x0008;
+        /// Group write permission.
+        const S_IWGRP = 0x0010;
+        /// Group read permission.
+        const S_IRGRP = 0x0020;
+
+        /// User execute permission.
+        const S_IXUSR = 0x0040;
+        /// User write permission.
+        const S_IWUSR = 0x0080;
+        /// User read permission.
+        const S_IRUSR = 0x0100;
+
+        /// Sticky bit.
+        const S_ISVTX = 0x0200;
+
+        /// Setgid bit.
+        const S_ISGID = 0x0400;
+        /// Setuid bit.
+        const S_ISUID = 0x0800;
+
+        // Mutually-exclusive file types:
+        /// Named pipe (FIFO).
+        const S_IFIFO = 0x1000;
+        /// Character device.
+        const S_IFCHR = 0x2000;
+        /// Directory.
+        const S_IFDIR = 0x4000;
+        /// Block device.
+        const S_IFBLK = 0x6000;
+        /// Regular file.
+        const S_IFREG = 0x8000;
+        /// Symbolic link.
+        const S_IFLNK = 0xA000;
+        /// Socket.
+        const S_IFSOCK = 0xC000;
+    }
+}
+
+fn timestamp_to_duration(timestamp: u32, high: Option<u32>) -> Duration {
+    if let Some(high) = high {
+        // Low 2 bits of `high` are the high 2 bits of the timestamp, and the rest of `high` is for nanosecond precision
+        let timestamp_high = high & 0b11;
+        let timestamp =
+            ((u64::from(timestamp_high)) << 32) | u64::from(timestamp);
+        Duration::new(timestamp, high >> 2)
+    } else {
+        Duration::from_secs(u64::from(timestamp))
+    }
+}
+
+fn duration_to_timestamp(duration: Duration) -> (u32, Option<u32>) {
+    let timestamp = duration.as_secs();
+    // ext4 encodes nanoseconds in the upper 30 bits of the "extra" field.
+    // Duration guarantees subsec_nanos < 1e9, but clamp defensively anyway.
+    let nanos = duration.subsec_nanos().min(999_999_999);
+
+    if timestamp > u64::from(u32::MAX) || nanos != 0 {
+        #[expect(clippy::as_conversions)]
+        let timestamp_high = (timestamp >> 32) as u32;
+        #[expect(clippy::as_conversions)]
+        let timestamp_low = timestamp as u32;
+        let high = (timestamp_high & 0b11) | (nanos << 2);
+        (timestamp_low, Some(high))
+    } else {
+        (u32::try_from(timestamp).unwrap(), None)
+    }
+}
+
+/// An inode within an Ext4 filesystem.
+#[derive(Clone, Debug)]
+pub struct Inode {
+    /// This inode's index.
+    /// This is constant, so it is safe to cache it and expose it as a public field.
+    pub index: InodeIndex,
+
+    /// Kept for backwards compatibility, because initialization can cause erroring out.
+    file_type: FileType,
+
+    /// Full inode data as read from disk.
+    pub(crate) inode_data: Vec<u8>,
+
+    /// Checksum seed used in various places.
+    checksum_base: Checksum,
+}
+
+impl Inode {
+    const INLINE_DATA_LEN: usize = 60;
+    const L_I_CHECKSUM_LO_OFFSET: usize = 0x74 + 0x8;
+    const I_CHECKSUM_HI_OFFSET: usize = 0x82;
+
+    /// Load an inode from `bytes`.
+    ///
+    /// If successful, returns a tuple containing the inode and its
+    /// checksum field.
+    fn from_bytes(
+        ext4: &Ext4,
+        index: InodeIndex,
+        data: &[u8],
+    ) -> Result<(Self, u32), Ext4Error> {
+        // Inodes must be at least 128 bytes.
+        if data.len() < 128 {
+            return Err(CorruptKind::InodeTruncated {
+                inode: index,
+                size: data.len(),
+            }
+            .into());
+        }
+
+        // If metadata checksums are enabled, the inode must be big
+        // enough to include the checksum fields.
+        if ext4.has_metadata_checksums()
+            && data.len() < (Self::I_CHECKSUM_HI_OFFSET + 2)
+        {
+            return Err(CorruptKind::InodeTruncated {
+                inode: index,
+                size: data.len(),
+            }
+            .into());
+        }
+
+        let i_mode = read_u16le(data, 0x0);
+        let i_generation = read_u32le(data, 0x64);
+        let (l_i_checksum_lo, i_checksum_hi) = if ext4.has_metadata_checksums()
+        {
+            (
+                read_u16le(data, Self::L_I_CHECKSUM_LO_OFFSET),
+                read_u16le(data, Self::I_CHECKSUM_HI_OFFSET),
+            )
+        } else {
+            // If metadata checksums aren't enabled then these values
+            // aren't used; arbitrarily set to zero.
+            (0, 0)
+        };
+
+        let checksum = u32_from_hilo(i_checksum_hi, l_i_checksum_lo);
+        let mode = InodeMode::from_bits_retain(i_mode);
+
+        let mut checksum_base =
+            Checksum::with_seed(ext4.0.superblock.checksum_seed());
+        checksum_base.update_u32_le(index.get());
+        checksum_base.update_u32_le(i_generation);
+
+        Ok((
+            Self {
+                index,
+                file_type: FileType::try_from(mode).map_err(|_| {
+                    CorruptKind::InodeFileType { inode: index, mode }
+                })?,
+                inode_data: data.to_vec(),
+                checksum_base,
+            },
+            checksum,
+        ))
+    }
+
+    /// Initialize a new inode with the given index and creation data, and write it to disk.
+    /// Assumes that the caller has already allocated the inode and is passing in a valid index.
+    #[maybe_async::maybe_async]
+    pub(crate) async fn create(
+        index: InodeIndex,
+        inode_creation_data: InodeCreationOptions,
+        ext4: &Ext4,
+    ) -> Result<Self, Ext4Error> {
+        let inode_data = vec![0; usize::from(ext4.0.superblock.inode_size())];
+        let mut checksum_base =
+            Checksum::with_seed(ext4.0.superblock.checksum_seed());
+        checksum_base.update_u32_le(index.get());
+        checksum_base.update_u32_le(0); // i_generation is zero for new inodes
+
+        let mut inode = Self {
+            index,
+            file_type: inode_creation_data.file_type,
+            inode_data,
+            checksum_base,
+        };
+
+        inode.set_mode(inode_creation_data.mode)?;
+        inode.set_uid(inode_creation_data.uid);
+        inode.set_gid(inode_creation_data.gid);
+        inode.set_size_in_bytes(0);
+        inode.set_atime(inode_creation_data.time);
+        inode.set_ctime(inode_creation_data.time);
+        inode.set_mtime(inode_creation_data.time);
+        inode.set_dtime(Duration::from_secs(0));
+        inode.set_crtime(inode_creation_data.time);
+        inode.set_links_count(0);
+        inode.set_extra_size(
+            (0x9C + 4 - 128).min(ext4.0.superblock.min_extra_isize()),
+        ); // All fields up to and including i_projid
+        let mut flags = inode_creation_data.flags;
+        if ext4
+            .0
+            .superblock
+            .incompatible_features()
+            .contains(IncompatibleFeatures::EXTENTS)
+        {
+            flags |= InodeFlags::EXTENTS;
+        } else {
+            flags &= !InodeFlags::EXTENTS;
+        }
+        inode.set_flags(flags);
+        let blocks = FileBlocks::initialize(&inode, ext4.clone())?;
+        let inline_data = blocks.to_bytes()?;
+        inode.set_inline_data(inline_data);
+        inode.write(ext4).await?;
+        Ok(inode)
+    }
+
+    /// Read an inode.
+    #[maybe_async::maybe_async]
+    pub async fn read(
+        ext4: &Ext4,
+        inode: InodeIndex,
+    ) -> Result<Self, Ext4Error> {
+        let (block_index, offset_within_block) =
+            get_inode_location(ext4, inode)?;
+
+        let mut data = vec![0; usize::from(ext4.0.superblock.inode_size())];
+        ext4.read_from_block(block_index, offset_within_block, &mut data)
+            .await?;
+
+        let (inode, expected_checksum) = Self::from_bytes(ext4, inode, &data)?;
+
+        // Verify the inode checksum.
+        if ext4.has_metadata_checksums() {
+            let mut checksum = inode.checksum_base.clone();
+
+            // Hash all the inode data, but treat the two checksum
+            // fields as zeroes.
+
+            // Up to the l_i_checksum_lo field.
+            checksum.update(&data[..Self::L_I_CHECKSUM_LO_OFFSET]);
+
+            // Zero'd field.
+            checksum.update_u16_le(0);
+
+            // Up to the i_checksum_hi field.
+            checksum.update(
+                &data[Self::L_I_CHECKSUM_LO_OFFSET + 2
+                    ..Self::I_CHECKSUM_HI_OFFSET],
+            );
+
+            // Zero'd field.
+            checksum.update_u16_le(0);
+
+            // Rest of the inode.
+            checksum.update(&data[Self::I_CHECKSUM_HI_OFFSET + 2..]);
+
+            let actual_checksum = checksum.finalize();
+            if actual_checksum != expected_checksum {
+                return Err(CorruptKind::InodeChecksum(inode.index).into());
+            }
+        }
+
+        Ok(inode)
+    }
+
+    pub(crate) fn update_inode_data(&mut self, ext4: &Ext4) {
+        if ext4.has_metadata_checksums() {
+            let mut checksum = self.checksum_base.clone();
+            // Up to the l_i_checksum_lo field.
+            checksum.update(&self.inode_data[..Self::L_I_CHECKSUM_LO_OFFSET]);
+            // Zero'd field.
+            checksum.update_u16_le(0);
+            // Up to the i_checksum_hi field.
+            checksum.update(
+                &self.inode_data[Self::L_I_CHECKSUM_LO_OFFSET + 2
+                    ..Self::I_CHECKSUM_HI_OFFSET],
+            );
+            // Zero'd field.
+            checksum.update_u16_le(0);
+            // Rest of the inode.
+            checksum.update(&self.inode_data[Self::I_CHECKSUM_HI_OFFSET + 2..]);
+            let final_checksum = checksum.finalize();
+            let (checksum_hi, checksum_lo) = u32_to_hilo(final_checksum);
+            self.inode_data[Self::L_I_CHECKSUM_LO_OFFSET
+                ..Self::L_I_CHECKSUM_LO_OFFSET + 2]
+                .copy_from_slice(&checksum_lo.to_le_bytes());
+            self.inode_data
+                [Self::I_CHECKSUM_HI_OFFSET..Self::I_CHECKSUM_HI_OFFSET + 2]
+                .copy_from_slice(&checksum_hi.to_le_bytes());
+        }
+    }
+
+    /// Write the inode back to disk.
+    #[maybe_async::maybe_async]
+    pub async fn write(&mut self, ext4: &Ext4) -> Result<(), Ext4Error> {
+        let (block_index, offset_within_block) =
+            get_inode_location(ext4, self.index)?;
+        let block_size = ext4.0.superblock.block_size().to_u64();
+        let pos = block_index
+            .checked_mul(block_size)
+            .ok_or(CorruptKind::InvalidBlockSize)?
+            .checked_add(u64::from(offset_within_block))
+            .ok_or(CorruptKind::InvalidBlockSize)?;
+        self.update_inode_data(ext4);
+        // Write only the data we've saved to avoid overwriting any unread info
+        let writer = ext4.0.writer.as_ref().ok_or(Ext4Error::Readonly)?;
+        writer
+            .write(pos, &self.inode_data)
+            .await
+            .map_err(Ext4Error::Io)?;
+        Ok(())
+    }
+
+    /// Zero out the disk at inode location
+    #[maybe_async::maybe_async]
+    pub(crate) async fn zero(&mut self, ext4: &Ext4) -> Result<(), Ext4Error> {
+        let (block_index, offset_within_block) =
+            get_inode_location(ext4, self.index)?;
+        let block_size = ext4.0.superblock.block_size().to_u64();
+        let pos = block_index
+            .checked_mul(block_size)
+            .ok_or(CorruptKind::InvalidBlockSize)?
+            .checked_add(u64::from(offset_within_block))
+            .ok_or(CorruptKind::InvalidBlockSize)?;
+        let zeros = vec![0; self.inode_data.len()];
+        // Write only the data we've saved to avoid overwriting any unread info
+        let writer = ext4.0.writer.as_ref().ok_or(Ext4Error::Readonly)?;
+        writer.write(pos, &zeros).await.map_err(Ext4Error::Io)?;
+        Ok(())
+    }
+
+    /// Get the target path of a symlink inode.
+    #[maybe_async::maybe_async]
+    pub async fn symlink_target(
+        &self,
+        ext4: &Ext4,
+    ) -> Result<PathBuf, Ext4Error> {
+        if !self.file_type.is_symlink() {
+            return Err(Ext4Error::NotASymlink);
+        }
+
+        // An empty symlink target is not allowed.
+        if self.size_in_bytes() == 0 {
+            return Err(CorruptKind::SymlinkTarget(self.index).into());
+        }
+
+        // Symlink targets of up to 59 bytes are stored inline. Longer
+        // targets are stored as regular file data.
+        const MAX_INLINE_SYMLINK_LEN: u64 = 59;
+
+        if self.size_in_bytes() <= MAX_INLINE_SYMLINK_LEN {
+            // OK to unwrap since we checked the size above.
+            let len = usize::try_from(self.size_in_bytes()).unwrap();
+            let target = &self.inline_data()[..len];
+
+            PathBuf::try_from(target)
+                .map_err(|_| CorruptKind::SymlinkTarget(self.index).into())
+        } else {
+            let data = ext4.read_inode_file(self).await?;
+            PathBuf::try_from(data)
+                .map_err(|_| CorruptKind::SymlinkTarget(self.index).into())
+        }
+    }
+
+    /// Get the size of the inode
+    fn entry_size(&self) -> NonZeroU16 {
+        if self.inode_data.len() < 0x80 + 2 {
+            return NonZeroU16::new(128).unwrap();
+        }
+        let i_extra_isize = read_u16le(&self.inode_data, 0x80);
+        NonZeroU16::new(i_extra_isize.checked_add(128).unwrap()).unwrap()
+    }
+
+    fn set_extra_size(&mut self, extra_isize: u16) {
+        let total_size = extra_isize.checked_add(128).unwrap();
+        write_u16le(&mut self.inode_data, 0x80, extra_isize);
+        if self.inode_data.len() < usize::from(total_size) {
+            self.inode_data.resize(usize::from(total_size), 0);
+        }
+    }
+
+    /// Get the number of blocks in the file.
+    ///
+    /// If the file size is not an even multiple of the block size,
+    /// round up.
+    ///
+    /// # Errors
+    ///
+    /// Ext4 allows at most `2^32` blocks in a file. Returns
+    /// `CorruptKind::TooManyBlocksInFile` if that limit is exceeded.
+    pub fn file_size_in_blocks(&self, ext4: &Ext4) -> Result<u32, Ext4Error> {
+        Ok(self
+            .size_in_bytes()
+            // Round up.
+            .div_ceil(ext4.0.superblock.block_size().to_u64())
+            // Ext4 allows at most `2^32` blocks in a file.
+            .try_into()
+            .map_err(|_| CorruptKind::TooManyBlocksInFile)?)
+    }
+
+    #[must_use]
+    pub(crate) fn inline_data(&self) -> [u8; Self::INLINE_DATA_LEN] {
+        // OK to unwrap: already checked the length.
+        let i_block = self
+            .inode_data
+            .get(0x28..0x28 + Self::INLINE_DATA_LEN)
+            .unwrap();
+        // OK to unwrap, we know `i_block` is 60 bytes.
+        i_block.try_into().unwrap()
+    }
+
+    pub(crate) fn set_inline_data(
+        &mut self,
+        data: [u8; Self::INLINE_DATA_LEN],
+    ) {
+        self.inode_data[0x28..0x28 + Self::INLINE_DATA_LEN]
+            .copy_from_slice(&data);
+    }
+
+    /// Get the inode's mode bits.
+    #[must_use]
+    pub fn mode(&self) -> InodeMode {
+        let i_mode = read_u16le(&self.inode_data, 0x0);
+        InodeMode::from_bits_retain(i_mode)
+    }
+
+    /// Set the inode's mode bits.
+    pub fn set_mode(&mut self, mode: InodeMode) -> Result<(), Ext4Error> {
+        write_u16le(&mut self.inode_data, 0x0, mode.bits());
+        self.file_type = FileType::try_from(mode).map_err(|_| {
+            CorruptKind::InodeFileType {
+                inode: self.index,
+                mode,
+            }
+        })?;
+        Ok(())
+    }
+
+    /// Get the file type based on the mode bits.
+    #[must_use]
+    pub fn file_type(&self) -> FileType {
+        self.file_type
+    }
+
+    /// Set the file type based on the mode bits.
+    pub fn set_file_type(&mut self, file_type: FileType) {
+        self.file_type = file_type;
+    }
+
+    /// Get the inode's user ID.
+    #[must_use]
+    pub fn uid(&self) -> u32 {
+        let i_uid = read_u16le(&self.inode_data, 0x2);
+        let l_i_uid_high = read_u16le(&self.inode_data, 0x74 + 0x4);
+        u32_from_hilo(l_i_uid_high, i_uid)
+    }
+
+    /// Set the inode's user ID.
+    pub fn set_uid(&mut self, uid: u32) {
+        let (l_i_uid_high, i_uid) = u32_to_hilo(uid);
+        write_u16le(&mut self.inode_data, 0x2, i_uid);
+        write_u16le(&mut self.inode_data, 0x74 + 0x4, l_i_uid_high);
+    }
+
+    /// Get the inode's group ID.
+    #[must_use]
+    pub fn gid(&self) -> u32 {
+        let i_gid = read_u16le(&self.inode_data, 0x18);
+        let l_i_gid_high = read_u16le(&self.inode_data, 0x74 + 0x6);
+        u32_from_hilo(l_i_gid_high, i_gid)
+    }
+
+    /// Set the inode's group ID.
+    pub fn set_gid(&mut self, gid: u32) {
+        let (l_i_gid_high, i_gid) = u32_to_hilo(gid);
+        write_u16le(&mut self.inode_data, 0x18, i_gid);
+        write_u16le(&mut self.inode_data, 0x74 + 0x6, l_i_gid_high);
+    }
+
+    /// Get the inode's size in bytes.
+    #[must_use]
+    pub fn size_in_bytes(&self) -> u64 {
+        let i_size_lo = read_u32le(&self.inode_data, 0x4);
+        let i_size_high = read_u32le(&self.inode_data, 0x6c);
+        u64_from_hilo(i_size_high, i_size_lo)
+    }
+
+    /// Set the inode's size in bytes.
+    pub fn set_size_in_bytes(&mut self, size_in_bytes: u64) {
+        let (i_size_high, i_size_lo) = u64_to_hilo(size_in_bytes);
+        write_u32le(&mut self.inode_data, 0x4, i_size_lo);
+        write_u32le(&mut self.inode_data, 0x6c, i_size_high);
+    }
+
+    /// Get the number of blocks allocated to the inode.
+    #[must_use]
+    pub fn blocks(&self) -> u64 {
+        let i_blocks_lo = read_u32le(&self.inode_data, 0x1c);
+        let i_blocks_high = read_u32le(&self.inode_data, 0x74);
+        u64_from_hilo(i_blocks_high, i_blocks_lo)
+    }
+
+    /// Set the number of blocks allocated to the inode.
+    pub(crate) fn set_blocks(&mut self, blocks: u64) {
+        let (i_blocks_high, i_blocks_lo) = u64_to_hilo(blocks);
+        write_u32le(&mut self.inode_data, 0x1c, i_blocks_lo);
+        write_u32le(&mut self.inode_data, 0x74, i_blocks_high);
+    }
+
+    /// Get the number of filesystem blocks allocated to the inode.
+    ///
+    /// This abstracts away the difference between "blocks" and "filesystem blocks" for the caller.
+    pub fn fs_blocks(&self, ext4: &Ext4) -> Result<u64, Ext4Error> {
+        let real_blocks = self.blocks();
+        if self.flags().contains(InodeFlags::HUGE_FILE) {
+            Ok(real_blocks)
+        } else {
+            Ok(real_blocks
+                .checked_div(ext4.0.superblock.block_size().to_u64() / 512)
+                .ok_or(CorruptKind::TooManyBlocksInFile)?)
+        }
+    }
+
+    /// Set the number of filesystem blocks allocated to the inode.
+    ///
+    /// This abstracts away the difference between "blocks" and "filesystem blocks" for the caller.
+    pub fn set_fs_blocks(
+        &mut self,
+        blocks: u64,
+        ext4: &Ext4,
+    ) -> Result<u64, Ext4Error> {
+        let real_blocks = if self.flags().contains(InodeFlags::HUGE_FILE) {
+            blocks
+        } else {
+            blocks
+                .checked_mul(ext4.0.superblock.block_size().to_u64() / 512)
+                .ok_or(CorruptKind::TooManyBlocksInFile)?
+        };
+        self.set_blocks(real_blocks);
+        Ok(real_blocks)
+    }
+
+    /// Get the inode's access time.
+    #[must_use]
+    pub fn atime(&self) -> Duration {
+        let i_atime = read_u32le(&self.inode_data, 0x8);
+        let i_atime_extra = if self.entry_size().get() >= 0x8C + 4 {
+            Some(read_u32le(&self.inode_data, 0x8C))
+        } else {
+            None
+        };
+        timestamp_to_duration(i_atime, i_atime_extra)
+    }
+
+    /// Set the inode's access time.
+    pub fn set_atime(&mut self, atime: Duration) {
+        let (i_atime, i_atime_extra) = duration_to_timestamp(atime);
+        write_u32le(&mut self.inode_data, 0x8, i_atime);
+        if self.entry_size().get() >= 0x8C + 4 {
+            // Always write the extra field so old values don't leak.
+            write_u32le(&mut self.inode_data, 0x8C, i_atime_extra.unwrap_or(0));
+        }
+    }
+
+    /// Get the inode's creation time.
+    #[must_use]
+    pub fn ctime(&self) -> Duration {
+        let i_ctime = read_u32le(&self.inode_data, 0xc);
+        let i_ctime_extra = if self.entry_size().get() >= 0x84 + 4 {
+            Some(read_u32le(&self.inode_data, 0x84))
+        } else {
+            None
+        };
+        timestamp_to_duration(i_ctime, i_ctime_extra)
+    }
+
+    /// Set the inode's creation time.
+    pub fn set_ctime(&mut self, ctime: Duration) {
+        let (i_ctime, i_ctime_extra) = duration_to_timestamp(ctime);
+        write_u32le(&mut self.inode_data, 0xc, i_ctime);
+        if self.entry_size().get() >= 0x84 + 4 {
+            write_u32le(&mut self.inode_data, 0x84, i_ctime_extra.unwrap_or(0));
+        }
+    }
+
+    /// Get the inode's modification time.
+    #[must_use]
+    pub fn mtime(&self) -> Duration {
+        let i_mtime = read_u32le(&self.inode_data, 0x10);
+        let i_mtime_extra = if self.entry_size().get() >= 0x88 + 4 {
+            Some(read_u32le(&self.inode_data, 0x88))
+        } else {
+            None
+        };
+        timestamp_to_duration(i_mtime, i_mtime_extra)
+    }
+
+    /// Set the inode's modification time.
+    pub fn set_mtime(&mut self, mtime: Duration) {
+        let (i_mtime, i_mtime_extra) = duration_to_timestamp(mtime);
+        write_u32le(&mut self.inode_data, 0x10, i_mtime);
+        if self.entry_size().get() >= 0x88 + 4 {
+            write_u32le(&mut self.inode_data, 0x88, i_mtime_extra.unwrap_or(0));
+        }
+    }
+
+    /// Get the inode's delete time.
+    #[must_use]
+    pub fn dtime(&self) -> Duration {
+        let i_dtime = read_u32le(&self.inode_data, 0x14);
+        timestamp_to_duration(i_dtime, None)
+    }
+
+    /// Set the inode's delete time.
+    pub fn set_dtime(&mut self, dtime: Duration) {
+        let i_dtime = dtime.as_secs().try_into().unwrap_or(u32::MAX);
+        write_u32le(&mut self.inode_data, 0x14, i_dtime);
+    }
+
+    /// Get the inode's delete time directly from a raw value, without converting to/from `Duration`.
+    #[must_use]
+    pub fn dtime_val(&self) -> u32 {
+        read_u32le(&self.inode_data, 0x14)
+    }
+
+    /// Set the inode's delete time directly from a raw value, without converting to/from `Duration`.
+    pub fn set_dtime_val(&mut self, dtime: u32) {
+        write_u32le(&mut self.inode_data, 0x14, dtime);
+    }
+
+    /// Get the inode's creation time, if available.
+    #[must_use]
+    pub fn crtime(&self) -> Option<Duration> {
+        if self.entry_size().get() >= 0x90 + 4 {
+            let i_crtime = read_u32le(&self.inode_data, 0x90);
+            let i_crtime_extra = if self.entry_size().get() >= 0x94 + 4 {
+                Some(read_u32le(&self.inode_data, 0x94))
+            } else {
+                None
+            };
+            Some(timestamp_to_duration(i_crtime, i_crtime_extra))
+        } else {
+            None
+        }
+    }
+
+    /// Set the inode's creation time, if the field is available.
+    pub fn set_crtime(&mut self, crtime: Duration) {
+        if self.entry_size().get() >= 0x90 + 4 {
+            let (i_crtime, i_crtime_extra) = duration_to_timestamp(crtime);
+            write_u32le(&mut self.inode_data, 0x90, i_crtime);
+            if self.entry_size().get() >= 0x94 + 4 {
+                write_u32le(
+                    &mut self.inode_data,
+                    0x94,
+                    i_crtime_extra.unwrap_or(0),
+                );
+            }
+        }
+    }
+
+    /// Get the inode's links count.
+    #[must_use]
+    pub fn links_count(&self) -> u16 {
+        read_u16le(&self.inode_data, 0x1a)
+    }
+
+    /// Set the inode's links count.
+    pub fn set_links_count(&mut self, links_count: u16) {
+        write_u16le(&mut self.inode_data, 0x1a, links_count);
+    }
+
+    /// Get the inode's metadata.
+    #[must_use]
+    pub fn metadata(&self) -> Metadata {
+        Metadata {
+            size_in_bytes: self.size_in_bytes(),
+            mode: self.mode(),
+            uid: self.uid(),
+            gid: self.gid(),
+            atime: self.atime(),
+            ctime: self.ctime(),
+            dtime: self.dtime(),
+            crtime: self.crtime(),
+            file_type: self.file_type,
+            mtime: self.mtime(),
+            links_count: self.links_count(),
+        }
+    }
+
+    pub(crate) fn checksum_base(&self) -> &Checksum {
+        &self.checksum_base
+    }
+
+    /// Get the inode's flags.
+    #[must_use]
+    pub fn flags(&self) -> InodeFlags {
+        let i_flags = read_u32le(&self.inode_data, 0x20);
+        InodeFlags::from_bits_retain(i_flags)
+    }
+
+    /// Set the inode's flags.
+    pub fn set_flags(&mut self, flags: InodeFlags) {
+        // i_flags
+        self.inode_data[0x20..0x24]
+            .copy_from_slice(&flags.bits().to_le_bytes());
+    }
+
+    pub(crate) fn file_acl(&self) -> u64 {
+        let i_file_acl_lo = read_u32le(&self.inode_data, 0x68);
+        let i_file_acl_high = read_u16le(&self.inode_data, 0x76);
+        u64_from_hilo(u32::from(i_file_acl_high), i_file_acl_lo)
+    }
+
+    pub(crate) fn set_file_acl(&mut self, file_acl: u64) {
+        let file_acl_hi = u32::try_from(file_acl >> 32).unwrap();
+        let file_acl_lo = u32::try_from(file_acl & 0xffff_ffff).unwrap();
+        let (file_acl_hi_hi, file_acl_hi_lo) = u32_to_hilo(file_acl_hi);
+        assert_eq!(file_acl_hi_hi, 0);
+        write_u32le(&mut self.inode_data, 0x68, file_acl_lo);
+        write_u16le(&mut self.inode_data, 0x76, file_acl_hi_lo);
+    }
+}
+
+pub(crate) fn get_inode_block_group_location(
+    sb: &Superblock,
+    inode: InodeIndex,
+) -> Result<(BlockGroupIndex, u32), Ext4Error> {
+    let inode_minus_1 = inode.get().checked_sub(1).unwrap();
+
+    let block_group_index = inode_minus_1 / sb.inodes_per_block_group();
+    let index_within_group = inode_minus_1 % sb.inodes_per_block_group();
+
+    Ok((block_group_index, index_within_group))
+}
+
+/// Get an inode's location: block index and offset within that block.
+/// Note that this is the location of the inode itself, not the file
+/// data associated with the inode.
+fn get_inode_location(
+    ext4: &Ext4,
+    inode: InodeIndex,
+) -> Result<(FsBlockIndex, u32), Ext4Error> {
+    let sb = &ext4.0.superblock;
+
+    let (block_group_index, index_within_group) =
+        get_inode_block_group_location(sb, inode)?;
+
+    let group = ext4.get_block_group_descriptor(block_group_index);
+
+    let err = || CorruptKind::InodeLocation {
+        inode,
+        block_group: block_group_index,
+        inodes_per_block_group: sb.inodes_per_block_group(),
+        inode_size: sb.inode_size(),
+        block_size: sb.block_size(),
+        inode_table_first_block: group.inode_table_first_block(),
+    };
+
+    let byte_offset_within_group = u64::from(index_within_group)
+        .checked_mul(u64::from(sb.inode_size()))
+        .ok_or_else(err)?;
+
+    let byte_offset_of_group = sb
+        .block_size()
+        .to_u64()
+        .checked_mul(group.inode_table_first_block())
+        .ok_or_else(err)?;
+
+    // Absolute byte index of the inode.
+    let start_byte = byte_offset_of_group
+        .checked_add(byte_offset_within_group)
+        .ok_or_else(err)?;
+
+    let block_index = start_byte / sb.block_size().to_nz_u64();
+    let offset_within_block =
+        u32::try_from(start_byte % sb.block_size().to_nz_u64())
+            .map_err(|_| err())?;
+
+    Ok((block_index, offset_within_block))
+}

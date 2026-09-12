@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* One reviewed IRETQ boundary for the bounded v0.7.0 CPL3 proof. */
+/* IRETQ entry boundary for a fresh CPL3 process. */
 
-/* Mirrors the selectors and user-frame contract in include/sapote/cpu.h. */
+/* Mirrors the selectors and user-frame contract in include/phipia/cpu.h. */
 .set USER_DATA_SELECTOR, 0x2B
 .set USER_CODE_SELECTOR, 0x33
 .set USER_RFLAGS, 0x2
@@ -49,23 +49,9 @@ process_enter_user:
 .size process_enter_user, . - process_enter_user
 
 /*
- * void process_enter_user_context(const struct process_user_context *context)
- *
- * The same reviewed IRETQ boundary as process_enter_user, entered from a saved
- * register set instead of from a bare entry and stack. The bounded
- * multiprocess scheduler needs it because a process it gives the processor
- * back to must resume with exactly the registers it left with, and because a
- * process entered for the first time is handed its identity and round count in
- * registers rather than through memory it has not been given yet.
- *
- * It publishes the same two words as process_enter_user, so an interrupt taken
- * out of CPL3 returns through the one resume path in interrupts.S. Only one
- * user process runs at a time on a single core, so one boundary is the whole
- * boundary; what changed is which saved context is loaded into it.
- *
- * The context layout mirrors struct process_user_context in
- * include/sapote/process.h, and process_user_context_layout_self_test refuses
- * to boot if the two ever disagree.
+ * Enter CPL3 from a saved process_user_context. The function publishes the same
+ * resume state as process_enter_user so interrupts return through interrupts.S.
+ * The context layout mirrors include/phipia/process.h and is checked at boot.
  */
 .set CONTEXT_RAX, 0
 .set CONTEXT_RBX, 8

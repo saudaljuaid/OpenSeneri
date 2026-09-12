@@ -2,8 +2,8 @@
 
 # A model of the NVIDIA register interface
 
-`sapote_nvidia_model.c` is a QEMU device that puts PCI vendor `0x10DE` on the
-bus with the registers, apertures and capabilities Sapote's fifteen NVIDIA
+`phipia_nvidia_model.c` is a QEMU device that puts PCI vendor `0x10DE` on the
+bus with the registers, apertures and capabilities Phipia's fifteen NVIDIA
 drivers read. It exists because no emulator models an NVIDIA part and because
 those drivers would otherwise be code that has never executed.
 
@@ -43,14 +43,14 @@ both the driver and the model, and its "the two configuration paths agree" and
 
 ## Building
 
-QEMU 8.2.2 is the version Sapote's own scenarios are verified on; 9.1.0 also
+QEMU 8.2.2 is the version Phipia's own scenarios are verified on; 9.1.0 also
 works. Building 9.1 is what first exposed the RF handling described in
 `docs/NVIDIA.md`, and the model runs on either.
 
 ```sh
 git clone --depth 1 --branch v8.2.2 https://github.com/qemu/qemu.git
-cp tools/qemu/sapote_nvidia_model.c qemu/hw/misc/
-printf "%s\n" "system_ss.add(when: 'CONFIG_PCI', if_true: files('sapote_nvidia_model.c'))" \
+cp tools/qemu/phipia_nvidia_model.c qemu/hw/misc/
+printf "%s\n" "system_ss.add(when: 'CONFIG_PCI', if_true: files('phipia_nvidia_model.c'))" \
     >> qemu/hw/misc/meson.build
 cd qemu && ./configure --target-list=x86_64-softmmu --disable-docs --disable-tools
 ninja -C build qemu-system-x86_64
@@ -63,8 +63,8 @@ python3 tools/nvidia_vbios_image.py --write /tmp/reference-vbios.rom
 qemu/build/qemu-system-x86_64 -machine q35,accel=tcg -m 128M -smp 1 \
     -display none -monitor none -serial stdio -no-reboot \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -cdrom <sapote.iso with sapote.test=nvidia> -vga std \
-    -device sapote-nvidia-model,boot0=0x164000A1,straps=0x0000042C,\
+    -cdrom <phipia.iso with phipia.test=nvidia> -vga std \
+    -device phipia-nvidia-model,boot0=0x164000A1,straps=0x0000042C,\
         subsystem=0x87651043,vbios=/tmp/reference-vbios.rom
 ```
 

@@ -10,7 +10,7 @@ mod native_image;
 fn main() {}
 
 fn application() -> Option<Vec<u8>> {
-    let path = std::env::var("SAPOTE_NATIVE_TEST_ELF").ok()?;
+    let path = std::env::var("PHIPIA_NATIVE_TEST_ELF").ok()?;
     Some(std::fs::read(path).expect("read SDK application"))
 }
 

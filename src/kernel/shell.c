@@ -3,24 +3,24 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/clock.h>
-#include <sapote/boot_ledger.h>
-#include <sapote/console.h>
-#include <sapote/cpu.h>
-#include <sapote/framebuffer.h>
-#include <sapote/fat32_fs.h>
-#include <sapote/heap.h>
-#include <sapote/keyboard.h>
-#include <sapote/linux_userland.h>
-#include <sapote/linux_syscall.h>
-#include <sapote/memory.h>
-#include <sapote/native_process.h>
-#include <sapote/network.h>
-#include <sapote/pci.h>
-#include <sapote/screen.h>
-#include <sapote/shell.h>
-#include <sapote/thread.h>
-#include <sapote/ui.h>
+#include <phipia/clock.h>
+#include <phipia/boot_ledger.h>
+#include <phipia/console.h>
+#include <phipia/cpu.h>
+#include <phipia/framebuffer.h>
+#include <phipia/fat32_fs.h>
+#include <phipia/heap.h>
+#include <phipia/keyboard.h>
+#include <phipia/linux_userland.h>
+#include <phipia/linux_syscall.h>
+#include <phipia/memory.h>
+#include <phipia/native_process.h>
+#include <phipia/network.h>
+#include <phipia/pci.h>
+#include <phipia/screen.h>
+#include <phipia/shell.h>
+#include <phipia/thread.h>
+#include <phipia/ui.h>
 
 /*
  * A command line.
@@ -40,7 +40,7 @@
  * mistakes, so an unknown command is a line of output and not an incident.
  */
 
-#define SHELL_PROMPT "sap> "
+#define SHELL_PROMPT "phip> "
 #define SHELL_NETWORK_OWNER UINT64_C(1)
 
 /* What splits a command from its arguments. Nothing exotic; space and tab. */
@@ -54,7 +54,7 @@ static char line[SHELL_LINE_LIMIT + 1U];
 static bool linux_prompt_evidence_pending;
 static bool ui_keyboard_operational;
 static bool ui_keyboard_decided;
-static char filesystem_cwd[SAPFS_MAX_PATH + 1U] = ".";
+static char filesystem_cwd[PHIPFS_MAX_PATH + 1U] = ".";
 
 struct foreground_input_state {
     uint8_t line[LINUX_CAT_INPUT_LINE_BYTES + 1U];
@@ -179,7 +179,7 @@ static void command_help(void)
     console_write("  netstat   bounded socket and packet counters\n");
     console_write("  reboot    sync, unmount, and restart cleanly\n");
     console_write("  clear     clear the screen\n");
-    console_write("  fetch     Sapote identity and live system summary\n");
+    console_write("  fetch     Phipia identity and live system summary\n");
     console_write("  uptime    nanoseconds since the clock started\n");
     console_write("  mem       physical frames and kernel heap\n");
     console_write("  pci       every function enumeration found\n");
@@ -213,7 +213,7 @@ static void command_linux(const char *arguments)
         console_serial_write("RW USERLAND unsupported profile refused\n");
         return;
     }
-    console_serial_write("RW USERLAND command accepted through Sapote Redwood shell linux ");
+    console_serial_write("RW USERLAND command accepted through Phipia shell linux ");
     console_serial_write(linux_userland_profile_name(profile));
     console_serial_write("\n");
     status = linux_userland_launch(profile, &result);
@@ -293,36 +293,36 @@ static void command_native_go(void)
     report_native_result(native_process_run(&result), &result);
 }
 
-static void filesystem_error(const char *command, enum sapfs_status status)
+static void filesystem_error(const char *command, enum phipfs_status status)
 {
     console_write(command);
     console_write(": ");
-    console_write(sapfs_status_string(status));
+    console_write(phipfs_status_string(status));
     console_putc('\n');
 }
 
 static bool filesystem_path(const char *argument, char *output)
 {
-    char combined[SAPFS_MAX_PATH + 1U];
+    char combined[PHIPFS_MAX_PATH + 1U];
     size_t used = 0U;
     size_t index = 0U;
     size_t output_used = 0U;
-    size_t component_starts[SAPFS_MAX_DEPTH];
+    size_t component_starts[PHIPFS_MAX_DEPTH];
     size_t depth = 0U;
 
     if (argument == NULL || output == NULL || argument[0] == '/') {
         return false;
     }
     if (filesystem_cwd[0] != '.' || filesystem_cwd[1] != '\0') {
-        while (filesystem_cwd[used] != '\0' && used < SAPFS_MAX_PATH) {
+        while (filesystem_cwd[used] != '\0' && used < PHIPFS_MAX_PATH) {
             combined[used] = filesystem_cwd[used];
             ++used;
         }
-        if (argument[0] != '\0' && used < SAPFS_MAX_PATH) {
+        if (argument[0] != '\0' && used < PHIPFS_MAX_PATH) {
             combined[used++] = '/';
         }
     }
-    while (argument[index] != '\0' && used < SAPFS_MAX_PATH) {
+    while (argument[index] != '\0' && used < PHIPFS_MAX_PATH) {
         combined[used++] = argument[index++];
     }
     if (argument[index] != '\0' || used == 0U) {
@@ -351,18 +351,18 @@ static bool filesystem_path(const char *argument, char *output)
                 --output_used;
             }
         } else {
-            if (depth >= SAPFS_MAX_DEPTH) {
+            if (depth >= PHIPFS_MAX_DEPTH) {
                 return false;
             }
             if (output_used != 0U) {
-                if (output_used >= SAPFS_MAX_PATH) {
+                if (output_used >= PHIPFS_MAX_PATH) {
                     return false;
                 }
                 output[output_used++] = '/';
             }
             component_starts[depth++] = output_used;
             for (size_t source = index; source < end; ++source) {
-                if (output_used >= SAPFS_MAX_PATH) {
+                if (output_used >= PHIPFS_MAX_PATH) {
                     return false;
                 }
                 output[output_used++] = combined[source];
@@ -396,7 +396,7 @@ static bool first_argument(
     }
     while (arguments[index] != '\0' &&
         !is_separator(arguments[index])) {
-        if (length >= SAPFS_MAX_PATH) {
+        if (length >= PHIPFS_MAX_PATH) {
             return false;
         }
         first[length++] = arguments[index++];
@@ -470,7 +470,7 @@ static bool line_content(
     return true;
 }
 
-static void print_drive(const char *name, struct sapfs_drive_info drive)
+static void print_drive(const char *name, struct phipfs_drive_info drive)
 {
     console_write(name);
     console_write("  fat32  ");
@@ -488,34 +488,34 @@ static void print_drive(const char *name, struct sapfs_drive_info drive)
 
 static void command_drives(void)
 {
-    print_drive("system", sapfs_drive(SAPFS_VOLUME_SYSTEM));
-    print_drive("data  ", sapfs_drive(SAPFS_VOLUME_DATA));
+    print_drive("system", phipfs_drive(PHIPFS_VOLUME_SYSTEM));
+    print_drive("data  ", phipfs_drive(PHIPFS_VOLUME_DATA));
 }
 
 static void command_mount(const char *arguments)
 {
-    enum sapfs_volume first = SAPFS_VOLUME_SYSTEM;
-    enum sapfs_volume last = SAPFS_VOLUME_DATA;
+    enum phipfs_volume first = PHIPFS_VOLUME_SYSTEM;
+    enum phipfs_volume last = PHIPFS_VOLUME_DATA;
 
     if (argument_equals(arguments, "system")) {
-        last = SAPFS_VOLUME_SYSTEM;
+        last = PHIPFS_VOLUME_SYSTEM;
     } else if (argument_equals(arguments, "data")) {
-        first = SAPFS_VOLUME_DATA;
+        first = PHIPFS_VOLUME_DATA;
     } else if (arguments[0] != '\0') {
         console_write("mount: use 'mount system' or 'mount data'\n");
         return;
     }
-    for (enum sapfs_volume volume = first; volume <= last;
-         volume = (enum sapfs_volume)(volume + 1)) {
-        struct sapfs_drive_info drive = sapfs_drive(volume);
-        enum sapfs_status status;
+    for (enum phipfs_volume volume = first; volume <= last;
+         volume = (enum phipfs_volume)(volume + 1)) {
+        struct phipfs_drive_info drive = phipfs_drive(volume);
+        enum phipfs_status status;
 
         if (drive.mounted) {
             continue;
         }
-        status = sapfs_mount(volume);
-        if (status != SAPFS_STATUS_OK) {
-            filesystem_error(volume == SAPFS_VOLUME_SYSTEM ?
+        status = phipfs_mount(volume);
+        if (status != PHIPFS_STATUS_OK) {
+            filesystem_error(volume == PHIPFS_VOLUME_SYSTEM ?
                 "mount system" : "mount data", status);
         }
     }
@@ -533,21 +533,21 @@ static void command_pwd(void)
 
 static void command_cd(const char *arguments)
 {
-    char path[SAPFS_MAX_PATH + 1U];
-    struct sapfs_stat stat;
-    enum sapfs_status status;
+    char path[PHIPFS_MAX_PATH + 1U];
+    struct phipfs_stat stat;
+    enum phipfs_status status;
 
     if (!filesystem_path(arguments[0] == '\0' ? "." : arguments, path)) {
         console_write("cd: malformed path\n");
         return;
     }
-    status = sapfs_stat_path(SAPFS_VOLUME_DATA, path, &stat);
-    if (status != SAPFS_STATUS_OK) {
+    status = phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat);
+    if (status != PHIPFS_STATUS_OK) {
         filesystem_error("cd", status);
         return;
     }
     if (!stat.directory) {
-        filesystem_error("cd", SAPFS_STATUS_NOT_DIRECTORY);
+        filesystem_error("cd", PHIPFS_STATUS_NOT_DIRECTORY);
         return;
     }
     size_t index = 0U;
@@ -558,18 +558,18 @@ static void command_cd(const char *arguments)
 
 static void command_ls(const char *arguments)
 {
-    char path[SAPFS_MAX_PATH + 1U];
-    struct sapfs_list_entry entries[SAPFS_MAX_LIST_ENTRIES];
+    char path[PHIPFS_MAX_PATH + 1U];
+    struct phipfs_list_entry entries[PHIPFS_MAX_LIST_ENTRIES];
     size_t count = 0U;
-    enum sapfs_status status;
+    enum phipfs_status status;
 
     if (!filesystem_path(arguments[0] == '\0' ? "." : arguments, path)) {
         console_write("ls: malformed path\n");
         return;
     }
-    status = sapfs_list(SAPFS_VOLUME_DATA, path, entries,
-        SAPFS_MAX_LIST_ENTRIES, &count);
-    if (status != SAPFS_STATUS_OK) {
+    status = phipfs_list(PHIPFS_VOLUME_DATA, path, entries,
+        PHIPFS_MAX_LIST_ENTRIES, &count);
+    if (status != PHIPFS_STATUS_OK) {
         filesystem_error("ls", status);
         return;
     }
@@ -586,92 +586,92 @@ static void command_ls(const char *arguments)
 
 static void command_mkdir(const char *arguments)
 {
-    char path[SAPFS_MAX_PATH + 1U];
-    enum sapfs_status status;
+    char path[PHIPFS_MAX_PATH + 1U];
+    enum phipfs_status status;
 
     if (arguments[0] == '\0' || !filesystem_path(arguments, path)) {
         console_write("mkdir: provide one relative 8.3 path\n");
         return;
     }
-    status = sapfs_mkdir(SAPFS_VOLUME_DATA, path);
-    if (status != SAPFS_STATUS_OK) {
+    status = phipfs_mkdir(PHIPFS_VOLUME_DATA, path);
+    if (status != PHIPFS_STATUS_OK) {
         filesystem_error("mkdir", status);
     }
 }
 
 static void command_touch(const char *arguments)
 {
-    char path[SAPFS_MAX_PATH + 1U];
-    struct sapfs_stat stat;
-    enum sapfs_status status;
+    char path[PHIPFS_MAX_PATH + 1U];
+    struct phipfs_stat stat;
+    enum phipfs_status status;
 
     if (arguments[0] == '\0' || !filesystem_path(arguments, path)) {
         console_write("touch: provide one relative 8.3 path\n");
         return;
     }
-    status = sapfs_stat_path(SAPFS_VOLUME_DATA, path, &stat);
-    if (status == SAPFS_STATUS_OK) {
+    status = phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat);
+    if (status == PHIPFS_STATUS_OK) {
         if (stat.directory) {
-            filesystem_error("touch", SAPFS_STATUS_IS_DIRECTORY);
+            filesystem_error("touch", PHIPFS_STATUS_IS_DIRECTORY);
         }
         return;
     }
-    if (status != SAPFS_STATUS_NOT_FOUND) {
+    if (status != PHIPFS_STATUS_NOT_FOUND) {
         filesystem_error("touch", status);
         return;
     }
-    status = sapfs_create(SAPFS_VOLUME_DATA, path);
-    if (status != SAPFS_STATUS_OK) {
+    status = phipfs_create(PHIPFS_VOLUME_DATA, path);
+    if (status != PHIPFS_STATUS_OK) {
         filesystem_error("touch", status);
     }
 }
 
 static void command_read(const char *arguments)
 {
-    char path[SAPFS_MAX_PATH + 1U];
+    char path[PHIPFS_MAX_PATH + 1U];
     uint8_t buffer[128];
-    sapfs_handle handle;
-    enum sapfs_status status;
+    phipfs_handle handle;
+    enum phipfs_status status;
 
     if (arguments[0] == '\0' || !filesystem_path(arguments, path)) {
         console_write("read: provide one relative 8.3 path\n");
         return;
     }
-    status = sapfs_open(SAPFS_VOLUME_DATA, path, SAPFS_ACCESS_READ, &handle);
-    if (status != SAPFS_STATUS_OK) {
+    status = phipfs_open(PHIPFS_VOLUME_DATA, path, PHIPFS_ACCESS_READ, &handle);
+    if (status != PHIPFS_STATUS_OK) {
         filesystem_error("read", status);
         return;
     }
     for (;;) {
         size_t read_bytes = 0U;
 
-        status = sapfs_read(handle, buffer, sizeof(buffer), &read_bytes);
+        status = phipfs_read(handle, buffer, sizeof(buffer), &read_bytes);
         if (read_bytes != 0U) {
             console_write_n((const char *)buffer, read_bytes);
         }
-        if (status != SAPFS_STATUS_OK || read_bytes == 0U) {
+        if (status != PHIPFS_STATUS_OK || read_bytes == 0U) {
             break;
         }
     }
-    if (sapfs_close(handle) != SAPFS_STATUS_OK && status == SAPFS_STATUS_OK) {
-        status = SAPFS_STATUS_STALE_HANDLE;
+    if (phipfs_close(handle) != PHIPFS_STATUS_OK && status == PHIPFS_STATUS_OK) {
+        status = PHIPFS_STATUS_STALE_HANDLE;
     }
-    if (status != SAPFS_STATUS_OK) {
+    if (status != PHIPFS_STATUS_OK) {
         filesystem_error("read", status);
     }
 }
 
 static void command_write_line(const char *arguments, bool append)
 {
-    char argument_path[SAPFS_MAX_PATH + 1U];
-    char path[SAPFS_MAX_PATH + 1U];
+    char argument_path[PHIPFS_MAX_PATH + 1U];
+    char path[PHIPFS_MAX_PATH + 1U];
     const char *text;
     uint8_t content[SHELL_LINE_LIMIT + 1U];
     size_t content_bytes;
     size_t written = 0U;
-    sapfs_handle handle;
+    phipfs_handle handle;
     bool opened = false;
-    enum sapfs_status status;
+    enum phipfs_status status;
 
     if (!first_argument(arguments, argument_path, &text) ||
         !filesystem_path(argument_path, path) ||
@@ -681,52 +681,52 @@ static void command_write_line(const char *arguments, bool append)
             "write: use write PATH \"text\"\n");
         return;
     }
-    struct sapfs_stat stat;
-    status = sapfs_stat_path(SAPFS_VOLUME_DATA, path, &stat);
-    if (status == SAPFS_STATUS_NOT_FOUND) {
-        status = sapfs_create(SAPFS_VOLUME_DATA, path);
+    struct phipfs_stat stat;
+    status = phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat);
+    if (status == PHIPFS_STATUS_NOT_FOUND) {
+        status = phipfs_create(PHIPFS_VOLUME_DATA, path);
     }
-    if (status == SAPFS_STATUS_OK && !append) {
-        status = sapfs_truncate(SAPFS_VOLUME_DATA, path, 0U);
+    if (status == PHIPFS_STATUS_OK && !append) {
+        status = phipfs_truncate(PHIPFS_VOLUME_DATA, path, 0U);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_open(SAPFS_VOLUME_DATA, path,
-            SAPFS_ACCESS_WRITE, &handle);
-        opened = status == SAPFS_STATUS_OK;
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, path,
+            PHIPFS_ACCESS_WRITE, &handle);
+        opened = status == PHIPFS_STATUS_OK;
     }
-    if (status == SAPFS_STATUS_OK && append) {
-        uint32_t position;
+    if (status == PHIPFS_STATUS_OK && append) {
+        uint64_t position;
 
-        status = sapfs_seek(handle, 0, SAPFS_SEEK_END, &position);
+        status = phipfs_seek(handle, 0, PHIPFS_SEEK_END, &position);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_write(handle, content, content_bytes, &written);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_write(handle, content, content_bytes, &written);
     }
-    if (opened && sapfs_close(handle) != SAPFS_STATUS_OK &&
-        status == SAPFS_STATUS_OK) {
-        status = SAPFS_STATUS_STALE_HANDLE;
+    if (opened && phipfs_close(handle) != PHIPFS_STATUS_OK &&
+        status == PHIPFS_STATUS_OK) {
+        status = PHIPFS_STATUS_STALE_HANDLE;
     }
-    if (status != SAPFS_STATUS_OK || written != content_bytes) {
+    if (status != PHIPFS_STATUS_OK || written != content_bytes) {
         filesystem_error(append ? "append" : "write",
-            status != SAPFS_STATUS_OK ? status : SAPFS_STATUS_WRITEBACK);
+            status != PHIPFS_STATUS_OK ? status : PHIPFS_STATUS_WRITEBACK);
     }
 }
 
 static void command_write_at(const char *arguments)
 {
-    char argument_path[SAPFS_MAX_PATH + 1U];
-    char argument_offset[SAPFS_MAX_PATH + 1U];
-    char path[SAPFS_MAX_PATH + 1U];
+    char argument_path[PHIPFS_MAX_PATH + 1U];
+    char argument_offset[PHIPFS_MAX_PATH + 1U];
+    char path[PHIPFS_MAX_PATH + 1U];
     const char *after_path;
     const char *text;
     uint8_t content[SHELL_LINE_LIMIT + 1U];
     size_t content_bytes;
     size_t written = 0U;
     uint32_t offset;
-    uint32_t position = 0U;
-    sapfs_handle handle;
+    uint64_t position = 0U;
+    phipfs_handle handle;
     bool opened = false;
-    enum sapfs_status status;
+    enum phipfs_status status;
 
     if (!first_argument(arguments, argument_path, &after_path) ||
         !first_argument(after_path, argument_offset, &text) ||
@@ -736,34 +736,34 @@ static void command_write_at(const char *arguments)
         console_write("writeat: use writeat PATH OFFSET \"text\"\n");
         return;
     }
-    status = sapfs_open(SAPFS_VOLUME_DATA, path,
-        SAPFS_ACCESS_WRITE, &handle);
-    opened = status == SAPFS_STATUS_OK;
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_seek(handle, (int64_t)offset,
-            SAPFS_SEEK_START, &position);
+    status = phipfs_open(PHIPFS_VOLUME_DATA, path,
+        PHIPFS_ACCESS_WRITE, &handle);
+    opened = status == PHIPFS_STATUS_OK;
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_seek(handle, (int64_t)offset,
+            PHIPFS_SEEK_START, &position);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_write(handle, content, content_bytes, &written);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_write(handle, content, content_bytes, &written);
     }
-    if (opened && sapfs_close(handle) != SAPFS_STATUS_OK &&
-        status == SAPFS_STATUS_OK) {
-        status = SAPFS_STATUS_STALE_HANDLE;
+    if (opened && phipfs_close(handle) != PHIPFS_STATUS_OK &&
+        status == PHIPFS_STATUS_OK) {
+        status = PHIPFS_STATUS_STALE_HANDLE;
     }
-    if (status != SAPFS_STATUS_OK || position != offset ||
+    if (status != PHIPFS_STATUS_OK || position != offset ||
         written != content_bytes) {
-        filesystem_error("writeat", status != SAPFS_STATUS_OK ? status :
-            SAPFS_STATUS_WRITEBACK);
+        filesystem_error("writeat", status != PHIPFS_STATUS_OK ? status :
+            PHIPFS_STATUS_WRITEBACK);
     }
 }
 
 static void command_truncate(const char *arguments)
 {
-    char argument_path[SAPFS_MAX_PATH + 1U];
-    char path[SAPFS_MAX_PATH + 1U];
+    char argument_path[PHIPFS_MAX_PATH + 1U];
+    char path[PHIPFS_MAX_PATH + 1U];
     const char *size_text;
     uint32_t size;
-    enum sapfs_status status;
+    enum phipfs_status status;
 
     if (!first_argument(arguments, argument_path, &size_text) ||
         !filesystem_path(argument_path, path) ||
@@ -771,24 +771,24 @@ static void command_truncate(const char *arguments)
         console_write("truncate: use truncate PATH BYTES\n");
         return;
     }
-    status = sapfs_truncate(SAPFS_VOLUME_DATA, path, size);
-    if (status != SAPFS_STATUS_OK) {
+    status = phipfs_truncate(PHIPFS_VOLUME_DATA, path, size);
+    if (status != PHIPFS_STATUS_OK) {
         filesystem_error("truncate", status);
     }
 }
 
 static void command_stat(const char *arguments)
 {
-    char path[SAPFS_MAX_PATH + 1U];
-    struct sapfs_stat stat;
-    enum sapfs_status status;
+    char path[PHIPFS_MAX_PATH + 1U];
+    struct phipfs_stat stat;
+    enum phipfs_status status;
 
     if (arguments[0] == '\0' || !filesystem_path(arguments, path)) {
         console_write("stat: provide one relative 8.3 path\n");
         return;
     }
-    status = sapfs_stat_path(SAPFS_VOLUME_DATA, path, &stat);
-    if (status != SAPFS_STATUS_OK) {
+    status = phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat);
+    if (status != PHIPFS_STATUS_OK) {
         filesystem_error("stat", status);
         return;
     }
@@ -803,11 +803,11 @@ static void command_stat(const char *arguments)
 
 static void command_mv(const char *arguments)
 {
-    char first[SAPFS_MAX_PATH + 1U];
-    char source[SAPFS_MAX_PATH + 1U];
-    char destination[SAPFS_MAX_PATH + 1U];
+    char first[PHIPFS_MAX_PATH + 1U];
+    char source[PHIPFS_MAX_PATH + 1U];
+    char destination[PHIPFS_MAX_PATH + 1U];
     const char *second;
-    enum sapfs_status status;
+    enum phipfs_status status;
 
     if (!first_argument(arguments, first, &second) || second[0] == '\0' ||
         !filesystem_path(first, source) ||
@@ -815,37 +815,37 @@ static void command_mv(const char *arguments)
         console_write("mv: use mv SOURCE DESTINATION\n");
         return;
     }
-    status = sapfs_rename(SAPFS_VOLUME_DATA, source, destination);
-    if (status != SAPFS_STATUS_OK) {
+    status = phipfs_rename(PHIPFS_VOLUME_DATA, source, destination);
+    if (status != PHIPFS_STATUS_OK) {
         filesystem_error("mv", status);
     }
 }
 
 static void command_rm(const char *arguments)
 {
-    char path[SAPFS_MAX_PATH + 1U];
-    struct sapfs_stat stat;
-    enum sapfs_status status;
+    char path[PHIPFS_MAX_PATH + 1U];
+    struct phipfs_stat stat;
+    enum phipfs_status status;
 
     if (arguments[0] == '\0' || !filesystem_path(arguments, path)) {
         console_write("rm: provide one relative 8.3 path\n");
         return;
     }
-    status = sapfs_stat_path(SAPFS_VOLUME_DATA, path, &stat);
-    if (status == SAPFS_STATUS_OK) {
-        status = stat.directory ? sapfs_rmdir(SAPFS_VOLUME_DATA, path) :
-            sapfs_unlink(SAPFS_VOLUME_DATA, path);
+    status = phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat);
+    if (status == PHIPFS_STATUS_OK) {
+        status = stat.directory ? phipfs_rmdir(PHIPFS_VOLUME_DATA, path) :
+            phipfs_unlink(PHIPFS_VOLUME_DATA, path);
     }
-    if (status != SAPFS_STATUS_OK) {
+    if (status != PHIPFS_STATUS_OK) {
         filesystem_error("rm", status);
     }
 }
 
 static void command_sync(void)
 {
-    enum sapfs_status status = sapfs_sync(SAPFS_VOLUME_DATA);
+    enum phipfs_status status = phipfs_sync(PHIPFS_VOLUME_DATA);
 
-    if (status == SAPFS_STATUS_OK) {
+    if (status == PHIPFS_STATUS_OK) {
         console_write("data synchronized\n");
     } else {
         filesystem_error("sync", status);
@@ -854,16 +854,16 @@ static void command_sync(void)
 
 static void command_reboot(void)
 {
-    enum sapfs_status status = sapfs_unmount(SAPFS_VOLUME_DATA);
+    enum phipfs_status status = phipfs_unmount(PHIPFS_VOLUME_DATA);
 
-    if (status != SAPFS_STATUS_OK && status != SAPFS_STATUS_NOT_MOUNTED) {
+    if (status != PHIPFS_STATUS_OK && status != PHIPFS_STATUS_NOT_MOUNTED) {
         filesystem_error("reboot", status);
         return;
     }
-    status = sapfs_unmount(SAPFS_VOLUME_SYSTEM);
-    if (status != SAPFS_STATUS_OK && status != SAPFS_STATUS_NOT_MOUNTED) {
+    status = phipfs_unmount(PHIPFS_VOLUME_SYSTEM);
+    if (status != PHIPFS_STATUS_OK && status != PHIPFS_STATUS_NOT_MOUNTED) {
         filesystem_error("reboot", status);
-        (void)sapfs_mount(SAPFS_VOLUME_DATA);
+        (void)phipfs_mount(PHIPFS_VOLUME_DATA);
         return;
     }
     console_write("restarting after clean synchronization\n");
@@ -871,8 +871,8 @@ static void command_reboot(void)
     cpu_out8(UINT16_C(0x0064), UINT8_C(0xFE));
     cpu_interrupt_enable();
     console_write("reboot: platform reset failed\n");
-    (void)sapfs_mount(SAPFS_VOLUME_SYSTEM);
-    (void)sapfs_mount(SAPFS_VOLUME_DATA);
+    (void)phipfs_mount(PHIPFS_VOLUME_SYSTEM);
+    (void)phipfs_mount(PHIPFS_VOLUME_DATA);
 }
 
 static void command_uptime(void)
@@ -970,7 +970,7 @@ static void command_version(void)
 {
     const struct screen_state screen = screen_get_state();
 
-    console_write("Sapote 2.1.0, a small proof-driven x86_64 operating system.\n");
+    console_write("Phipia 2.2.0 dev, a proof-driven x86_64 operating system.\n");
     console_write("console ");
     console_write_u64(screen.columns);
     console_putc('x');
@@ -978,7 +978,7 @@ static void command_version(void)
     console_write(" characters\n");
 }
 
-static void print_fetch_drive(struct sapfs_drive_info drive)
+static void print_fetch_drive(struct phipfs_drive_info drive)
 {
     if (!drive.present || !drive.healthy || !drive.mounted) {
         console_write("unavailable");
@@ -991,16 +991,16 @@ static void command_fetch(void)
 {
     const struct screen_state screen = screen_get_state();
     const struct heap_state heap = heap_get_state();
-    const struct sapfs_drive_info system = sapfs_drive(SAPFS_VOLUME_SYSTEM);
-    const struct sapfs_drive_info data = sapfs_drive(SAPFS_VOLUME_DATA);
+    const struct phipfs_drive_info system = phipfs_drive(PHIPFS_VOLUME_SYSTEM);
+    const struct phipfs_drive_info data = phipfs_drive(PHIPFS_VOLUME_DATA);
 
     console_write("\n");
     if (ui_terminal_draw_logo() != UI_STATUS_OK) {
-        console_write("  [ Sapote ]\n");
+        console_write("  [ Phipia ]\n");
     }
     console_write("\n");
-    console_write("  Sapote Redwood\n");
-    console_write("  kernel      Sapote 2.1.0 / x86_64\n");
+    console_write("  Phipia\n");
+    console_write("  kernel      Phipia 2.2.0 dev / x86_64\n");
     console_write("  terminal    ");
     console_write_u64(screen.columns);
     console_putc('x');
@@ -1118,10 +1118,10 @@ static void command_dhcp(void)
 
 static void command_ip(const char *arguments)
 {
-    char address_text[SAPFS_MAX_PATH + 1U];
-    char mask_text[SAPFS_MAX_PATH + 1U];
-    char gateway_text[SAPFS_MAX_PATH + 1U];
-    char dns_text[SAPFS_MAX_PATH + 1U];
+    char address_text[PHIPFS_MAX_PATH + 1U];
+    char mask_text[PHIPFS_MAX_PATH + 1U];
+    char gateway_text[PHIPFS_MAX_PATH + 1U];
+    char dns_text[PHIPFS_MAX_PATH + 1U];
     const char *remainder;
     uint32_t address;
     uint32_t mask;
@@ -1168,7 +1168,7 @@ static void command_arp(void)
 
 static void command_ping(const char *arguments)
 {
-    char address_text[SAPFS_MAX_PATH + 1U];
+    char address_text[PHIPFS_MAX_PATH + 1U];
     const char *remainder;
     uint32_t address;
     uint32_t count = 3U;
@@ -1203,7 +1203,7 @@ static void command_ping(const char *arguments)
 
 static void command_resolve(const char *arguments)
 {
-    char hostname[SAPFS_MAX_PATH + 1U];
+    char hostname[PHIPFS_MAX_PATH + 1U];
     const char *remainder;
     uint32_t address;
     enum network_status status;
@@ -1225,8 +1225,8 @@ static void command_resolve(const char *arguments)
 
 static void command_http(const char *arguments)
 {
-    char url[SAPFS_MAX_PATH + 1U];
-    char path[SAPFS_MAX_PATH + 1U];
+    char url[PHIPFS_MAX_PATH + 1U];
+    char path[PHIPFS_MAX_PATH + 1U];
     const char *remainder;
     struct network_http_result result;
     enum network_status status;
@@ -1399,7 +1399,7 @@ static void write_prompt_restored(void)
 {
     console_write(SHELL_PROMPT);
     if (linux_prompt_evidence_pending) {
-        console_serial_write("\nRW USERLAND Sapote Redwood prompt restored\n");
+        console_serial_write("\nRW USERLAND Phipia prompt restored\n");
         console_serial_write(SHELL_PROMPT);
         linux_prompt_evidence_pending = false;
     }
@@ -1690,13 +1690,13 @@ _Noreturn void shell_run(void)
                 (void)screen_set_viewport((struct surface_rect){
                     0U, 0U, framebuffer.width, framebuffer.height
                 }, true);
-                console_write("Sapote: Redwood runtime disabled: ");
+                console_write("Phipia: runtime disabled: ");
                 console_write(ui_status_string(status));
                 console_putc('\n');
             }
         }
         if (ui_operational) {
-            char manifest[SAPFS_MAX_PATH + 1U];
+            char manifest[PHIPFS_MAX_PATH + 1U];
 
             if (ui_application_launch_dequeue(manifest,
                     sizeof(manifest))) {

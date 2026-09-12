@@ -1,0 +1,16 @@
+{
+  "name": "Phipia Native Audio Proof",
+  "identifier": "AUDIO",
+  "executable": "AUDIO.APP",
+  "abi_version": 1,
+  "data_namespace": "AUDIO",
+  "memory_limit": 1048576,
+  "max_handles": 4,
+  "max_threads": 1,
+  "capabilities": [
+    "console",
+    "time",
+    "audio"
+  ],
+  "arguments": ["proof"]
+}

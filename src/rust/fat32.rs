@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Checked parsing primitives for Sapote's bounded FAT32 subset.
+//! Checked parsing primitives for Phipia's bounded FAT32 subset.
 
 const BOOT_BYTES: usize = 512;
 const ENTRY_BYTES: usize = 32;
@@ -506,7 +506,7 @@ pub(crate) fn validate_path(bytes: &[u8]) -> Result<u32, Status> {
     Ok(components)
 }
 
-/// Parse one entry in Sapote's bounded directory subset.
+/// Parse one entry in Phipia's bounded directory subset.
 ///
 /// The root contains no dot entries. Subdirectory `.` and `..` entries must
 /// name explicit clusters at or above 2; the optional FAT encoding of a root
@@ -602,7 +602,7 @@ mod tests {
     fn boot() -> [u8; 512] {
         let mut bytes = [0_u8; 512];
         bytes[0..3].copy_from_slice(b"\xeb\x58\x90");
-        bytes[3..11].copy_from_slice(b"SAPOTE20");
+        bytes[3..11].copy_from_slice(b"PHIPIA22");
         put16(&mut bytes, 11, 512);
         bytes[13] = 1;
         put16(&mut bytes, 14, 32);
@@ -613,7 +613,7 @@ mod tests {
         put16(&mut bytes, 48, 1);
         put16(&mut bytes, 50, 6);
         put32(&mut bytes, 67, 0x2000_0002);
-        bytes[71..82].copy_from_slice(b"SAPOTEDATA ");
+        bytes[71..82].copy_from_slice(b"PHIPIADATA ");
         bytes[510..512].copy_from_slice(b"\x55\xaa");
         bytes
     }

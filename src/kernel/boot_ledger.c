@@ -3,24 +3,24 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/boot_ledger.h>
-#include <sapote/device_substrate.h>
-#include <sapote/dma.h>
-#include <sapote/elf64.h>
-#include <sapote/framebuffer.h>
-#include <sapote/filesystem.h>
-#include <sapote/interrupt_vector.h>
-#include <sapote/linux_abi.h>
-#include <sapote/linux_uname.h>
-#include <sapote/msix.h>
-#include <sapote/nvme.h>
-#include <sapote/paging.h>
-#include <sapote/pci_resource.h>
-#include <sapote/pointer.h>
-#include <sapote/process.h>
-#include <sapote/ui.h>
-#include <sapote/ui_font.h>
-#include <sapote/xhci.h>
+#include <phipia/boot_ledger.h>
+#include <phipia/device_substrate.h>
+#include <phipia/dma.h>
+#include <phipia/elf64.h>
+#include <phipia/framebuffer.h>
+#include <phipia/filesystem.h>
+#include <phipia/interrupt_vector.h>
+#include <phipia/linux_abi.h>
+#include <phipia/linux_uname.h>
+#include <phipia/msix.h>
+#include <phipia/nvme.h>
+#include <phipia/paging.h>
+#include <phipia/pci_resource.h>
+#include <phipia/pointer.h>
+#include <phipia/process.h>
+#include <phipia/ui.h>
+#include <phipia/ui_font.h>
+#include <phipia/xhci.h>
 
 #define BOOT_FINGERPRINT_OFFSET UINT64_C(14695981039346656037)
 #define BOOT_FINGERPRINT_PRIME UINT64_C(1099511628211)
@@ -59,13 +59,13 @@ static const char *const stage_names[] = {
     "threading",
     "scheduler",
     "closing boot proofs",
-    "Sapote Redwood UI font",
+    "Phipia UI font",
     "pointer availability decision",
     "pointer availability outcome",
-    "Sapote Redwood layout",
+    "Phipia layout",
     "desktop construction",
     "desktop activation",
-    "Sapote Redwood installed proof",
+    "Phipia installed proof",
     "PCI resource ownership",
     "dynamic interrupt vectors",
     "DMA foundation",
@@ -135,7 +135,7 @@ static const char *const capability_names[] = {
     "UI layout validated",
     "desktop shell available",
     "desktop shell activated",
-    "Sapote Redwood installed proof complete",
+    "Phipia installed proof complete",
     "PCI resource ownership available",
     "dynamic vector foundation available",
     "DMA foundation available",
@@ -1740,7 +1740,7 @@ enum boot_ledger_status boot_ledger_verify_installed(
     }
 
     if (boot_ledger_has_capability(ledger,
-            BOOT_CAPABILITY_REDWOOD_INSTALLED_PROOF_COMPLETE)) {
+            BOOT_CAPABILITY_PHIPIA_INSTALLED_PROOF_COMPLETE)) {
         const struct boot_stage_receipt *font = boot_ledger_receipt_for(ledger,
             BOOT_STAGE_UI_FONT);
         const struct boot_stage_receipt *pointer_decision =
@@ -1755,7 +1755,7 @@ enum boot_ledger_status boot_ledger_verify_installed(
         const struct boot_stage_receipt *activation =
             boot_ledger_receipt_for(ledger, BOOT_STAGE_DESKTOP_ACTIVATION);
         const struct boot_stage_receipt *proof = boot_ledger_receipt_for(ledger,
-            BOOT_STAGE_REDWOOD_INSTALLED_PROOF);
+            BOOT_STAGE_PHIPIA_INSTALLED_PROOF);
         const struct boot_stage_receipt *wc = boot_ledger_receipt_for(ledger,
             BOOT_STAGE_FRAMEBUFFER_WC);
         const struct boot_stage_receipt *closing =
@@ -1772,8 +1772,8 @@ enum boot_ledger_status boot_ledger_verify_installed(
 
         if (font == NULL || font->result != BOOT_RECEIPT_RAN ||
             font->proof_counter_count != 2U ||
-            font->proof_counters[0] != sapote_ui_font_size() ||
-            font->proof_counters[1] != sapote_ui_font_fingerprint() ||
+            font->proof_counters[0] != phipia_ui_font_size() ||
+            font->proof_counters[1] != phipia_ui_font_fingerprint() ||
             !ui_font_is_verified() || metrics.width != 16U ||
             metrics.height != 19U || metrics.ascent != 15U ||
             metrics.descent != 4U || metrics.advance != 15U ||
@@ -1834,7 +1834,7 @@ enum boot_ledger_status boot_ledger_verify_installed(
             closing->sequence >= activation->sequence ||
             activation->sequence >= proof->sequence) {
             set_refusal(ledger, BOOT_LEDGER_STATUS_RECEIPT_MISMATCH,
-                BOOT_STAGE_REDWOOD_INSTALLED_PROOF,
+                BOOT_STAGE_PHIPIA_INSTALLED_PROOF,
                 BOOT_CAPABILITY_DESKTOP_SHELL_ACTIVATED);
             return ledger->status;
         }
@@ -1851,8 +1851,8 @@ enum boot_ledger_status boot_ledger_verify_installed(
     } else if (boot_ledger_has_capability(ledger,
             BOOT_CAPABILITY_DESKTOP_SHELL_ACTIVATED)) {
         set_refusal(ledger, BOOT_LEDGER_STATUS_RECEIPT_MISMATCH,
-            BOOT_STAGE_REDWOOD_INSTALLED_PROOF,
-            BOOT_CAPABILITY_REDWOOD_INSTALLED_PROOF_COMPLETE);
+            BOOT_STAGE_PHIPIA_INSTALLED_PROOF,
+            BOOT_CAPABILITY_PHIPIA_INSTALLED_PROOF_COMPLETE);
         return ledger->status;
     }
 

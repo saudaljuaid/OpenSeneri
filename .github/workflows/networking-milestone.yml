@@ -40,7 +40,7 @@ jobs:
               shell: bash
               run: |
                   set -euo pipefail
-                  log_dir="$RUNNER_TEMP/sapote-network-logs"
+                  log_dir="$RUNNER_TEMP/phipia-network-logs"
                   mkdir -p "$log_dir"
                   python3 -m py_compile \
                       tools/network_fixture.py \
@@ -51,11 +51,11 @@ jobs:
                       | tee "$log_dir/network-fixture-self-test.log"
                   make verify | tee "$log_dir/make-verify.log"
                   git diff --check
-            - name: Run all 112 production QEMU scenarios
+            - name: Run all 117 production QEMU scenarios
               shell: bash
               run: |
                   set -euo pipefail
-                  log_dir="$RUNNER_TEMP/sapote-network-logs"
+                  log_dir="$RUNNER_TEMP/phipia-network-logs"
                   mkdir -p "$log_dir"
                   read -r expected_scenarios expected_assertions < <(
                       make --no-print-directory -s contract-counts
@@ -68,14 +68,14 @@ jobs:
                           | grep -c '^network-'
                   )
                   assertion_count=$(grep -c 'grep -F\|grep -E' Makefile)
-                  test "$expected_scenarios" -eq 112
-                  test "$scenario_count" -eq 112
+                  test "$expected_scenarios" -eq 117
+                  test "$scenario_count" -eq 117
                   test "$network_count" -eq 37
                   test "$assertion_count" -eq "$expected_assertions"
                   make qemu-tests QEMU_ACCEL=tcg \
                       | tee "$log_dir/all-qemu-scenarios.txt"
                   test "$(grep -Ec '^QEMU scenario [a-z0-9-]+ passed$' \
-                      "$log_dir/all-qemu-scenarios.txt")" -eq 112
+                      "$log_dir/all-qemu-scenarios.txt")" -eq 117
                   test "$(grep -Ec '^QEMU scenario network-[a-z0-9-]+ passed$' \
                       "$log_dir/all-qemu-scenarios.txt")" -eq 37
                   cp build/tests/network-http-length/network.pcap \
@@ -89,21 +89,21 @@ jobs:
               run: |
                   set -euo pipefail
                   make capture-networking
-                  file build/networking-capture/Sapote-v2.1.0-networking.png \
+                  file build/networking-capture/Phipia-v2.1.0-networking.png \
                       | grep -Fq 'PNG image data, 1024 x 768'
                   duration=$(ffprobe -v error -show_entries format=duration \
                       -of default=noprint_wrappers=1:nokey=1 \
-                      build/networking-capture/Sapote-v2.1.0-networking-22s.mp4)
+                      build/networking-capture/Phipia-v2.1.0-networking-22s.mp4)
                   awk -v duration="$duration" \
                       'BEGIN { exit !(duration >= 20.0 && duration <= 25.0) }'
                   grep -Fq '200 HTTP response' \
-                      build/networking-capture/sapote-v2.1.0-networking-serial.log
+                      build/networking-capture/phipia-v2.1.0-networking-serial.log
                   grep -Fq '30 bytes synchronized' \
-                      build/networking-capture/sapote-v2.1.0-networking-serial.log
+                      build/networking-capture/phipia-v2.1.0-networking-serial.log
                   grep -Fq '"production_path": true' \
-                      build/networking-capture/sapote-v2.1.0-network-packet-audit.json
+                      build/networking-capture/phipia-v2.1.0-network-packet-audit.json
                   python3 tools/fat32_image.py inspect \
-                      build/networking-capture/sapote-v2.1.0-network-data.raw \
+                      build/networking-capture/phipia-v2.1.0-network-data.raw \
                       --report "$RUNNER_TEMP/network-capture-fat32.json"
                   python3 - <<'PY'
                   import json
@@ -130,37 +130,37 @@ jobs:
               shell: bash
               run: |
                   set -euo pipefail
-                  release=evidence/Sapote-v2.1.0
+                  release=evidence/Phipia-v2.1.0
                   mkdir -p "$release/qemu-transcripts" "$release/reproduction"
-                  cp build/sapote.iso "$release/Sapote-v2.1.0.iso"
-                  cp build/sapote.elf "$release/sapote-v2.1.0.elf"
-                  cp build/userspace/sapote-system-fat32.raw \
-                      "$release/sapote-v2.1.0-system-fat32.raw"
-                  cp build/userspace/sapote-data-fat32.raw \
-                      "$release/sapote-v2.1.0-data-fat32.raw"
+                  cp build/phipia.iso "$release/Phipia-v2.1.0.iso"
+                  cp build/phipia.elf "$release/phipia-v2.1.0.elf"
+                  cp build/userspace/phipia-system-fat32.raw \
+                      "$release/phipia-v2.1.0-system-fat32.raw"
+                  cp build/userspace/phipia-data-fat32.raw \
+                      "$release/phipia-v2.1.0-data-fat32.raw"
                   cp build/networking-capture/* "$release/"
-                  cp "$RUNNER_TEMP/sapote-network-logs/"* "$release/"
+                  cp "$RUNNER_TEMP/phipia-network-logs/"* "$release/"
                   while IFS= read -r transcript; do
                       scenario=$(basename "$(dirname "$transcript")")
                       cp "$transcript" "$release/qemu-transcripts/$scenario.log"
                   done < <(find build/tests -mindepth 2 -maxdepth 2 \
                       -name serial.log -print | sort)
                   test "$(find "$release/qemu-transcripts" -type f | wc -l)" \
-                      -eq 112
+                      -eq 117
                   cp tools/network_fixture.py tools/network_packet_audit.py \
                       tools/run_network_scenario.py tools/capture-networking.py \
                       docs/NETWORKING.md docs/BROWSER_PORT.md \
                       docs/TLS_EVALUATION.md "$release/reproduction/"
                   git archive --format=tar.gz -o \
-                      "$release/reproduction/Sapote-v2.1.0-source.tar.gz" HEAD
+                      "$release/reproduction/Phipia-v2.1.0-source.tar.gz" HEAD
                   qemu-system-x86_64 -version \
                       >"$release/qemu-version.txt"
                   {
-                      printf 'Sapote v2.1.0 exact-commit verification\n'
+                      printf 'Phipia v2.1.0 exact-commit verification\n'
                       printf 'commit: %s\n' "$GITHUB_SHA"
                       printf 'tree: %s\n' "$(git rev-parse 'HEAD^{tree}')"
                       printf 'make verify: passed without warnings\n'
-                      printf 'QEMU scenarios: 92 passed individually; 34 networking\n'
+                      printf 'QEMU scenarios: 117 passed individually; 37 networking\n'
                       printf 'packet path: Ethernet/ARP/IPv4/ICMP/UDP/DHCP/DNS/TCP/HTTP reconstructed\n'
                       printf 'syscall v1: authenticated HTTP-to-FAT32 and teardown passed\n'
                       printf 'FAT32: streamed, synchronized, reopened and host-verified\n'
@@ -169,7 +169,7 @@ jobs:
                   } >"$release/verification-summary.txt"
                   rm -f "$release/SHA256SUMS"
                   manifest=$(mktemp \
-                      "$RUNNER_TEMP/sapote-v2.1.0-sha256.XXXXXX")
+                      "$RUNNER_TEMP/phipia-v2.1.0-sha256.XXXXXX")
                   (
                       cd "$release"
                       find . -type f -print0 \
@@ -178,13 +178,13 @@ jobs:
                   mv "$manifest" "$release/SHA256SUMS"
                   (
                       cd evidence
-                      tar -czf Sapote-v2.1.0-evidence.tar.gz Sapote-v2.1.0
+                      tar -czf Phipia-v2.1.0-evidence.tar.gz Phipia-v2.1.0
                   )
                   cat "$release/verification-summary.txt"
             - name: Upload v2.1.0 exact-commit evidence
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
-                  name: Sapote-v2.1.0-evidence-${{ github.sha }}
+                  name: Phipia-v2.1.0-evidence-${{ github.sha }}
                   path: evidence
                   if-no-files-found: error
                   retention-days: 90

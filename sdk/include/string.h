@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-#ifndef SAPOTE_STRING_H
-#define SAPOTE_STRING_H
+#ifndef PHIPIA_STRING_H
+#define PHIPIA_STRING_H
 
 #include <stddef.h>
 

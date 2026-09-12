@@ -28,7 +28,7 @@ FILE_CLUSTERS = 10
 MEDIA = 0xF8
 SHORT_NAME = b"UNAMEBOX   "
 BUSYBOX_SHA256 = "389AD6B13804EB7307BA589C8E8A7C702F91302005A7C5FC6E9E99124FCEAF43"
-IMAGE_SHA256 = "48C3465E924D1D2B3C8AB659D2783CAC4AF57DFD83504606AD0DF8F64D7316E3"
+IMAGE_SHA256 = "CDB8E920F06AC93F63E73854FC5A6A63CDBCC7DCEDBBFB62325C7EC4B408AD36"
 
 
 def put_u16(image: bytearray, offset: int, value: int) -> None:
@@ -108,7 +108,7 @@ def build_image(binary: bytes) -> bytes:
     verify_busybox(binary)
     image = bytearray(IMAGE_BYTES)
     image[0:3] = b"\xEB\x3C\x90"
-    image[3:11] = b"SAPOTE  "
+    image[3:11] = b"PHIPIA  "
     put_u16(image, 11, BLOCK_BYTES)
     image[13] = 1
     put_u16(image, 14, RESERVED_SECTORS)
@@ -122,7 +122,7 @@ def build_image(binary: bytes) -> bytes:
     image[36] = 0x80
     image[38] = 0x29
     put_u32(image, 39, 0x0800_0001)
-    image[43:54] = b"SAPOTEUNAME"
+    image[43:54] = b"PHIPIAUNAME"
     image[54:62] = b"FAT16   "
     image[510:512] = b"\x55\xAA"
 

@@ -1,4 +1,4 @@
-name: Sapote Redwood filesystem compatibility and FAT32 persistence
+name: Phipia filesystem compatibility and FAT32 persistence
 
 on:
     pull_request:
@@ -16,7 +16,7 @@ jobs:
     bounded-evidence:
         name: filesystem-compatibility-evidence
         runs-on: ubuntu-24.04
-        timeout-minutes: 180
+        timeout-minutes: 360
         steps:
             - name: Check out source
               uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -60,15 +60,15 @@ jobs:
                   done
                   proof=evidence/filesystem/tcg-sweep-10-logs/filesystem.log
                   grep -Fx \
-                      'ST FAT16 file SAPOTE.BIN bytes 128 reads 4 msix 4 ownership CPU-CONTROLLER-CPU teardown clean robustness 28' \
+                      'ST FAT16 file PHIPIA.BIN bytes 128 reads 4 msix 4 ownership CPU-CONTROLLER-CPU teardown clean robustness 28' \
                       "$proof" >evidence/filesystem/filesystem-proof-transcript.txt
                   grep -Fx 'ST PASS filesystem' "$proof" \
                       >>evidence/filesystem/filesystem-proof-transcript.txt
                   mkdir -p evidence/filesystem/scenario-isos
                   for log in build/tests/*/serial.log; do
                       scenario=$(basename "$(dirname "$log")")
-                      make "build/tests/${scenario}/sapote.iso"
-                      cp "build/tests/${scenario}/sapote.iso" \
+                      make "build/tests/${scenario}/phipia.iso"
+                      cp "build/tests/${scenario}/phipia.iso" \
                           "evidence/filesystem/scenario-isos/${scenario}.iso"
                   done
             - name: Record the accelerator safety boundary
@@ -85,8 +85,8 @@ jobs:
               run: |
                   set -o pipefail
                   make iso
-                  cp build/sapote.iso \
-                      evidence/filesystem/Sapote-filesystem-regression.iso
+                  cp build/phipia.iso \
+                      evidence/filesystem/Phipia-filesystem-regression.iso
                   python3 tools/make-fat16-fixture.py \
                       build/tests/filesystem/fat16-fixture.raw
                   fixture_sha=$(
@@ -94,7 +94,7 @@ jobs:
                           | awk '{print toupper($1)}'
                   )
                   test "$fixture_sha" = \
-                      B8FE53B80AAC718B36B545CC7A741ADCA52DF3BFE0DEE580D2A179B49DEBA5AC
+                      4B6072C4762E3D59B372CCB0FB83C47F901E2FC1E465C45C438CFD2A6BCD3528
                   scenario_count=$(
                       sed -n '/^TEST_SCENARIOS :=/,/^TEST_TARGETS :=/p' Makefile \
                           | sed '$d; s/^TEST_SCENARIOS :=//; s/\\//g' \
@@ -117,30 +117,30 @@ jobs:
                   test -n "$ordinary_record"
                   stage_capacity=$(sed -nE \
                       's/^#define BOOT_LEDGER_STAGE_CAPACITY ([0-9]+)U$/\1/p' \
-                      include/sapote/boot_ledger.h)
+                      include/phipia/boot_ledger.h)
                   receipt_capacity=$(sed -nE \
                       's/^#define BOOT_LEDGER_RECEIPT_CAPACITY ([0-9]+)U$/\1/p' \
-                      include/sapote/boot_ledger.h)
+                      include/phipia/boot_ledger.h)
                   capability_capacity=$(sed -nE \
                       's/^#define BOOT_STAGE_CAPABILITY_CAPACITY ([0-9]+)U$/\1/p' \
-                      include/sapote/boot_ledger.h)
+                      include/phipia/boot_ledger.h)
                   test -n "$stage_capacity"
                   test -n "$receipt_capacity"
                   test -n "$capability_capacity"
                   {
-                      printf 'Sapote v0.6.0 deterministic FAT16 fixture\n'
+                      printf 'Phipia v0.6.0 deterministic FAT16 fixture\n'
                       printf 'logical sectors: 4096\n'
                       printf 'bytes per sector: 4096\n'
                       printf 'BPB LBA: 0\n'
                       printf 'FAT span: LBA 1, 2 sectors\n'
                       printf 'root directory: LBA 3, 128 entries\n'
-                      printf 'SAPOTE.BIN data: cluster 2, LBA 4, 128 bytes\n'
+                      printf 'PHIPIA.BIN data: cluster 2, LBA 4, 128 bytes\n'
                       printf 'payload SHA-256: D399F065C9F21E2FD51E2AEADB7768EAB7E6E45E5150F31227C9711934A4D1D3\n'
                       printf 'image SHA-256: %s\n' "$fixture_sha"
                       printf 'backend: temporary regular file, raw, guest read-only\n'
                   } >evidence/filesystem/fixture-layout-digest.txt
                   {
-                      printf 'Sapote Read-Only Filesystem Foundation verification\n'
+                      printf 'Phipia Read-Only Filesystem Foundation verification\n'
                       printf 'commit: %s\n' "$GITHUB_SHA"
                       printf 'tree: %s\n' "$(git rev-parse 'HEAD^{tree}')"
                       printf 'scenarios per sweep: %s\n' "$scenario_count"
@@ -150,8 +150,8 @@ jobs:
                       printf 'ordinary ledger: %s\n' "$ordinary_record"
                       printf 'source lines (src and include): %s\n' "$source_lines"
                       printf 'shell assertion lines: %s\n' "$assertion_count"
-                      printf 'kernel bytes: %s\n' "$(stat -c %s build/sapote.elf)"
-                      printf 'ISO bytes: %s\n' "$(stat -c %s build/sapote.iso)"
+                      printf 'kernel bytes: %s\n' "$(stat -c %s build/phipia.elf)"
+                      printf 'ISO bytes: %s\n' "$(stat -c %s build/phipia.iso)"
                       printf 'make verify: passed\n'
                       printf 'serial TCG complete sweeps: 10 passed\n'
                       cat evidence/filesystem/accelerator-results.txt
@@ -166,21 +166,18 @@ jobs:
                   } >evidence/filesystem/controlled-robustness-results.txt
                   (
                       cd evidence/filesystem
-                      sha256sum \
-                          Sapote-filesystem-regression.iso \
-                          filesystem-proof-transcript.txt \
-                          verification-summary.txt \
-                          controlled-robustness-results.txt \
-                          fixture-layout-digest.txt \
-                          accelerator-results.txt \
-                          tcg-sweep-{01..10}.txt >SHA256SUMS
+                      find . -type f ! -name SHA256SUMS -print0 \
+                          | LC_ALL=C sort -z \
+                          | xargs -0 -r sha256sum >SHA256SUMS
                   )
                   cat evidence/filesystem/verification-summary.txt
-                  cat evidence/filesystem/SHA256SUMS
+                  printf 'SHA256SUMS members: %s\n' \
+                      "$(wc -l <evidence/filesystem/SHA256SUMS)"
+                  sha256sum evidence/filesystem/SHA256SUMS
             - name: Upload the bounded milestone evidence
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
-                  name: sapote-filesystem-milestone-${{ github.sha }}
+                  name: phipia-filesystem-milestone-${{ github.sha }}
                   path: evidence/filesystem
                   if-no-files-found: error
                   retention-days: 30

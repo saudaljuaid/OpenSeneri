@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-#ifndef SAPOTE_FCNTL_H
-#define SAPOTE_FCNTL_H
+#ifndef PHIPIA_FCNTL_H
+#define PHIPIA_FCNTL_H
 #define O_RDONLY 0x0001
 #define O_WRONLY 0x0002
 #define O_RDWR 0x0003

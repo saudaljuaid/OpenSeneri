@@ -3,8 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/acpi.h>
-#include <sapote/acpi_util.h>
+#include <phipia/acpi.h>
+#include <phipia/acpi_util.h>
 
 /* ACPI 6.6 table 5.20 assigns these interrupt-controller structure types. */
 #define MADT_TYPE_LOCAL_APIC 0U
@@ -25,7 +25,7 @@
 #define MADT_LOCAL_APIC_OVERRIDE_SIZE 12U
 #define MADT_LOCAL_X2APIC_SIZE 16U
 
-/* ACPI 6.6 tables 5.22 and 5.26 define the flag fields Sapote accepts. */
+/* ACPI 6.6 tables 5.22 and 5.26 define the flag fields Phipia accepts. */
 #define MADT_PROCESSOR_ENABLED UINT32_C(1)
 #define MADT_PROCESSOR_ONLINE_CAPABLE UINT32_C(2)
 #define MADT_PROCESSOR_VALID_FLAGS \
@@ -34,7 +34,7 @@
 
 /*
  * ACPI 6.6 section 5.2.12.5 defines interrupt source overrides only for the
- * ISA bus, whose sixteen legacy IRQs Sapote already owns through the 8259 pair.
+ * ISA bus, whose sixteen legacy IRQs Phipia already owns through the 8259 pair.
  */
 #define MADT_BUS_ISA 0U
 #define MADT_ISA_IRQ_COUNT 16U
@@ -535,7 +535,7 @@ static uint8_t *append_override(
 /*
  * One enabled processor, one processor that is only online capable, one I/O
  * APIC, the customary IRQ0-to-GSI2 override, a local APIC NMI, and a structure
- * type Sapote does not model yet.
+ * type Phipia does not model yet.
  */
 static bool build_reference_fixture(struct topology_fixture *fixture)
 {
@@ -853,7 +853,7 @@ static bool apic_addresses_are_bounded(void)
         return false;
     }
 
-    write_u64(entry + 4U, SAPOTE_EARLY_PHYSICAL_LIMIT);
+    write_u64(entry + 4U, PHIPIA_EARLY_PHYSICAL_LIMIT);
     fixture_seal(&fixture);
     madt = fixture_madt(&fixture);
 
@@ -989,7 +989,7 @@ static bool recorded_table_is_revalidated(void)
     }
 
     madt = fixture_madt(&fixture);
-    madt.physical_address = SAPOTE_EARLY_PHYSICAL_LIMIT - madt.length + 1U;
+    madt.physical_address = PHIPIA_EARLY_PHYSICAL_LIMIT - madt.length + 1U;
 
     if (acpi_topology_discover(&madt, &topology) !=
         ACPI_STATUS_TABLE_OUTSIDE_EARLY_MAP) {

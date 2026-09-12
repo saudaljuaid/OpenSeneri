@@ -5,6 +5,7 @@ int islower(int v) { return v >= 'a' && v <= 'z'; }
 int isupper(int v) { return v >= 'A' && v <= 'Z'; }
 int isalpha(int v) { return islower(v) || isupper(v); }
 int isalnum(int v) { return isalpha(v) || isdigit(v); }
+int isblank(int v) { return v == ' ' || v == '\t'; }
 int iscntrl(int v) { return (v >= 0 && v < 32) || v == 127; }
 int isspace(int v) { return v == ' ' || (v >= '\t' && v <= '\r'); }
 int isprint(int v) { return v >= 32 && v <= 126; }

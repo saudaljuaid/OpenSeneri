@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Record a fixed-duration Sapote boot from QEMU's emulated display.
+"""Record a fixed-duration Phipia boot from QEMU's emulated display.
 
 Frames come directly from QMP ``screendump`` calls. The guest is started in a
 paused state, continued on the first frame, and required to emit the installed
@@ -18,13 +18,13 @@ import time
 from pathlib import Path
 
 
-PROOF_LINE = b"Sapote: Boot Ledger installed proof passed"
+PROOF_LINE = b"Phipia: Boot Ledger installed proof passed"
 USERLAND_LINES = {
     "uname": b"RW USERLAND launch completed successfully uname ordinal 1",
     "cat": b"RW USERLAND launch completed successfully cat ordinal 1",
 }
 CAT_FOREGROUND_LINE = (
-    b"RW USERLAND cat foreground launch yielded to Sapote Redwood"
+    b"RW USERLAND cat foreground launch yielded to Phipia"
 )
 CAT_STDOUT_LINE = b"RW CAT userspace stdout accepted"
 COMMAND_SECONDS = 13.0
@@ -134,7 +134,7 @@ def main():
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="sapote-boot-video-") as work:
+    with tempfile.TemporaryDirectory(prefix="phipia-boot-video-") as work:
         work = Path(work)
         serial = work / "boot-serial.log"
         port = free_port()
@@ -147,7 +147,7 @@ def main():
             "-blockdev",
             "driver=raw,file=userland-file,node-name=userland-raw,read-only=on",
             "-device",
-            "nvme,serial=sapote-userland,drive=userland-raw,logical_block_size=4096,physical_block_size=4096,max_ioqpairs=1,msix_qsize=1",
+            "nvme,serial=phipia-userland,drive=userland-raw,logical_block_size=4096,physical_block_size=4096,max_ioqpairs=1,msix_qsize=1",
             "-display", "none",
             "-qmp", f"tcp:127.0.0.1:{port},server=on,wait=off",
             "-serial", f"file:{serial}", "-no-reboot"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic Sapote FAT32 formatter, inspector, and fixture mutator."""
+"""Deterministic Phipia FAT32 formatter, inspector, and fixture mutator."""
 
 from __future__ import annotations
 
@@ -31,9 +31,9 @@ FAT32_EOC = 0x0FFFFFFF
 ENTRY_BYTES = 32
 SYSTEM_VOLUME_ID = 0x2000_0001
 DATA_VOLUME_ID = 0x2000_0002
-SYSTEM_LABEL = b"SAPOTESYS  "
-DATA_LABEL = b"SAPOTEDATA "
-OEM_NAME = b"SAPOTE20"
+SYSTEM_LABEL = b"PHIPIASYS  "
+DATA_LABEL = b"PHIPIADATA "
+OEM_NAME = b"PHIPIA22"
 SYSTEM_FILES = (
     ("echo", b"BUSYBOX    ", 33_584,
      "B308F2CAD5B5CD0EEB92A622DEC8D71C1A08F628A22CDC5BCDE2B98B53220746"),

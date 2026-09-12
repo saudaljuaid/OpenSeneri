@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit Sapote's exact ELF64 proof payload as an ordinary build file."""
+"""Emit Phipia's exact ELF64 proof payload as an ordinary build file."""
 
 from __future__ import annotations
 

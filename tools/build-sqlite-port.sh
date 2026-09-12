@@ -12,8 +12,8 @@ output=$1
 work=$2
 archive="$root/ports/sqlite/source/sqlite-amalgamation-3460000.zip"
 sdk="$root/build/sdk"
-cc=${SAPOTE_SDK_CC:-clang}
-ld=${SAPOTE_SDK_LD:-ld.lld}
+cc=${PHIPIA_SDK_CC:-clang}
+ld=${PHIPIA_SDK_LD:-ld.lld}
 python=${PYTHON:-python3}
 
 case "$output" in /*) ;; *) output="$root/$output" ;; esac
@@ -50,8 +50,8 @@ defines=(
 "$cc" "${cflags[@]}" "${defines[@]}" \
     -Wno-unused-parameter -Wno-unused-function -Wno-sign-compare \
     -Wno-type-limits -c "$source_dir/sqlite3.c" -o "$work/obj/sqlite3.o"
-"$cc" "${cflags[@]}" -c "$root/ports/sqlite/sapote_vfs.c" \
-    -o "$work/obj/sapote_vfs.o"
+"$cc" "${cflags[@]}" -c "$root/ports/sqlite/phipia_vfs.c" \
+    -o "$work/obj/phipia_vfs.o"
 "$cc" "${cflags[@]}" -c "$root/ports/sqlite/main.c" \
     -o "$work/obj/main.o"
 
@@ -60,6 +60,6 @@ defines=(
     --orphan-handling=error -T "$sdk/linker.ld" \
     -Map="$output/SQLITE.map" -o "$output/SQLITE.APP" \
     "$sdk/lib/crt0.o" "$work/obj/sqlite3.o" \
-    "$work/obj/sapote_vfs.o" "$work/obj/main.o" "$sdk/lib/libsapote.a"
+    "$work/obj/phipia_vfs.o" "$work/obj/main.o" "$sdk/lib/libphipia.a"
 
-echo "SQLite 3.46.0 Sapote executable: $output/SQLITE.APP"
+echo "SQLite 3.46.0 Phipia executable: $output/SQLITE.APP"

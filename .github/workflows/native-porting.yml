@@ -57,6 +57,27 @@ jobs:
                       build/tests/native*/data.raw
                       build/tests/native-canvas/canvas.png
                       build/tests/native-canvas/canvas.mp4
+                      build/tests/native-audio/native-audio.wav
+                      build/tests/native-sdl/sdl.png
+                      build/tests/native-sdl/sdl.mp4
+                      build/tests/native-sdl/native-sdl.wav
+                      build/tests/native-https/network.pcap
+                      build/tests/native-https/fixture.log
+                      build/tests/native-https/packet-audit.json
+                      build/tests/native-phip/network.pcap
+                      build/tests/native-phip/fixture.log
+                      build/tests/native-phip/packet-audit.json
+                      build/native-phip/PHIP.APP
+                      build/native-phip/PHIP.map
+                      build/native-phip/repository/repository.sri
+                      build/native-phip/repository/packages/**/*.spk
+                      build/native-dynamic/DYNROOT.APP
+                      build/native-dynamic/DYNLIB.SO
+                      build/native-dynamic/DYNROOT.CAT
+                      build/native-dynamic/DYNROOT.readelf
+                      build/native-dynamic/DYNLIB.readelf
+                      build/native-https/HTTPS.APP
+                      build/native-https/HTTPS.map
                       build/tests/network-native/serial.log
                       build/tests/network-native/data.raw
                       build/tests/network-native/network.pcap

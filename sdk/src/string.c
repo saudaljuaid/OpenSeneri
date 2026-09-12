@@ -232,6 +232,7 @@ char *strerror(int error)
     case EEXIST: return "already exists";
     case EINVAL: return "invalid argument";
     case ENOSPC: return "no space";
+    case EROFS: return "read-only filesystem";
     case ETIMEDOUT: return "timed out";
     case ECANCELED: return "cancelled";
     case ESTALE: return "stale handle";

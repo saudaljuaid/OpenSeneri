@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Pinned so that two builds of one commit are two builds of one compiler.
+# Phipia requires 1.85 or newer for its own freestanding crate; Media Editor holds
+# the same floor so that one host can build both.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
+targets = ["x86_64-unknown-none"]

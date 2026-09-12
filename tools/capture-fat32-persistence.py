@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Capture a real Sapote Redwood FAT32 create/sync/reboot/read interaction.
+"""Capture a real Phipia FAT32 create/sync/reboot/read interaction.
 
 The clean reboot boundary tears down the first emulator after the guest's
 synchronization proof, then starts a second QEMU process on the same data image.
@@ -17,7 +17,7 @@ import zlib
 from pathlib import Path
 
 
-PROOF = b"Sapote: Boot Ledger installed proof passed"
+PROOF = b"Phipia: Boot Ledger installed proof passed"
 
 
 class Qmp:
@@ -86,6 +86,19 @@ def wait_count(path, marker, count, timeout):
     )
 
 
+def wait_after(path, start, marker, timeout):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists() and marker in path.read_bytes()[start:]:
+            return
+        time.sleep(0.05)
+    transcript = path.read_bytes()[start:] if path.exists() else b""
+    tail = transcript[-8192:].decode("utf-8", errors="replace")
+    raise RuntimeError(
+        f"serial transcript did not echo {marker.decode('ascii')!r}\n{tail}"
+    )
+
+
 def key_name(character):
     names = {" ": "spc", ".": "dot", "/": "slash", "-": "minus"}
     if character not in names and not character.isalnum():
@@ -93,15 +106,18 @@ def key_name(character):
     return names.get(character, character)
 
 
-def send_line(qmp, text):
+def send_line(qmp, serial, text):
+    start = len(serial.read_bytes()) if serial.exists() else 0
+    echoed = b""
     for character in text:
         qmp.hmp(f"sendkey {key_name(character)}")
-        time.sleep(0.012)
+        echoed += character.encode("ascii")
+        wait_after(serial, start, echoed, 2.0)
     qmp.hmp("sendkey ret")
 
 
 def open_terminal(qmp):
-    """Open Terminal through ordinary Sapote Redwood keyboard focus."""
+    """Open Terminal through ordinary Phipia keyboard focus."""
     qmp.hmp("sendkey tab")
     time.sleep(0.10)
     qmp.hmp("sendkey ret")
@@ -174,7 +190,7 @@ def storage_arguments(system, data):
         "read-only=on,auto-read-only=off",
         "-blockdev", "driver=raw,file=system-file,node-name=system-raw,"
         "read-only=on",
-        "-device", "nvme,serial=sapote-system-fat32,drive=system-raw,"
+        "-device", "nvme,serial=phipia-system-fat32,drive=system-raw,"
         "logical_block_size=512,physical_block_size=512,max_ioqpairs=1,"
         "msix_qsize=1",
         "-blockdev",
@@ -182,7 +198,7 @@ def storage_arguments(system, data):
         "read-only=off,auto-read-only=off",
         "-blockdev", "driver=raw,file=data-file,node-name=data-raw,"
         "read-only=off",
-        "-device", "nvme,serial=sapote-data-fat32,drive=data-raw,"
+        "-device", "nvme,serial=phipia-data-fat32,drive=data-raw,"
         "logical_block_size=512,physical_block_size=512,max_ioqpairs=1,"
         "msix_qsize=1",
     ]
@@ -237,7 +253,7 @@ def main():
     for destination in (screenshot, video, transcript):
         destination.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="sapote-fat32-video-") as temp:
+    with tempfile.TemporaryDirectory(prefix="phipia-fat32-video-") as temp:
         temp = Path(temp)
         serial = temp / "serial.log"
         second_serial = temp / "serial-second.log"
@@ -250,9 +266,9 @@ def main():
         try:
             qmp = Qmp(port)
             wait_count(serial, PROOF, 1, 60.0)
-            prompt_count = serial.read_bytes().count(b"sap> ")
+            prompt_count = serial.read_bytes().count(b"phip> ")
             open_terminal(qmp)
-            wait_count(serial, b"sap> ", prompt_count + 1, 5.0)
+            wait_count(serial, b"phip> ", prompt_count + 1, 15.0)
             started = time.monotonic()
             actions = [
                 (0.5, "drives"),
@@ -272,10 +288,11 @@ def main():
                 elapsed = time.monotonic() - started
                 if action_index < len(actions) and elapsed >= actions[action_index][0]:
                     text = actions[action_index][1]
-                    send_line(qmp, text)
+                    prompt_count = serial.read_bytes().count(b"phip> ")
+                    send_line(qmp, serial, text)
                     if text == "reboot":
                         wait_count(serial,
-                            b"restarting after clean synchronization", 1, 5.0)
+                            b"restarting after clean synchronization", 1, 15.0)
                         stop_guest(qmp, process)
                         qmp = None
                         port = free_port()
@@ -288,11 +305,20 @@ def main():
                         qmp = Qmp(port)
                         wait_count(second_serial, PROOF, 1, 60.0)
                         prompt_count = second_serial.read_bytes().count(
-                            b"sap> ")
+                            b"phip> ")
                         open_terminal(qmp)
-                        wait_count(second_serial, b"sap> ",
-                            prompt_count + 1, 5.0)
-                        send_line(qmp, "read projects/notes.txt")
+                        wait_count(second_serial, b"phip> ",
+                            prompt_count + 1, 15.0)
+                        prompt_count = second_serial.read_bytes().count(
+                            b"phip> ")
+                        send_line(qmp, second_serial,
+                            "read projects/notes.txt")
+                        wait_count(second_serial, b"first cut", 1, 15.0)
+                        wait_count(second_serial, b"second line", 1, 15.0)
+                        wait_count(second_serial, b"phip> ",
+                            prompt_count + 1, 15.0)
+                    else:
+                        wait_count(serial, b"phip> ", prompt_count + 1, 15.0)
                     action_index += 1
                 frame = temp / f"frame-{index:04d}.ppm"
                 screendump(qmp, frame)

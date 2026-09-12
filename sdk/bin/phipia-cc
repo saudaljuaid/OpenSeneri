@@ -1,0 +1,39 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+set -eu
+
+sdk_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+compiler=${PHIPIA_SDK_CC:-clang}
+linker=${PHIPIA_SDK_LD:-ld.lld}
+mode=${1:-}
+
+case "$mode" in
+compile)
+    test "$#" -ge 3
+    output=$2
+    shift 2
+    exec "$compiler" --target=x86_64-unknown-none-elf \
+        -I"$sdk_root/include" -std=c11 -O2 -g -ffreestanding -fno-pie \
+        -fno-stack-protector -mcmodel=large -mno-red-zone -fno-builtin \
+        -ffunction-sections -fdata-sections -ftls-model=local-exec \
+        -DZ_SOLO -DZ_U4=unsigned '-DZ_U8=unsigned long long' \
+        -DHAVE_UNISTD_H=0 -DHAVE_STDARG_H=0 \
+        -Wall -Wextra -Werror -Wpedantic -Wshadow -Wundef \
+        -Wstrict-prototypes -Wmissing-prototypes -c "$@" -o "$output"
+    ;;
+link)
+    test "$#" -ge 3
+    output=$2
+    shift 2
+    exec "$linker" -nostdlib -static --gc-sections --build-id=none \
+        -z max-page-size=0x1000 -z noexecstack --fatal-warnings \
+        --orphan-handling=error -T "$sdk_root/linker.ld" -o "$output" \
+        "$sdk_root/lib/crt0.o" "$@" "$sdk_root/lib/libSDL2.a" \
+        "$sdk_root/lib/libphipia.a" \
+        "$sdk_root/lib/libbearssl.a" "$sdk_root/lib/libz.a"
+    ;;
+*)
+    echo "usage: phipia-cc compile OUTPUT SOURCE... | link OUTPUT OBJECT..." >&2
+    exit 2
+    ;;
+esac

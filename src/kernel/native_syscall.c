@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* CPU admission for the Sapote-owned native ABI, separate from Linux profiles. */
+/* CPU admission for the Phipia-owned native ABI, separate from Linux profiles. */
 
-#include <sapote/native_syscall.h>
+#include <phipia/native_syscall.h>
 
-#include <sapote/cpu.h>
-#include <sapote/native_process.h>
-#include <sapote/process.h>
+#include <phipia/cpu.h>
+#include <phipia/native_process.h>
+#include <phipia/process.h>
 
 #define CPUID_EXTENDED_ROOT UINT32_C(0x80000000)
 #define CPUID_EXTENDED_FEATURES UINT32_C(0x80000001)
@@ -22,6 +22,12 @@
     ((UINT64_C(1) << 8U) | (UINT64_C(1) << 9U) | \
         (UINT64_C(1) << 10U) | (UINT64_C(1) << 14U) | \
         (UINT64_C(1) << 18U))
+#define NATIVE_KERNEL_STACK_BYTES (64U * 1024U)
+#define NATIVE_KERNEL_STACK_CANARY_BYTES 64U
+#define NATIVE_KERNEL_STACK_CANARY UINT8_C(0x4E)
+
+_Static_assert(NATIVE_KERNEL_STACK_CANARY_BYTES < NATIVE_KERNEL_STACK_BYTES,
+    "native syscall stack canary consumes the stack");
 
 _Static_assert(sizeof(struct native_syscall_frame) == 144U,
     "native syscall frame size changed");
@@ -41,7 +47,34 @@ struct native_syscall_runtime {
 };
 
 static struct native_syscall_runtime runtime;
+static uint8_t native_kernel_stack[NATIVE_KERNEL_STACK_BYTES]
+    __attribute__((aligned(4096)));
 uint64_t native_syscall_kernel_stack;
+
+static uintptr_t native_kernel_stack_top(void)
+{
+    return (uintptr_t)(void *)(native_kernel_stack +
+        sizeof(native_kernel_stack));
+}
+
+static void native_kernel_stack_arm(void)
+{
+    for (size_t index = 0U; index < NATIVE_KERNEL_STACK_CANARY_BYTES;
+         ++index) {
+        native_kernel_stack[index] = NATIVE_KERNEL_STACK_CANARY;
+    }
+}
+
+static bool native_kernel_stack_intact(void)
+{
+    for (size_t index = 0U; index < NATIVE_KERNEL_STACK_CANARY_BYTES;
+         ++index) {
+        if (native_kernel_stack[index] != NATIVE_KERNEL_STACK_CANARY) {
+            return false;
+        }
+    }
+    return true;
+}
 
 static bool syscall_supported(void)
 {
@@ -68,7 +101,8 @@ bool native_syscall_arm(void)
     runtime.saved_lstar = cpu_read_msr(IA32_LSTAR);
     runtime.saved_fmask = cpu_read_msr(IA32_FMASK);
     runtime.saved_fs_base = cpu_read_msr(IA32_FS_BASE);
-    native_syscall_kernel_stack = (uint64_t)cpu_tss_rsp0();
+    native_kernel_stack_arm();
+    native_syscall_kernel_stack = (uint64_t)native_kernel_stack_top();
     cpu_write_msr(IA32_STAR, NATIVE_STAR_VALUE);
     cpu_write_msr(IA32_LSTAR, (uint64_t)(uintptr_t)native_syscall_entry);
     cpu_write_msr(IA32_FMASK, NATIVE_FMASK_VALUE);
@@ -90,10 +124,13 @@ bool native_syscall_arm(void)
 
 bool native_syscall_disarm(void)
 {
+    bool stack_intact;
+
     if (!runtime.active || cpu_interrupts_enabled() ||
         process_user_boundary_active()) {
         return false;
     }
+    stack_intact = native_kernel_stack_intact();
     cpu_write_msr(IA32_EFER, runtime.saved_efer);
     cpu_write_msr(IA32_STAR, runtime.saved_star);
     cpu_write_msr(IA32_LSTAR, runtime.saved_lstar);
@@ -101,7 +138,7 @@ bool native_syscall_disarm(void)
     cpu_write_msr(IA32_FS_BASE, runtime.saved_fs_base);
     runtime.active = false;
     native_syscall_kernel_stack = 0U;
-    return true;
+    return stack_intact;
 }
 
 bool native_syscall_is_active(void)
@@ -116,7 +153,8 @@ uintptr_t native_syscall_dispatch(struct native_syscall_frame *frame)
     if (!runtime.active || frame == NULL || !process_user_boundary_active() ||
         native_syscall_kernel_stack == 0U ||
         stack_pointer > native_syscall_kernel_stack ||
-        native_syscall_kernel_stack - stack_pointer > 4096U ||
+        stack_pointer < native_syscall_kernel_stack -
+            NATIVE_KERNEL_STACK_BYTES + NATIVE_KERNEL_STACK_CANARY_BYTES ||
         frame->cs != CPU_GDT_USER_CODE_SELECTOR ||
         frame->ss != CPU_GDT_USER_DATA_SELECTOR ||
         frame->rip > UINT64_C(0x00007FFFFFFFFFFF) ||

@@ -61,15 +61,15 @@ jobs:
                   python3 tools/fat32_image.py format data \
                       build/reconstruction/data.raw \
                       | tee build/evidence-logs/data-format-record.json
-                  cmp build/userspace/sapote-system-fat32.raw \
+                  cmp build/userspace/phipia-system-fat32.raw \
                       build/reconstruction/system.raw
-                  cmp build/userspace/sapote-data-fat32.raw \
+                  cmp build/userspace/phipia-data-fat32.raw \
                       build/reconstruction/data.raw
                   python3 tools/fat32_image.py inspect \
-                      build/userspace/sapote-system-fat32.raw \
+                      build/userspace/phipia-system-fat32.raw \
                       --report build/evidence-logs/system-consistency.json
                   python3 tools/fat32_image.py inspect \
-                      build/userspace/sapote-data-fat32.raw \
+                      build/userspace/phipia-data-fat32.raw \
                       --report build/evidence-logs/data-consistency.json
             - name: Rebuild and audit every pinned BusyBox profile twice
               shell: bash
@@ -96,7 +96,7 @@ jobs:
                       build/busybox-uname-contract/busybox
                   cmp build/release-cat/one/busybox \
                       build/busybox-cat-contract/busybox
-            - name: Run all 112 production-path QEMU scenarios individually
+            - name: Run all 117 production-path QEMU scenarios individually
               shell: bash
               run: |
                   set -euo pipefail
@@ -107,23 +107,23 @@ jobs:
                       make --no-print-directory -s contract-scenarios | wc -l
                   )
                   assertion_count=$(grep -c 'grep -F\|grep -E' Makefile)
-                  test "$expected_scenarios" -eq 112
+                  test "$expected_scenarios" -eq 117
                   test "$scenario_count" -eq "$expected_scenarios"
                   test "$assertion_count" -eq "$expected_assertions"
                   make qemu-tests QEMU_ACCEL=tcg \
                       | tee build/evidence-logs/all-qemu-scenarios.txt
                   test "$(grep -Ec '^QEMU scenario [a-z0-9-]+ passed$' \
-                      build/evidence-logs/all-qemu-scenarios.txt)" -eq 112
+                      build/evidence-logs/all-qemu-scenarios.txt)" -eq 117
             - name: Capture authentic clean-reboot persistence media
               shell: bash
               run: |
                   set -euo pipefail
                   make iso
-                  cp build/userspace/sapote-data-fat32.raw \
+                  cp build/userspace/phipia-data-fat32.raw \
                       build/persistence-capture-data.raw
                   python3 tools/capture-fat32-persistence.py \
-                      --iso build/sapote.iso \
-                      --system build/userspace/sapote-system-fat32.raw \
+                      --iso build/phipia.iso \
+                      --system build/userspace/phipia-system-fat32.raw \
                       --data build/persistence-capture-data.raw \
                       --screenshot build/fat32-persistence.png \
                       --video build/fat32-persistence-22s.mp4 \
@@ -142,22 +142,22 @@ jobs:
               shell: bash
               run: |
                   set -euo pipefail
-                  release=evidence/Sapote-v2.0.0
+                  release=evidence/Phipia-v2.0.0
                   mkdir -p "$release/qemu-transcripts" \
                       "$release/reproduction"
-                  cp build/sapote.iso "$release/Sapote-v2.0.0.iso"
-                  cp build/sapote.elf "$release/sapote-v2.0.0.elf"
-                  cp build/userspace/sapote-system-fat32.raw \
-                      "$release/sapote-v2.0.0-system-fat32.raw"
-                  cp build/userspace/sapote-data-fat32.raw \
-                      "$release/sapote-v2.0.0-data-fat32.raw"
+                  cp build/phipia.iso "$release/Phipia-v2.0.0.iso"
+                  cp build/phipia.elf "$release/phipia-v2.0.0.elf"
+                  cp build/userspace/phipia-system-fat32.raw \
+                      "$release/phipia-v2.0.0-system-fat32.raw"
+                  cp build/userspace/phipia-data-fat32.raw \
+                      "$release/phipia-v2.0.0-data-fat32.raw"
                   cp build/release-echo/one/busybox "$release/busybox-echo"
                   cp build/release-uname/one/busybox "$release/busybox-uname"
                   cp build/release-cat/one/busybox "$release/busybox-cat"
                   cp build/fat32-persistence.png \
-                      "$release/redwood-proof-fat32-persistence.png"
+                      "$release/phipia-proof-fat32-persistence.png"
                   cp build/fat32-persistence-22s.mp4 \
-                      "$release/redwood-proof-fat32-persistence-22s.mp4"
+                      "$release/phipia-proof-fat32-persistence-22s.mp4"
                   cp build/evidence-logs/fat32-persistence.log \
                       "$release/clean-reboot-persistence.log"
                   cp build/evidence-logs/*.json \
@@ -170,7 +170,7 @@ jobs:
                   done < <(find build/tests -mindepth 2 -maxdepth 2 \
                       -name serial.log -print | sort)
                   test "$(find "$release/qemu-transcripts" -type f | wc -l)" \
-                      -eq 112
+                      -eq 117
                   for profile in echo uname cat; do
                       cp "build/release-$profile/one/build-record.txt" \
                           "$release/$profile-reproducible-build-record.txt"
@@ -197,12 +197,12 @@ jobs:
                       tools/check-exercised-instructions.py \
                       "$release/reproduction/"
                   git archive --format=tar.gz -o \
-                      "$release/reproduction/Sapote-v2.0.0-source.tar.gz" HEAD
+                      "$release/reproduction/Phipia-v2.0.0-source.tar.gz" HEAD
                   read -r scenarios assertions < <(
                       make --no-print-directory -s contract-counts
                   )
                   {
-                      printf 'Sapote v2.0.0 exact-commit verification\n'
+                      printf 'Phipia v2.0.0 exact-commit verification\n'
                       printf 'commit: %s\n' "$GITHUB_SHA"
                       printf 'tree: %s\n' "$(git rev-parse 'HEAD^{tree}')"
                       printf 'make verify: passed without warnings\n'
@@ -216,15 +216,15 @@ jobs:
                       printf 'scope: bounded FAT32 and measured profiles; no POSIX, VFS, journal, crash-atomic, multi-user, production, or stable ABI claim\n'
                   } >"$release/verification-summary.txt"
                   {
-                      printf 'system volume ID: 0x20000001; label: SAPOTESYS; read-only\n'
-                      printf 'data volume ID: 0x20000002; label: SAPOTEDATA; read-write\n'
+                      printf 'system volume ID: 0x20000001; label: PHIPIASYS; read-only\n'
+                      printf 'data volume ID: 0x20000002; label: PHIPIADATA; read-write\n'
                       printf 'sector/cluster bytes: 512/512; reserved: 32; FATs: 2\n'
                       printf 'total/FAT sectors: 131072/1009; root cluster: 2\n'
                       printf 'formatters: tools/fat32_image.py format system|data\n'
                       printf 'FAT order: secondary then primary; FSInfo is a checked hint\n'
                   } >"$release/fat32-geometry-and-identities.txt"
                   rm -f "$release/SHA256SUMS"
-                  manifest=$(mktemp "$RUNNER_TEMP/sapote-v2-sha256.XXXXXX")
+                  manifest=$(mktemp "$RUNNER_TEMP/phipia-v2-sha256.XXXXXX")
                   (
                       cd "$release"
                       find . -type f ! -name SHA256SUMS -print0 \
@@ -233,14 +233,14 @@ jobs:
                   mv "$manifest" "$release/SHA256SUMS"
                   (
                       cd evidence
-                      tar -czf Sapote-v2.0.0-evidence.tar.gz Sapote-v2.0.0
+                      tar -czf Phipia-v2.0.0-evidence.tar.gz Phipia-v2.0.0
                   )
                   cat "$release/verification-summary.txt"
                   cat "$release/SHA256SUMS"
             - name: Upload v2.0.0 exact-commit evidence
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
-                  name: Sapote-v2.0.0-evidence-${{ github.sha }}
+                  name: Phipia-v2.0.0-evidence-${{ github.sha }}
                   path: evidence
                   if-no-files-found: error
                   retention-days: 90

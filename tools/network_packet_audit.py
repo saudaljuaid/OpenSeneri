@@ -36,11 +36,13 @@ def frames(path: Path):
             yield frame
 
 
-def audit(path: Path) -> dict[str, object]:
+def audit(path: Path, https: bool = False) -> dict[str, object]:
     counts = {name: 0 for name in
               ("guest_tx", "peer_tx", "arp", "ipv4", "icmp", "udp",
-               "dhcp", "dns", "tcp", "http")}
+               "dhcp", "dns", "tcp", "http", "https_tcp", "tls_records",
+               "https_plaintext")}
     malformed = 0
+    https_payloads: dict[tuple[int, int], bytearray] = {}
     for frame in frames(path):
         if len(frame) < 14:
             malformed += 1
@@ -76,26 +78,53 @@ def audit(path: Path) -> dict[str, object]:
                     counts["dns"] += 1
         elif protocol == 6 and len(payload) >= 20:
             counts["tcp"] += 1
+            source, destination = struct.unpack_from("!HH", payload)
             offset = (payload[12] >> 4) * 4
-            if offset <= len(payload) and (b"HTTP/1.1" in payload[offset:] or
-                                           b"GET /" in payload[offset:] or
-                                           b"HEAD /" in payload[offset:]):
+            application = payload[offset:] if offset <= len(payload) else b""
+            if (b"HTTP/1.1" in application or b"GET /" in application or
+                    b"HEAD /" in application):
                 counts["http"] += 1
-    required = ("guest_tx", "peer_tx", "arp", "ipv4", "icmp", "udp",
-                "dhcp", "dns", "tcp", "http")
+            if source == 443 or destination == 443:
+                counts["https_tcp"] += 1
+                direction = (source, destination)
+                https_payloads.setdefault(direction, bytearray()).extend(
+                    application
+                )
+                if (len(application) >= 3 and
+                        application[0] in range(0x14, 0x18) and
+                        application[1:3] == b"\x03\x03"):
+                    counts["tls_records"] += 1
+    plaintext_markers = (
+        b"GET /artifact.bin", b"HTTP/1.1",
+        b"hello from the Phipia HTTPS peer",
+    )
+    counts["https_plaintext"] = sum(
+        int(marker in payload)
+        for payload in https_payloads.values()
+        for marker in plaintext_markers
+    )
+    if https:
+        required = ("guest_tx", "peer_tx", "arp", "ipv4", "udp", "dhcp",
+                    "dns", "tcp", "https_tcp", "tls_records")
+    else:
+        required = ("guest_tx", "peer_tx", "arp", "ipv4", "icmp", "udp",
+                    "dhcp", "dns", "tcp", "http")
     missing = [name for name in required if counts[name] == 0]
     return {"pcap": path.name, "counts": counts, "malformed": malformed,
             "required": list(required), "missing": missing,
-            "production_path": not missing and malformed == 0}
+            "profile": "https" if https else "http",
+            "production_path": (not missing and malformed == 0 and
+                                (not https or counts["https_plaintext"] == 0))}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("capture", type=Path)
     parser.add_argument("--json", type=Path)
+    parser.add_argument("--https", action="store_true")
     args = parser.parse_args()
     try:
-        result = audit(args.capture)
+        result = audit(args.capture, args.https)
     except (OSError, ValueError) as error:
         print(f"packet audit: {error}", file=sys.stderr)
         return 2

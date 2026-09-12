@@ -103,7 +103,7 @@ int main(void)
 {
     static const char argv_zero[] = "busybox";
     static const char argv_one[] = "echo";
-    static const char argv_two[] = "SAPOTE";
+    static const char argv_two[] = "PHIPIA";
     uintptr_t stack_bytes = STACK_PAGES * PAGE_BYTES;
     uintptr_t busybox_start = (uintptr_t)_binary_busybox_start;
     uintptr_t busybox_end = (uintptr_t)_binary_busybox_end;

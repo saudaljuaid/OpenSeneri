@@ -1,19 +1,20 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 
-# TLS evaluation
+# TLS profile and release gate
 
-Sapote 2.1.0 does not implement TLS or HTTPS. `https://` is rejected by the
-HTTP parser, and degraded entropy is reported honestly. Plain HTTP provides no
-server authentication, confidentiality, or integrity against an active peer.
+Phipia includes a pinned BearSSL TLS 1.2 SDK client for bounded,
+single-response HTTPS downloads. The desktop HTTP parser remains a separate
+plaintext facility. `TLS.md` and `HTTPS.md` define the implemented profile.
 
-## Required platform work
+## Platform requirements
 
-TLS cannot be enabled by adding a cipher implementation alone. The platform
-must first provide:
+The SDK profile depends on kernel entropy, validated realtime, DNS, streams,
+deadlines, cancellation, and handle services. General Internet release
+qualification requires:
 
 - a cryptographically strong, continuously health-checked entropy source and
   DRBG with explicit failure behavior;
-- trustworthy calendar time, including rollback handling;
+- the available validated RTC calendar time plus a policy for rollback;
 - a checksum-pinned root store with a documented update/revocation process;
 - strict DNS-name/SAN matching, SNI, certificate-chain limits, signature and
   key-size policy, expiry checks, unknown-critical-extension refusal, and test
@@ -27,38 +28,25 @@ must first provide:
 
 ## Library assessment
 
-BearSSL is the closest architectural fit for an initial experiment. Its
+BearSSL fits the bounded client. Its
 [documented design](https://bearssl.org/) uses a caller-driven state machine,
 does no dynamic allocation, is intended for small and bare-metal systems, and
 can integrate with polling outside the engine. Its
 [API documentation](https://bearssl.org/apidoc/index.html) makes callers own
-all context and record buffers, which is compatible with Sapote's explicit
+all context and record buffers, which is compatible with Phipia's explicit
 bounds.
 
-It is not ready to ship unchanged. The published release is TLS 1.2-focused;
-the project describes TLS 1.3 and richer X.509 path building as unresolved
-design work. Sapote would still own entropy, time, trust anchors, hostname
-policy, I/O adaptation, updates, zeroization, and security response. A pinned
-BearSSL experiment must therefore remain disabled by default and cannot justify
-an HTTPS claim.
+BearSSL supplies the TLS 1.2 engine, not the surrounding web stack. Phipia owns
+entropy, time, trust anchors, hostname policy, I/O adaptation, updates,
+zeroization, and security response.
 
-Other options are less suitable today:
+## Implemented bounded profile
 
-- OpenSSL assumes a much broader hosted runtime and dynamic allocation surface.
-- mbed TLS is configurable and well known in embedded systems, but its selected
-  configuration, allocator behavior and platform layer would still need a
-  larger audited seam.
-- rustls would require a substantially more complete Rust userspace runtime,
-  allocator, threading and ecosystem port than Sapote currently has.
-
-## Proposed bounded profile
-
-If the prerequisites are completed, the first experimental profile should be a
-client-only, static build with one connection, TLS 1.2 ECDHE, AEAD-only cipher
-suites, SNI, strict WebPKI validation, fixed record and chain buffers, no client
-certificates, no renegotiation, no session persistence, and explicit refusal of
-unsupported algorithms or oversized messages. This profile is deliberately
-narrow and would not constitute broad web compatibility.
+The profile is a client-only static build with one connection, TLS 1.2
+ECDHE, AEAD-only cipher suites, SNI, external bounded trust anchors, strict
+hostname/chain/time validation, fixed record and header buffers, no client
+certificates, no renegotiation, no session persistence, and explicit refusal
+of unsupported or oversized HTTP records.
 
 ## Release gate
 
@@ -68,3 +56,5 @@ teardown; the packet audit confirms that HTTP plaintext is absent from PCAP;
 expired, wrong-name, unknown-root, malformed-chain, weak-algorithm, bad-record,
 truncation, replay, entropy-failure, timeout and reset controls all fail closed;
 and an independent review has no unresolved high-severity finding.
+
+The current SDK/QEMU evidence covers the bounded profile above.

@@ -3,35 +3,48 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/boot_ledger.h>
-#include <sapote/camera.h>
-#include <sapote/clock.h>
-#include <sapote/console.h>
-#include <sapote/cpu.h>
-#include <sapote/dock3d.h>
-#include <sapote/framebuffer.h>
-#include <sapote/fat32_fs.h>
-#include <sapote/heap.h>
-#include <sapote/logo.h>
-#include <sapote/memory.h>
-#include <sapote/network.h>
-#include <sapote/pci.h>
-#include <sapote/pointer.h>
-#include <sapote/screen.h>
-#include <sapote/studio_icon.h>
-#include <sapote/thread.h>
-#include <sapote/timer.h>
-#include <sapote/ui.h>
-#include <sapote/ui_anim.h>
-#include <sapote/ui_font.h>
-#include <sapote/wallpaper.h>
+#include <phipia/boot_ledger.h>
+#include <phipia/camera.h>
+#include <phipia/clock.h>
+#include <phipia/console.h>
+#include <phipia/cursor.h>
+#include <phipia/cpu.h>
+#include <phipia/dialog.h>
+#include <phipia/dock3d.h>
+#include <phipia/editor.h>
+#include <phipia/explorer.h>
+#include <phipia/framebuffer.h>
+#include <phipia/fat32_fs.h>
+#include <phipia/heap.h>
+#include <phipia/logo.h>
+#include <phipia/memory.h>
+#include <phipia/network.h>
+#include <phipia/notes.h>
+#include <phipia/paint.h>
+#include <phipia/pci.h>
+#include <phipia/phipia_camera.h>
+#include <phipia/pointer.h>
+#include <phipia/rtc.h>
+#include <phipia/screen.h>
+#include <phipia/settings.h>
+#include <phipia/media_editor_icon.h>
+#include <phipia/store.h>
+#include <phipia/taskbar.h>
+#include <phipia/taskmgr.h>
+#include <phipia/terminal.h>
+#include <phipia/thread.h>
+#include <phipia/timer.h>
+#include <phipia/ui.h>
+#include <phipia/ui_anim.h>
+#include <phipia/ui_font.h>
+#include <phipia/wallpaper.h>
 
 #define UI_MIN_WIDTH 800U
 #define UI_MIN_HEIGHT 600U
 #define UI_MAX_WIDTH 1920U
 #define UI_MAX_HEIGHT 1200U
 #define UI_LOGO_WIDTH 280U
-#define UI_LOGO_HEIGHT 278U
+#define UI_LOGO_HEIGHT 280U
 #define UI_LOGO_PIXELS (UI_LOGO_WIDTH * UI_LOGO_HEIGHT)
 #define UI_LOGO_BITMAP_SCALE 1U
 #define UI_CURSOR_SOURCE_WIDTH 27U
@@ -52,17 +65,20 @@
 #define UI_FONT_ASCENT 15U
 #define UI_FONT_DESCENT 4U
 #define UI_PANEL_TITLE_HEIGHT 26U
-#define UI_STUDIO_MAX_CLIPS 6U
-#define UI_STUDIO_PATH_BYTES 64U
-#define UI_STUDIO_PROJECT_BYTES 424U
-#define UI_STUDIO_PREVIEW_WIDTH 320U
-#define UI_STUDIO_PREVIEW_HEIGHT 180U
-#define UI_STUDIO_BMP_HEADER_BYTES 54U
-#define UI_STUDIO_BMP_MAX_WIDTH 1920U
-#define UI_STUDIO_BMP_MAX_HEIGHT 1080U
+#define UI_MEDIA_SOURCE_MAX_CLIPS 6U
+#define UI_MEDIA_SOURCE_PATH_BYTES 64U
+#define UI_MEDIA_SOURCE_PROJECT_BYTES 424U
+#define UI_MEDIA_PROJECT_BYTES \
+    (16U + EDITOR_MAX_ITEMS * (16U + EDITOR_TEXT_BYTES))
+#define UI_MEDIA_SOURCE_PREVIEW_WIDTH 320U
+#define UI_MEDIA_SOURCE_PREVIEW_HEIGHT 180U
+#define UI_MEDIA_SOURCE_BMP_HEADER_BYTES 54U
+#define UI_MEDIA_SOURCE_BMP_MAX_WIDTH 1920U
+#define UI_MEDIA_SOURCE_BMP_MAX_HEIGHT 1080U
 #define UI_CAMERA_CAPTURE_WIDTH 320U
 #define UI_CAMERA_CAPTURE_HEIGHT 180U
 #define UI_CAMERA_BMP_HEADER_BYTES 54U
+#define UI_PAINT_BMP_HEADER_BYTES 54U
 #define UI_SETTINGS_CATEGORY_COUNT 12U
 #define UI_WALLPAPER_COUNT 14U
 #define UI_CAMERA_SCENE_WIDTH 704U
@@ -87,11 +103,11 @@
 #define UI_STORE_ICON_SHEET_HEIGHT 64U
 
 static const char label_files[] = "Files";
-static const char label_terminal[] = "Terminal";
+static const char label_terminal[] = "Phip";
 static const char label_notes[] = "Notes";
-static const char label_studio[] = "SapStudio";
+static const char label_media_editor[] = "Media Editor";
 static const char label_camera[] = "Camera";
-static const char label_canvas[] = "Canvas";
+static const char label_canvas[] = "Paint";
 static const char label_store[] = "Store";
 static const char label_settings[] = "Settings";
 
@@ -108,6 +124,7 @@ static bool panel_maximized[UI_PANEL_COUNT];
 static enum ui_panel_id panel_order[UI_PANEL_COUNT - 1U];
 static size_t panel_order_count;
 static uint8_t panel_cascade;
+static bool phipia_shell_ready;
 static struct ui_event event_queue[UI_EVENT_QUEUE_CAPACITY];
 static size_t event_count;
 static uint32_t logo_pixels[UI_LOGO_PIXELS];
@@ -115,10 +132,10 @@ static uint8_t logo_alpha[UI_LOGO_PIXELS];
 static uint8_t logo_red_shift;
 static uint8_t logo_green_shift;
 static uint8_t logo_blue_shift;
-static uint32_t studio_icon_pixels[80U * 80U];
-static uint8_t studio_icon_alpha[80U * 80U];
-static uint32_t studio_icon_width;
-static uint32_t studio_icon_height;
+static uint32_t media_editor_icon_pixels[80U * 80U];
+static uint8_t media_editor_icon_alpha[80U * 80U];
+static uint32_t media_editor_icon_width;
+static uint32_t media_editor_icon_height;
 static uint32_t settings_icon_pixels[80U * 80U];
 static uint8_t settings_icon_alpha[80U * 80U];
 static uint32_t settings_icon_width;
@@ -159,30 +176,32 @@ static uint32_t wallpaper_pixels[1024U * 768U];
 static uint32_t camera_scene_pixels[
     UI_CAMERA_SCENE_WIDTH * UI_CAMERA_SCENE_HEIGHT
 ];
-static struct sapfs_list_entry file_entries[12U];
+static struct phipfs_list_entry file_entries[12U];
 static size_t file_entry_count;
-static char file_directory[SAPFS_MAX_PATH + 1U] = ".";
-static char note_path[SAPFS_MAX_PATH + 1U] = "NOTES.TXT";
+static char file_directory[PHIPFS_MAX_PATH + 1U] = ".";
+static char note_path[PHIPFS_MAX_PATH + 1U] = "NOTES.TXT";
 static char note_buffer[1536U];
 static size_t note_length;
 static bool note_dirty;
 static bool note_savable = true;
 static bool terminal_welcomed;
 static char app_status[80U] = "data volume ready";
-static uint32_t studio_clip_durations[UI_STUDIO_MAX_CLIPS];
-static char studio_clip_paths[UI_STUDIO_MAX_CLIPS][UI_STUDIO_PATH_BYTES + 1U];
-static uint32_t studio_preview_pixels[
-    UI_STUDIO_PREVIEW_WIDTH * UI_STUDIO_PREVIEW_HEIGHT
+static uint32_t media_source_clip_durations[UI_MEDIA_SOURCE_MAX_CLIPS];
+static char media_source_clip_paths[UI_MEDIA_SOURCE_MAX_CLIPS][UI_MEDIA_SOURCE_PATH_BYTES + 1U];
+static uint32_t media_source_preview_pixels[
+    UI_MEDIA_SOURCE_PREVIEW_WIDTH * UI_MEDIA_SOURCE_PREVIEW_HEIGHT
 ];
-static uint8_t studio_bmp_row[UI_STUDIO_BMP_MAX_WIDTH * 3U + 4U];
-static uint32_t studio_preview_width;
-static uint32_t studio_preview_height;
-static bool studio_preview_loaded;
-static uint32_t studio_playhead;
-static uint8_t studio_clip_count;
-static uint8_t studio_selected_clip = UINT8_MAX;
-static bool studio_dirty;
-static char studio_status[64U] = "Project ready";
+static uint8_t media_source_bmp_row[UI_MEDIA_SOURCE_BMP_MAX_WIDTH * 3U + 4U];
+static uint32_t media_source_preview_width;
+static uint32_t media_source_preview_height;
+static bool media_source_preview_loaded;
+static bool media_editor_export_active;
+static uint32_t media_source_playhead;
+static uint8_t media_source_clip_count;
+static uint8_t media_source_selected_clip = UINT8_MAX;
+static bool media_source_dirty;
+static bool media_editor_dirty;
+static char media_source_status[64U] = "Project ready";
 static int8_t settings_page = -1;
 static bool dock_dark;
 static bool dock_magnification = true;
@@ -199,6 +218,7 @@ static uint8_t store_section;
 static bool store_search_focused;
 static char store_query[UI_STORE_QUERY_BYTES];
 static size_t store_query_length;
+static bool store_installer_queued;
 static bool window_high_contrast;
 static bool keyboard_focus_wrap = true;
 static bool keyboard_focus_indicator = true;
@@ -214,12 +234,19 @@ static bool camera_frame_available;
 static uint64_t camera_seen_generation;
 static char camera_status[64U] = "No camera connected";
 static uint8_t camera_bmp_row[UI_CAMERA_CAPTURE_WIDTH * 3U];
+static uint8_t paint_bmp_row[PAINT_MAX_ROW_BYTES];
 static uint32_t camera_preview_row[UI_MAX_WIDTH];
+static uint8_t explorer_copy_buffer[4096U];
 static uint32_t settings_wallpaper_thumbnail_pixels[128U * 72U];
 static uint32_t dock_backdrop_pixels[UI_MAX_WIDTH * 48U];
 static uint64_t redraw_tile_hashes[
     UI_REDRAW_DIAGNOSTIC_COLUMNS * UI_REDRAW_DIAGNOSTIC_ROWS
 ];
+
+static void media_editor_sync_clip(void);
+static enum phipfs_status media_editor_load(void);
+static enum phipfs_status media_editor_save(void);
+static enum phipfs_status paint_save(void);
 enum ui_anim_pending {
     UI_ANIM_PENDING_NONE = 0,
     UI_ANIM_PENDING_OPEN,
@@ -242,10 +269,11 @@ static bool panel_drag_active;
 static enum ui_panel_id panel_drag_panel;
 static struct ui_point panel_drag_anchor;
 static struct ui_rect panel_drag_origin;
-static const char *self_test_failure = "Sapote Redwood UI self-test not run";
+static uint64_t taskmgr_last_refresh_second = UINT64_MAX;
+static const char *self_test_failure = "Phipia UI self-test not run";
 static const char *event_queue_failure = "UI event queue self-test not run";
 static const char *installed_proof_failure =
-    "Sapote Redwood installed proof not run";
+    "Phipia installed proof not run";
 
 struct ui_native_window_record {
     char title[UI_NATIVE_TITLE_BYTES];
@@ -267,6 +295,11 @@ static enum ui_status draw_button(
     struct ui_rect damage,
     const char *label
 );
+static enum ui_status draw_store_ui_icon(
+    uint8_t index,
+    struct ui_rect bounds,
+    struct ui_rect damage
+);
 static enum ui_status draw_circle(
     uint32_t center_x,
     uint32_t center_y,
@@ -276,6 +309,8 @@ static enum ui_status draw_circle(
 );
 static struct ui_rect camera_preview_rect(void);
 static enum ui_status render_region(struct ui_rect damage, bool full_draw);
+static enum ui_status phipia_set_panel_frame(enum ui_panel_id panel,
+    struct ui_rect frame);
 
 static bool native_panel_slot(enum ui_panel_id panel, uint32_t *slot)
 {
@@ -358,22 +393,6 @@ static const uint32_t cursor_outer[UI_CURSOR_SOURCE_HEIGHT] = {
     UINT32_C(0x001FF800), UINT32_C(0x000FF000), UINT32_C(0x000FC000),
     UINT32_C(0x00070000)
 };
-static const uint32_t cursor_inner[UI_CURSOR_SOURCE_HEIGHT] = {
-    UINT32_C(0x80000000), UINT32_C(0xC0000000), UINT32_C(0xE0000000),
-    UINT32_C(0xF8000000), UINT32_C(0xFC000000), UINT32_C(0xFE000000),
-    UINT32_C(0xFF000000), UINT32_C(0xFFC00000), UINT32_C(0xFFE00000),
-    UINT32_C(0xFFF00000), UINT32_C(0xFFFC0000), UINT32_C(0xFFFE0000),
-    UINT32_C(0xFFFF0000), UINT32_C(0xFFFFC000), UINT32_C(0xFFFFE000),
-    UINT32_C(0xFFFFF000), UINT32_C(0xFFFFF800), UINT32_C(0xFFFFFE00),
-    UINT32_C(0xFFFFFF00), UINT32_C(0xFFFFFF80), UINT32_C(0xFFF80000),
-    UINT32_C(0xFFFC0000), UINT32_C(0xFFFC0000), UINT32_C(0xFDFE0000),
-    UINT32_C(0xF8FE0000), UINT32_C(0xF0FF0000), UINT32_C(0xE07F0000),
-    UINT32_C(0xC07F8000), UINT32_C(0x803FC000), UINT32_C(0x003FC000),
-    UINT32_C(0x001FE000), UINT32_C(0x000FE000), UINT32_C(0x000FF000),
-    UINT32_C(0x0007E000), UINT32_C(0x00078000), UINT32_C(0x00020000),
-    UINT32_C(0x00000000)
-};
-
 static bool add_u32(uint32_t left, uint32_t right, uint32_t *sum)
 {
     if (sum == NULL || left > UINT32_MAX - right) {
@@ -702,6 +721,7 @@ static void install_panel_geometry(enum ui_panel_id panel)
     state.layout.panel_title_baseline = window.y + 22U;
     state.layout.panel_text_baseline = state.layout.panel_client.y +
         UI_FONT_ASCENT;
+    (void)phipia_set_panel_frame(panel, window);
 }
 
 static void remove_panel_from_order(enum ui_panel_id panel)
@@ -789,24 +809,24 @@ enum ui_status ui_layout_build(
 
     static const enum ui_element_id ids[UI_DOCK_ITEM_COUNT] = {
         UI_ELEMENT_DOCK_FILES, UI_ELEMENT_DOCK_TERMINAL,
-        UI_ELEMENT_DOCK_NOTES, UI_ELEMENT_DOCK_STUDIO,
+        UI_ELEMENT_DOCK_NOTES, UI_ELEMENT_DOCK_MEDIA_EDITOR,
         UI_ELEMENT_DOCK_CAMERA, UI_ELEMENT_DOCK_CANVAS,
         UI_ELEMENT_DOCK_STORE,
         UI_ELEMENT_DOCK_SETTINGS
     };
     static const char *const labels[UI_DOCK_ITEM_COUNT] = {
-        label_files, label_terminal, label_notes, label_studio,
+        label_files, label_terminal, label_notes, label_media_editor,
         label_camera, label_canvas, label_store, label_settings
     };
     static const enum ui_action actions[UI_DOCK_ITEM_COUNT] = {
         UI_ACTION_OPEN_FILES, UI_ACTION_OPEN_TERMINAL, UI_ACTION_OPEN_NOTES,
-        UI_ACTION_OPEN_STUDIO, UI_ACTION_OPEN_CAMERA, UI_ACTION_OPEN_CANVAS,
+        UI_ACTION_OPEN_MEDIA_EDITOR, UI_ACTION_OPEN_CAMERA, UI_ACTION_OPEN_CANVAS,
         UI_ACTION_OPEN_STORE,
         UI_ACTION_OPEN_SETTINGS
     };
     static const enum ui_panel_id panels[UI_DOCK_ITEM_COUNT] = {
-        UI_PANEL_FILES, UI_PANEL_TERMINAL, UI_PANEL_NOTES, UI_PANEL_STUDIO,
-        UI_PANEL_CAMERA, UI_PANEL_NONE, UI_PANEL_STORE, UI_PANEL_SETTINGS
+        UI_PANEL_FILES, UI_PANEL_TERMINAL, UI_PANEL_NOTES, UI_PANEL_MEDIA_EDITOR,
+        UI_PANEL_CAMERA, UI_PANEL_PAINT, UI_PANEL_STORE, UI_PANEL_SETTINGS
     };
 
     for (size_t index = 0U; index < UI_DOCK_ITEM_COUNT; ++index) {
@@ -1569,22 +1589,22 @@ static enum ui_status draw_icon(
                 page.width - 8U, 1U }, damage,
                 framebuffer_pack(0xB8U, 0xD1U, 0xDCU));
         }
-    } else if (id == UI_ELEMENT_DOCK_STUDIO) {
+    } else if (id == UI_ELEMENT_DOCK_MEDIA_EDITOR) {
         uint32_t mark_width = bounds.width;
-        uint32_t mark_height = mark_width * studio_icon_height /
-            studio_icon_width;
+        uint32_t mark_height = mark_width * media_editor_icon_height /
+            media_editor_icon_width;
 
         if (mark_height > bounds.height) {
             mark_height = bounds.height;
-            mark_width = mark_height * studio_icon_width /
-                studio_icon_height;
+            mark_width = mark_height * media_editor_icon_width /
+                media_editor_icon_height;
         }
         status = draw_alpha_image((struct ui_rect){
             bounds.x + (bounds.width - mark_width) / 2U,
             bounds.y + (bounds.height - mark_height) / 2U,
             mark_width, mark_height
-        }, damage, studio_icon_pixels, studio_icon_alpha,
-            studio_icon_width, studio_icon_height);
+        }, damage, media_editor_icon_pixels, media_editor_icon_alpha,
+            media_editor_icon_width, media_editor_icon_height);
     } else if (id == UI_ELEMENT_DOCK_CAMERA ||
             id == UI_ELEMENT_DOCK_CANVAS ||
             id == UI_ELEMENT_DOCK_STORE ||
@@ -2018,10 +2038,10 @@ static uint8_t dock_icon_alpha_at(
         alpha = terminal_icon_alpha;
         source_width = terminal_icon_width;
         source_height = terminal_icon_height;
-    } else if (id == UI_ELEMENT_DOCK_STUDIO) {
-        alpha = studio_icon_alpha;
-        source_width = studio_icon_width;
-        source_height = studio_icon_height;
+    } else if (id == UI_ELEMENT_DOCK_MEDIA_EDITOR) {
+        alpha = media_editor_icon_alpha;
+        source_width = media_editor_icon_width;
+        source_height = media_editor_icon_height;
     } else if (id == UI_ELEMENT_DOCK_CAMERA) {
         alpha = camera_icon_alpha;
         source_width = camera_icon_width;
@@ -2292,14 +2312,14 @@ static bool copy_string(char *destination, size_t capacity, const char *source)
     return true;
 }
 
-static void set_app_status(const char *prefix, enum sapfs_status status)
+static void set_app_status(const char *prefix, enum phipfs_status status)
 {
     size_t at = append_text(app_status, sizeof(app_status), 0U, prefix);
 
-    if (status != SAPFS_STATUS_OK) {
+    if (status != PHIPFS_STATUS_OK) {
         at = append_text(app_status, sizeof(app_status), at, ": ");
         (void)append_text(app_status, sizeof(app_status), at,
-            sapfs_status_string(status));
+            phipfs_status_string(status));
     }
 }
 
@@ -2308,18 +2328,18 @@ static bool entry_path(const char *name, char *path)
     size_t at = 0U;
 
     if (!strings_equal(file_directory, ".")) {
-        at = append_text(path, SAPFS_MAX_PATH + 1U, at, file_directory);
-        at = append_text(path, SAPFS_MAX_PATH + 1U, at, "/");
+        at = append_text(path, PHIPFS_MAX_PATH + 1U, at, file_directory);
+        at = append_text(path, PHIPFS_MAX_PATH + 1U, at, "/");
     }
-    at = append_text(path, SAPFS_MAX_PATH + 1U, at, name);
-    return at != 0U && at <= SAPFS_MAX_PATH;
+    at = append_text(path, PHIPFS_MAX_PATH + 1U, at, name);
+    return at != 0U && at <= PHIPFS_MAX_PATH;
 }
 
 static bool file_is_internal(const char *name)
 {
     static const char *const internal[] = {
-        "SAPSTUDI.SAP", "STUTEMP.SAP", "STUBACK.SAP",
-        "STUOUT.BMP", "OUTBACK.BMP"
+        "MEDIAEDT.PHI", "MEDTEMP.PHI", "MEDBACK.PHI",
+        "STUOUT.BMP", "OUTBACK.BMP", "PNTTEMP.BMP", "PNTBACK.BMP"
     };
 
     if (!strings_equal(file_directory, ".")) {
@@ -2334,14 +2354,146 @@ static bool file_is_internal(const char *name)
     return false;
 }
 
-static enum sapfs_status files_refresh(void)
+static uint8_t ascii_lower(uint8_t value)
+{
+    return value >= (uint8_t)'A' && value <= (uint8_t)'Z' ?
+        (uint8_t)(value + ((uint8_t)'a' - (uint8_t)'A')) : value;
+}
+
+static bool file_suffix(const char *name, const char *suffix)
+{
+    size_t name_bytes = 0U;
+    size_t suffix_bytes = 0U;
+
+    while (name[name_bytes] != '\0') {
+        ++name_bytes;
+    }
+    while (suffix[suffix_bytes] != '\0') {
+        ++suffix_bytes;
+    }
+    if (suffix_bytes > name_bytes) {
+        return false;
+    }
+    for (size_t index = 0U; index < suffix_bytes; ++index) {
+        if (ascii_lower((uint8_t)name[name_bytes - suffix_bytes + index]) !=
+                ascii_lower((uint8_t)suffix[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static enum explorer_kind explorer_kind_for(
+    const struct phipfs_list_entry *entry)
+{
+    if (entry->directory) {
+        return EXPLORER_FOLDER;
+    }
+    if (file_suffix(entry->name, ".txt") || file_suffix(entry->name, ".md")) {
+        return EXPLORER_TEXT;
+    }
+    if (file_suffix(entry->name, ".bmp") ||
+            file_suffix(entry->name, ".png") ||
+            file_suffix(entry->name, ".jpg") ||
+            file_suffix(entry->name, ".jpeg")) {
+        return EXPLORER_IMAGE;
+    }
+    if (file_suffix(entry->name, ".wav") ||
+            file_suffix(entry->name, ".pcm")) {
+        return EXPLORER_AUDIO;
+    }
+    if (file_suffix(entry->name, ".mp4") ||
+            file_suffix(entry->name, ".webm")) {
+        return EXPLORER_VIDEO;
+    }
+    if (file_suffix(entry->name, ".zip") ||
+            file_suffix(entry->name, ".pkg") ||
+            file_suffix(entry->name, ".phi")) {
+        return EXPLORER_ARCHIVE;
+    }
+    if (file_suffix(entry->name, ".c") || file_suffix(entry->name, ".h") ||
+            file_suffix(entry->name, ".rs") ||
+            file_suffix(entry->name, ".py")) {
+        return EXPLORER_CODE;
+    }
+    return EXPLORER_GENERIC;
+}
+
+static void explorer_format_size(char *output, size_t capacity,
+    uint64_t bytes)
+{
+    size_t at;
+
+    if (bytes >= UINT64_C(1024) * 1024U) {
+        at = append_u64(output, capacity, 0U,
+            bytes / (UINT64_C(1024) * 1024U));
+        (void)append_text(output, capacity, at, " MiB");
+    } else if (bytes >= 1024U) {
+        at = append_u64(output, capacity, 0U, bytes / 1024U);
+        (void)append_text(output, capacity, at, " KiB");
+    } else {
+        at = append_u64(output, capacity, 0U, bytes);
+        (void)append_text(output, capacity, at, " bytes");
+    }
+}
+
+static void phipia_sync_explorer(void)
+{
+    static const char *const type_name[EXPLORER_KIND_COUNT] = {
+        "File folder", "Text document", "Image", "Audio", "Video",
+        "Archive", "Source code", "File"
+    };
+    const struct explorer_place data = {
+        .present = true,
+        .current = true,
+        .label = "Data (P:)",
+        .glyph = "drive"
+    };
+
+    if (!phipia_shell_ready) {
+        return;
+    }
+    (void)explorer_set_place(0U, &data);
+    for (size_t index = 1U; index < EXPLORER_MAX_PLACES; ++index) {
+        (void)explorer_set_place(index, NULL);
+    }
+    (void)explorer_set_crumb(0U, "P:");
+    (void)explorer_set_crumb(1U,
+        strings_equal(file_directory, ".") ? "" : file_directory);
+    for (size_t index = 2U; index < EXPLORER_MAX_CRUMBS; ++index) {
+        (void)explorer_set_crumb(index, "");
+    }
+    for (size_t index = 0U; index < file_entry_count &&
+            index < EXPLORER_MAX_ITEMS; ++index) {
+        const enum explorer_kind kind = explorer_kind_for(&file_entries[index]);
+        struct explorer_item item = {
+            .present = true,
+            .kind = kind
+        };
+
+        (void)copy_string(item.name, sizeof(item.name),
+            file_entries[index].name);
+        (void)copy_string(item.type, sizeof(item.type), type_name[kind]);
+        if (!file_entries[index].directory) {
+            explorer_format_size(item.size, sizeof(item.size),
+                file_entries[index].size);
+        }
+        (void)explorer_set_item(index, &item);
+    }
+    for (size_t index = file_entry_count; index < EXPLORER_MAX_ITEMS;
+         ++index) {
+        (void)explorer_set_item(index, NULL);
+    }
+}
+
+static enum phipfs_status files_refresh(void)
 {
     file_entry_count = 0U;
-    const enum sapfs_status status = sapfs_list(SAPFS_VOLUME_DATA,
+    const enum phipfs_status status = phipfs_list(PHIPFS_VOLUME_DATA,
         file_directory, file_entries,
         sizeof(file_entries) / sizeof(file_entries[0]), &file_entry_count);
 
-    if (status == SAPFS_STATUS_OK) {
+    if (status == PHIPFS_STATUS_OK) {
         size_t visible = 0U;
 
         for (size_t index = 0U; index < file_entry_count; ++index) {
@@ -2352,8 +2504,11 @@ static enum sapfs_status files_refresh(void)
         file_entry_count = visible;
     }
 
-    set_app_status(status == SAPFS_STATUS_OK ?
+    set_app_status(status == PHIPFS_STATUS_OK ?
         "data volume / fat32 / synchronized view" : "Files", status);
+    if (status == PHIPFS_STATUS_OK) {
+        phipia_sync_explorer();
+    }
     return status;
 }
 
@@ -2363,7 +2518,7 @@ static void files_up(void)
     size_t slash = SIZE_MAX;
 
     if (strings_equal(file_directory, ".")) {
-        set_app_status("already at data root", SAPFS_STATUS_OK);
+        set_app_status("already at data root", PHIPFS_STATUS_OK);
         return;
     }
     while (file_directory[length] != '\0') {
@@ -2383,15 +2538,15 @@ static void files_up(void)
 static void files_create(bool directory)
 {
     char name[13U];
-    char path[SAPFS_MAX_PATH + 1U];
-    enum sapfs_status status = SAPFS_STATUS_FULL;
+    char path[PHIPFS_MAX_PATH + 1U];
+    enum phipfs_status status = PHIPFS_STATUS_FULL;
 
     for (uint32_t number = 1U; number <= 9U; ++number) {
         size_t at = append_text(name, sizeof(name), 0U,
             directory ? "FOLDER" : "NEW");
 
         if (at + 1U >= sizeof(name)) {
-            status = SAPFS_STATUS_PATH;
+            status = PHIPFS_STATUS_PATH;
             break;
         }
         name[at] = (char)('0' + number);
@@ -2401,19 +2556,19 @@ static void files_create(bool directory)
             (void)append_text(name, sizeof(name), at, ".TXT");
         }
         if (!entry_path(name, path)) {
-            status = SAPFS_STATUS_PATH;
+            status = PHIPFS_STATUS_PATH;
             break;
         }
-        struct sapfs_stat stat;
-        status = sapfs_stat_path(SAPFS_VOLUME_DATA, path, &stat);
-        if (status != SAPFS_STATUS_NOT_FOUND) {
+        struct phipfs_stat stat;
+        status = phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat);
+        if (status != PHIPFS_STATUS_NOT_FOUND) {
             continue;
         }
-        status = directory ? sapfs_mkdir(SAPFS_VOLUME_DATA, path) :
-            sapfs_create(SAPFS_VOLUME_DATA, path);
-        if (status == SAPFS_STATUS_OK) {
+        status = directory ? phipfs_mkdir(PHIPFS_VOLUME_DATA, path) :
+            phipfs_create(PHIPFS_VOLUME_DATA, path);
+        if (status == PHIPFS_STATUS_OK) {
             set_app_status(directory ? "created folder" : "created file",
-                SAPFS_STATUS_OK);
+                PHIPFS_STATUS_OK);
             (void)files_refresh();
             return;
         }
@@ -2422,52 +2577,226 @@ static void files_create(bool directory)
     set_app_status(directory ? "new folder" : "new file", status);
 }
 
-static enum sapfs_status note_load(void)
+static enum phipfs_status explorer_copy_file(const char *source,
+    const char *destination)
 {
-    struct sapfs_stat stat;
-    sapfs_handle handle = 0U;
+    phipfs_handle input = 0U;
+    phipfs_handle output = 0U;
+    enum phipfs_status status = phipfs_create(PHIPFS_VOLUME_DATA, destination);
+    bool destination_created = status == PHIPFS_STATUS_OK;
+
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, source, PHIPFS_ACCESS_READ,
+            &input);
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, destination,
+            PHIPFS_ACCESS_WRITE, &output);
+    }
+    while (status == PHIPFS_STATUS_OK) {
+        size_t read_bytes = 0U;
+        size_t written_bytes = 0U;
+
+        status = phipfs_read(input, explorer_copy_buffer,
+            sizeof(explorer_copy_buffer), &read_bytes);
+        if (status != PHIPFS_STATUS_OK || read_bytes == 0U) {
+            break;
+        }
+        status = phipfs_write(output, explorer_copy_buffer, read_bytes,
+            &written_bytes);
+        if (status == PHIPFS_STATUS_OK && written_bytes != read_bytes) {
+            status = PHIPFS_STATUS_IO;
+        }
+    }
+    if (output != 0U) {
+        const enum phipfs_status close_status = phipfs_close(output);
+
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
+            status = close_status;
+        }
+    }
+    if (input != 0U) {
+        const enum phipfs_status close_status = phipfs_close(input);
+
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
+            status = close_status;
+        }
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
+    } else if (destination_created) {
+        (void)phipfs_unlink(PHIPFS_VOLUME_DATA, destination);
+        (void)phipfs_sync(PHIPFS_VOLUME_DATA);
+    }
+    return status;
+}
+
+static void phipia_apply_explorer_action(void)
+{
+    struct explorer_action action;
+    char source[PHIPFS_MAX_PATH + 1U];
+    char destination[PHIPFS_MAX_PATH + 1U];
+    enum phipfs_status status = PHIPFS_STATUS_INVALID_ARGUMENT;
+
+    if (!explorer_take_action(&action)) {
+        return;
+    }
+    source[0] = '\0';
+    destination[0] = '\0';
+    if (action.source[0] != '\0' && !entry_path(action.source, source)) {
+        set_app_status("file command", PHIPFS_STATUS_PATH);
+        (void)files_refresh();
+        return;
+    }
+    if (action.destination[0] != '\0' &&
+            !entry_path(action.destination, destination)) {
+        set_app_status("file command", PHIPFS_STATUS_PATH);
+        (void)files_refresh();
+        return;
+    }
+    switch (action.kind) {
+    case EXPLORER_ACTION_CREATE:
+        status = action.item_kind == EXPLORER_FOLDER ?
+            phipfs_mkdir(PHIPFS_VOLUME_DATA, destination) :
+            phipfs_create(PHIPFS_VOLUME_DATA, destination);
+        break;
+    case EXPLORER_ACTION_RENAME:
+    case EXPLORER_ACTION_MOVE:
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, source, destination);
+        break;
+    case EXPLORER_ACTION_DELETE:
+        status = action.item_kind == EXPLORER_FOLDER ?
+            phipfs_rmdir(PHIPFS_VOLUME_DATA, source) :
+            phipfs_unlink(PHIPFS_VOLUME_DATA, source);
+        break;
+    case EXPLORER_ACTION_COPY:
+        status = action.item_kind == EXPLORER_FOLDER ?
+            PHIPFS_STATUS_IS_DIRECTORY :
+            explorer_copy_file(source, destination);
+        break;
+    default:
+        status = PHIPFS_STATUS_INVALID_ARGUMENT;
+        break;
+    }
+    if (status == PHIPFS_STATUS_OK && action.kind != EXPLORER_ACTION_COPY) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
+    }
+    set_app_status("file command", status);
+    (void)files_refresh();
+}
+
+static void phipia_note_from_buffer(void)
+{
+    struct notes_note note = {
+        .present = true,
+        .colour = NOTES_YELLOW
+    };
+    size_t source = 0U;
+    size_t line = 0U;
+
+    (void)copy_string(note.title, sizeof(note.title), note_path);
+    while (source < note_length && line < NOTES_MAX_LINES) {
+        size_t destination = 0U;
+
+        note.lines[line].present = true;
+        while (source < note_length && note_buffer[source] != '\n' &&
+                destination + 1U < sizeof(note.lines[line].text)) {
+            note.lines[line].text[destination++] = note_buffer[source++];
+        }
+        note.lines[line].text[destination] = '\0';
+        if (source < note_length && note_buffer[source] == '\n') {
+            ++source;
+        }
+        ++line;
+    }
+    if (line == 0U) {
+        note.lines[0].present = true;
+    }
+    (void)notes_set_note(0U, &note);
+    (void)notes_select(0U);
+}
+
+static void phipia_note_to_buffer(void)
+{
+    struct notes_note note;
+    size_t destination = 0U;
+
+    if (notes_get_note(notes_selected(), &note) != NOTES_STATUS_OK) {
+        return;
+    }
+    for (size_t line = 0U; line < NOTES_MAX_LINES; ++line) {
+        if (!note.lines[line].present) {
+            continue;
+        }
+        for (size_t source = 0U; note.lines[line].text[source] != '\0' &&
+                destination + 1U < sizeof(note_buffer); ++source) {
+            note_buffer[destination++] = note.lines[line].text[source];
+        }
+        if (destination + 1U < sizeof(note_buffer)) {
+            note_buffer[destination++] = '\n';
+        }
+    }
+    if (destination != 0U && note_buffer[destination - 1U] == '\n') {
+        --destination;
+    }
+    note_buffer[destination] = '\0';
+    note_length = destination;
+    note_dirty = true;
+    note_savable = true;
+}
+
+static enum phipfs_status note_load(void)
+{
+    struct phipfs_stat stat;
+    phipfs_handle handle = 0U;
     size_t read_bytes = 0U;
-    enum sapfs_status status = sapfs_stat_path(SAPFS_VOLUME_DATA,
+    enum phipfs_status status = phipfs_stat_path(PHIPFS_VOLUME_DATA,
         note_path, &stat);
 
     note_length = 0U;
     note_buffer[0] = '\0';
     note_dirty = false;
     note_savable = false;
-    if (status == SAPFS_STATUS_NOT_FOUND) {
+    if (status == PHIPFS_STATUS_NOT_FOUND) {
         note_savable = true;
-        set_app_status("new note / Ctrl+S to save", SAPFS_STATUS_OK);
-        return SAPFS_STATUS_OK;
+        if (phipia_shell_ready) {
+            phipia_note_from_buffer();
+        }
+        set_app_status("new note / Ctrl+S to save", PHIPFS_STATUS_OK);
+        return PHIPFS_STATUS_OK;
     }
-    if (status == SAPFS_STATUS_OK && stat.directory) {
-        status = SAPFS_STATUS_IS_DIRECTORY;
+    if (status == PHIPFS_STATUS_OK && stat.directory) {
+        status = PHIPFS_STATUS_IS_DIRECTORY;
     }
-    if (status == SAPFS_STATUS_OK &&
+    if (status == PHIPFS_STATUS_OK &&
         stat.size > (uint32_t)(sizeof(note_buffer) - 1U)) {
-        set_app_status("note exceeds editor capacity", SAPFS_STATUS_RANGE);
-        return SAPFS_STATUS_RANGE;
+        set_app_status("note exceeds editor capacity", PHIPFS_STATUS_RANGE);
+        return PHIPFS_STATUS_RANGE;
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_open(SAPFS_VOLUME_DATA, note_path,
-            SAPFS_ACCESS_READ, &handle);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, note_path,
+            PHIPFS_ACCESS_READ, &handle);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_read(handle, (uint8_t *)note_buffer,
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_read(handle, (uint8_t *)note_buffer,
             sizeof(note_buffer) - 1U, &read_bytes);
-        const enum sapfs_status close_status = sapfs_close(handle);
+        const enum phipfs_status close_status = phipfs_close(handle);
 
-        if (status == SAPFS_STATUS_OK && close_status != SAPFS_STATUS_OK) {
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
             status = close_status;
         }
     }
-    if (status == SAPFS_STATUS_OK && read_bytes != stat.size) {
-        status = SAPFS_STATUS_IO;
+    if (status == PHIPFS_STATUS_OK && read_bytes != stat.size) {
+        status = PHIPFS_STATUS_IO;
     }
-    if (status == SAPFS_STATUS_OK) {
+    if (status == PHIPFS_STATUS_OK) {
         note_length = read_bytes;
         note_buffer[note_length] = '\0';
         note_savable = true;
-        set_app_status("note loaded from data volume", SAPFS_STATUS_OK);
+        if (phipia_shell_ready) {
+            phipia_note_from_buffer();
+        }
+        set_app_status("note loaded from data volume", PHIPFS_STATUS_OK);
     } else {
         set_app_status("open note", status);
     }
@@ -2491,7 +2820,7 @@ static bool note_sibling_path(const char *leaf, char *path)
     }
     if (slash != SIZE_MAX) {
         for (size_t index = 0U; index <= slash; ++index) {
-            if (destination + 1U >= SAPFS_MAX_PATH + 1U) {
+            if (destination + 1U >= PHIPFS_MAX_PATH + 1U) {
                 path[0] = '\0';
                 return false;
             }
@@ -2499,7 +2828,7 @@ static bool note_sibling_path(const char *leaf, char *path)
         }
     }
     for (size_t index = 0U; leaf[index] != '\0'; ++index) {
-        if (destination + 1U >= SAPFS_MAX_PATH + 1U) {
+        if (destination + 1U >= PHIPFS_MAX_PATH + 1U) {
             path[0] = '\0';
             return false;
         }
@@ -2509,7 +2838,7 @@ static bool note_sibling_path(const char *leaf, char *path)
     return destination != 0U && !strings_equal(path, note_path);
 }
 
-static enum sapfs_status note_replacement_paths(
+static enum phipfs_status note_replacement_paths(
     char *temporary,
     char *backup
 )
@@ -2518,131 +2847,131 @@ static enum sapfs_status note_replacement_paths(
     char backup_leaf[] = "SNBAK1.BAK";
 
     for (uint32_t number = 1U; number <= 9U; ++number) {
-        struct sapfs_stat stat;
-        enum sapfs_status status;
+        struct phipfs_stat stat;
+        enum phipfs_status status;
 
         temporary_leaf[5] = (char)('0' + number);
         backup_leaf[5] = (char)('0' + number);
         if (!note_sibling_path(temporary_leaf, temporary) ||
             !note_sibling_path(backup_leaf, backup)) {
-            return SAPFS_STATUS_PATH;
+            return PHIPFS_STATUS_PATH;
         }
-        status = sapfs_stat_path(SAPFS_VOLUME_DATA, temporary, &stat);
-        if (status == SAPFS_STATUS_OK) {
+        status = phipfs_stat_path(PHIPFS_VOLUME_DATA, temporary, &stat);
+        if (status == PHIPFS_STATUS_OK) {
             continue;
         }
-        if (status != SAPFS_STATUS_NOT_FOUND) {
+        if (status != PHIPFS_STATUS_NOT_FOUND) {
             return status;
         }
-        status = sapfs_stat_path(SAPFS_VOLUME_DATA, backup, &stat);
-        if (status == SAPFS_STATUS_NOT_FOUND) {
-            return SAPFS_STATUS_OK;
+        status = phipfs_stat_path(PHIPFS_VOLUME_DATA, backup, &stat);
+        if (status == PHIPFS_STATUS_NOT_FOUND) {
+            return PHIPFS_STATUS_OK;
         }
-        if (status != SAPFS_STATUS_OK) {
+        if (status != PHIPFS_STATUS_OK) {
             return status;
         }
     }
-    return SAPFS_STATUS_DIRECTORY_FULL;
+    return PHIPFS_STATUS_DIRECTORY_FULL;
 }
 
 static void note_remove_temporary(const char *path)
 {
-    if (sapfs_unlink(SAPFS_VOLUME_DATA, path) == SAPFS_STATUS_OK) {
-        (void)sapfs_sync(SAPFS_VOLUME_DATA);
+    if (phipfs_unlink(PHIPFS_VOLUME_DATA, path) == PHIPFS_STATUS_OK) {
+        (void)phipfs_sync(PHIPFS_VOLUME_DATA);
     }
 }
 
-static enum sapfs_status note_write_temporary(const char *path)
+static enum phipfs_status note_write_temporary(const char *path)
 {
-    sapfs_handle handle;
+    phipfs_handle handle;
     size_t written = 0U;
-    enum sapfs_status status = sapfs_create(SAPFS_VOLUME_DATA, path);
+    enum phipfs_status status = phipfs_create(PHIPFS_VOLUME_DATA, path);
 
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_open(SAPFS_VOLUME_DATA, path,
-            SAPFS_ACCESS_WRITE, &handle);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, path,
+            PHIPFS_ACCESS_WRITE, &handle);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_write(handle, (const uint8_t *)note_buffer,
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_write(handle, (const uint8_t *)note_buffer,
             note_length, &written);
-        const enum sapfs_status close_status = sapfs_close(handle);
+        const enum phipfs_status close_status = phipfs_close(handle);
 
-        if (status == SAPFS_STATUS_OK && close_status != SAPFS_STATUS_OK) {
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
             status = close_status;
         }
     }
-    if (status == SAPFS_STATUS_OK && written != note_length) {
-        status = SAPFS_STATUS_WRITEBACK;
+    if (status == PHIPFS_STATUS_OK && written != note_length) {
+        status = PHIPFS_STATUS_WRITEBACK;
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
     }
-    if (status != SAPFS_STATUS_OK) {
+    if (status != PHIPFS_STATUS_OK) {
         note_remove_temporary(path);
     }
     return status;
 }
 
-static enum sapfs_status note_restore_original(
+static enum phipfs_status note_restore_original(
     const char *temporary,
     const char *backup,
     bool replacement_visible
 )
 {
-    enum sapfs_status status = SAPFS_STATUS_OK;
+    enum phipfs_status status = PHIPFS_STATUS_OK;
 
     if (replacement_visible) {
-        status = sapfs_rename(SAPFS_VOLUME_DATA, note_path, temporary);
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, note_path, temporary);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_rename(SAPFS_VOLUME_DATA, backup, note_path);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, backup, note_path);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
     }
-    if (status == SAPFS_STATUS_OK && replacement_visible) {
+    if (status == PHIPFS_STATUS_OK && replacement_visible) {
         note_remove_temporary(temporary);
     }
     return status;
 }
 
-static enum sapfs_status note_save(void)
+static enum phipfs_status note_save(void)
 {
-    struct sapfs_stat stat;
-    char temporary[SAPFS_MAX_PATH + 1U];
-    char backup[SAPFS_MAX_PATH + 1U];
+    struct phipfs_stat stat;
+    char temporary[PHIPFS_MAX_PATH + 1U];
+    char backup[PHIPFS_MAX_PATH + 1U];
     bool original_exists = false;
     bool original_backed_up = false;
-    enum sapfs_status status;
+    enum phipfs_status status;
 
     if (!note_savable) {
-        status = SAPFS_STATUS_RANGE;
+        status = PHIPFS_STATUS_RANGE;
     } else {
-        status = sapfs_stat_path(SAPFS_VOLUME_DATA, note_path, &stat);
-        if (status == SAPFS_STATUS_OK) {
+        status = phipfs_stat_path(PHIPFS_VOLUME_DATA, note_path, &stat);
+        if (status == PHIPFS_STATUS_OK) {
             original_exists = true;
-        } else if (status == SAPFS_STATUS_NOT_FOUND) {
-            status = SAPFS_STATUS_OK;
+        } else if (status == PHIPFS_STATUS_NOT_FOUND) {
+            status = PHIPFS_STATUS_OK;
         }
     }
-    if (status == SAPFS_STATUS_OK) {
+    if (status == PHIPFS_STATUS_OK) {
         status = note_replacement_paths(temporary, backup);
     }
-    if (status == SAPFS_STATUS_OK) {
+    if (status == PHIPFS_STATUS_OK) {
         status = note_write_temporary(temporary);
     }
-    if (status == SAPFS_STATUS_OK && original_exists) {
-        status = sapfs_rename(SAPFS_VOLUME_DATA, note_path, backup);
-        if (status == SAPFS_STATUS_OK) {
+    if (status == PHIPFS_STATUS_OK && original_exists) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, note_path, backup);
+        if (status == PHIPFS_STATUS_OK) {
             original_backed_up = true;
-            status = sapfs_sync(SAPFS_VOLUME_DATA);
+            status = phipfs_sync(PHIPFS_VOLUME_DATA);
         }
-        if (status != SAPFS_STATUS_OK) {
+        if (status != PHIPFS_STATUS_OK) {
             if (original_backed_up) {
-                const enum sapfs_status restore = note_restore_original(
+                const enum phipfs_status restore = note_restore_original(
                     temporary, backup, false);
 
-                if (restore != SAPFS_STATUS_OK) {
+                if (restore != PHIPFS_STATUS_OK) {
                     status = restore;
                 } else {
                     note_remove_temporary(temporary);
@@ -2652,71 +2981,71 @@ static enum sapfs_status note_save(void)
             }
         }
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_rename(SAPFS_VOLUME_DATA, temporary, note_path);
-        if (status != SAPFS_STATUS_OK && original_exists) {
-            const enum sapfs_status restore = note_restore_original(
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, temporary, note_path);
+        if (status != PHIPFS_STATUS_OK && original_exists) {
+            const enum phipfs_status restore = note_restore_original(
                 temporary, backup, false);
 
-            if (restore != SAPFS_STATUS_OK) {
+            if (restore != PHIPFS_STATUS_OK) {
                 status = restore;
             } else {
                 note_remove_temporary(temporary);
             }
-        } else if (status != SAPFS_STATUS_OK) {
+        } else if (status != PHIPFS_STATUS_OK) {
             note_remove_temporary(temporary);
         }
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_sync(SAPFS_VOLUME_DATA);
-        if (status != SAPFS_STATUS_OK && original_exists) {
-            const enum sapfs_status restore = note_restore_original(
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
+        if (status != PHIPFS_STATUS_OK && original_exists) {
+            const enum phipfs_status restore = note_restore_original(
                 temporary, backup, true);
 
-            if (restore != SAPFS_STATUS_OK) {
+            if (restore != PHIPFS_STATUS_OK) {
                 status = restore;
             }
         }
     }
-    if (status == SAPFS_STATUS_OK && original_exists) {
-        status = sapfs_unlink(SAPFS_VOLUME_DATA, backup);
-        if (status == SAPFS_STATUS_OK) {
-            status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK && original_exists) {
+        status = phipfs_unlink(PHIPFS_VOLUME_DATA, backup);
+        if (status == PHIPFS_STATUS_OK) {
+            status = phipfs_sync(PHIPFS_VOLUME_DATA);
         }
     }
-    if (status == SAPFS_STATUS_OK) {
+    if (status == PHIPFS_STATUS_OK) {
         note_dirty = false;
-        set_app_status("note saved", SAPFS_STATUS_OK);
+        set_app_status("note saved", PHIPFS_STATUS_OK);
     } else {
         set_app_status("save note / original retained", status);
     }
     return status;
 }
 
-static void studio_set_status(const char *message)
+static void media_source_set_status(const char *message)
 {
-    if (!copy_string(studio_status, sizeof(studio_status), message)) {
-        (void)copy_string(studio_status, sizeof(studio_status), "Studio status");
+    if (!copy_string(media_source_status, sizeof(media_source_status), message)) {
+        (void)copy_string(media_source_status, sizeof(media_source_status), "Media Editor status");
     }
 }
 
-static void studio_reset(bool dirty)
+static void media_source_reset(bool dirty)
 {
-    for (size_t index = 0U; index < UI_STUDIO_MAX_CLIPS; ++index) {
-        studio_clip_durations[index] = 0U;
-        studio_clip_paths[index][0] = '\0';
+    for (size_t index = 0U; index < UI_MEDIA_SOURCE_MAX_CLIPS; ++index) {
+        media_source_clip_durations[index] = 0U;
+        media_source_clip_paths[index][0] = '\0';
     }
-    studio_preview_width = 0U;
-    studio_preview_height = 0U;
-    studio_preview_loaded = false;
-    studio_clip_count = 0U;
-    studio_selected_clip = UINT8_MAX;
-    studio_playhead = 0U;
-    studio_dirty = dirty;
-    studio_set_status(dirty ? "New project" : "Project ready");
+    media_source_preview_width = 0U;
+    media_source_preview_height = 0U;
+    media_source_preview_loaded = false;
+    media_source_clip_count = 0U;
+    media_source_selected_clip = UINT8_MAX;
+    media_source_playhead = 0U;
+    media_source_dirty = dirty;
+    media_source_set_status(dirty ? "New project" : "Project ready");
 }
 
-static void studio_store_u32(uint8_t *bytes, size_t offset, uint32_t value)
+static void media_source_store_u32(uint8_t *bytes, size_t offset, uint32_t value)
 {
     bytes[offset] = (uint8_t)value;
     bytes[offset + 1U] = (uint8_t)(value >> 8U);
@@ -2724,19 +3053,19 @@ static void studio_store_u32(uint8_t *bytes, size_t offset, uint32_t value)
     bytes[offset + 3U] = (uint8_t)(value >> 24U);
 }
 
-static void studio_store_u16(uint8_t *bytes, size_t offset, uint16_t value)
+static void media_source_store_u16(uint8_t *bytes, size_t offset, uint16_t value)
 {
     bytes[offset] = (uint8_t)value;
     bytes[offset + 1U] = (uint8_t)(value >> 8U);
 }
 
-static uint16_t studio_load_u16(const uint8_t *bytes, size_t offset)
+static uint16_t media_source_load_u16(const uint8_t *bytes, size_t offset)
 {
     return (uint16_t)((uint16_t)bytes[offset] |
         (uint16_t)((uint16_t)bytes[offset + 1U] << 8U));
 }
 
-static uint32_t studio_load_u32(const uint8_t *bytes, size_t offset)
+static uint32_t media_source_load_u32(const uint8_t *bytes, size_t offset)
 {
     return (uint32_t)bytes[offset] |
         (uint32_t)bytes[offset + 1U] << 8U |
@@ -2744,37 +3073,37 @@ static uint32_t studio_load_u32(const uint8_t *bytes, size_t offset)
         (uint32_t)bytes[offset + 3U] << 24U;
 }
 
-static void studio_encode_project(uint8_t *bytes)
+static void media_source_encode_project(uint8_t *bytes)
 {
     static const uint8_t magic[8U] = {
-        'S', 'A', 'P', 'S', 'T', 'U', '2', 0U
+        'P', 'H', 'I', 'P', 'M', 'E', 'D', '2'
     };
 
-    for (size_t index = 0U; index < UI_STUDIO_PROJECT_BYTES; ++index) {
+    for (size_t index = 0U; index < UI_MEDIA_SOURCE_PROJECT_BYTES; ++index) {
         bytes[index] = 0U;
     }
     for (size_t index = 0U; index < sizeof(magic); ++index) {
         bytes[index] = magic[index];
     }
-    bytes[8U] = studio_clip_count;
-    bytes[9U] = studio_selected_clip;
-    studio_store_u32(bytes, 12U, studio_playhead);
-    for (size_t index = 0U; index < UI_STUDIO_MAX_CLIPS; ++index) {
-        const size_t record = 16U + index * (4U + UI_STUDIO_PATH_BYTES);
+    bytes[8U] = media_source_clip_count;
+    bytes[9U] = media_source_selected_clip;
+    media_source_store_u32(bytes, 12U, media_source_playhead);
+    for (size_t index = 0U; index < UI_MEDIA_SOURCE_MAX_CLIPS; ++index) {
+        const size_t record = 16U + index * (4U + UI_MEDIA_SOURCE_PATH_BYTES);
 
-        studio_store_u32(bytes, record, studio_clip_durations[index]);
-        for (size_t at = 0U; at < UI_STUDIO_PATH_BYTES &&
-             studio_clip_paths[index][at] != '\0'; ++at) {
+        media_source_store_u32(bytes, record, media_source_clip_durations[index]);
+        for (size_t at = 0U; at < UI_MEDIA_SOURCE_PATH_BYTES &&
+             media_source_clip_paths[index][at] != '\0'; ++at) {
             bytes[record + 4U + at] =
-                (uint8_t)studio_clip_paths[index][at];
+                (uint8_t)media_source_clip_paths[index][at];
         }
     }
 }
 
-static bool studio_decode_project(const uint8_t *bytes)
+static bool media_source_decode_project(const uint8_t *bytes)
 {
     static const uint8_t magic[8U] = {
-        'S', 'A', 'P', 'S', 'T', 'U', '2', 0U
+        'P', 'H', 'I', 'P', 'M', 'E', 'D', '2'
     };
 
     for (size_t index = 0U; index < sizeof(magic); ++index) {
@@ -2782,24 +3111,24 @@ static bool studio_decode_project(const uint8_t *bytes)
             return false;
         }
     }
-    if (bytes[8U] > UI_STUDIO_MAX_CLIPS ||
+    if (bytes[8U] > UI_MEDIA_SOURCE_MAX_CLIPS ||
         (bytes[9U] != UINT8_MAX && bytes[9U] >= bytes[8U]) ||
-        studio_load_u32(bytes, 12U) > 1000U) {
+        media_source_load_u32(bytes, 12U) > 1000U) {
         return false;
     }
-    studio_clip_count = bytes[8U];
-    studio_selected_clip = bytes[9U];
-    studio_playhead = studio_load_u32(bytes, 12U);
-    for (size_t index = 0U; index < UI_STUDIO_MAX_CLIPS; ++index) {
-        const size_t record = 16U + index * (4U + UI_STUDIO_PATH_BYTES);
-        const uint32_t duration = studio_load_u32(bytes, record);
+    media_source_clip_count = bytes[8U];
+    media_source_selected_clip = bytes[9U];
+    media_source_playhead = media_source_load_u32(bytes, 12U);
+    for (size_t index = 0U; index < UI_MEDIA_SOURCE_MAX_CLIPS; ++index) {
+        const size_t record = 16U + index * (4U + UI_MEDIA_SOURCE_PATH_BYTES);
+        const uint32_t duration = media_source_load_u32(bytes, record);
         size_t path_length = 0U;
 
-        if ((index < studio_clip_count && (duration == 0U || duration > 1000U)) ||
-            (index >= studio_clip_count && duration != 0U)) {
+        if ((index < media_source_clip_count && (duration == 0U || duration > 1000U)) ||
+            (index >= media_source_clip_count && duration != 0U)) {
             return false;
         }
-        while (path_length < UI_STUDIO_PATH_BYTES &&
+        while (path_length < UI_MEDIA_SOURCE_PATH_BYTES &&
                bytes[record + 4U + path_length] != 0U) {
             const uint8_t character = bytes[record + 4U + path_length];
 
@@ -2807,257 +3136,257 @@ static bool studio_decode_project(const uint8_t *bytes)
                 character == '\\') {
                 return false;
             }
-            studio_clip_paths[index][path_length] = (char)character;
+            media_source_clip_paths[index][path_length] = (char)character;
             ++path_length;
         }
-        studio_clip_paths[index][path_length] = '\0';
-        if ((index < studio_clip_count && path_length == 0U) ||
-            (index >= studio_clip_count && path_length != 0U)) {
+        media_source_clip_paths[index][path_length] = '\0';
+        if ((index < media_source_clip_count && path_length == 0U) ||
+            (index >= media_source_clip_count && path_length != 0U)) {
             return false;
         }
-        studio_clip_durations[index] = duration;
+        media_source_clip_durations[index] = duration;
     }
     return true;
 }
 
-static enum sapfs_status studio_load_preview(const char *path);
+static enum phipfs_status media_source_load_preview(const char *path);
 
-static enum sapfs_status studio_remove_if_present(const char *path)
+static enum phipfs_status media_source_remove_if_present(const char *path)
 {
-    struct sapfs_stat stat;
-    enum sapfs_status status = sapfs_stat_path(SAPFS_VOLUME_DATA, path, &stat);
+    struct phipfs_stat stat;
+    enum phipfs_status status = phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat);
 
-    if (status == SAPFS_STATUS_NOT_FOUND) {
-        return SAPFS_STATUS_OK;
+    if (status == PHIPFS_STATUS_NOT_FOUND) {
+        return PHIPFS_STATUS_OK;
     }
-    if (status != SAPFS_STATUS_OK) {
+    if (status != PHIPFS_STATUS_OK) {
         return status;
     }
-    return stat.directory ? SAPFS_STATUS_IS_DIRECTORY :
-        sapfs_unlink(SAPFS_VOLUME_DATA, path);
+    return stat.directory ? PHIPFS_STATUS_IS_DIRECTORY :
+        phipfs_unlink(PHIPFS_VOLUME_DATA, path);
 }
 
-static enum sapfs_status studio_regular_presence(
+static enum phipfs_status media_source_regular_presence(
     const char *path,
     bool *present
 )
 {
-    struct sapfs_stat stat;
-    enum sapfs_status status;
+    struct phipfs_stat stat;
+    enum phipfs_status status;
 
     if (present == NULL) {
-        return SAPFS_STATUS_INVALID_ARGUMENT;
+        return PHIPFS_STATUS_INVALID_ARGUMENT;
     }
-    status = sapfs_stat_path(SAPFS_VOLUME_DATA, path, &stat);
-    if (status == SAPFS_STATUS_NOT_FOUND) {
+    status = phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat);
+    if (status == PHIPFS_STATUS_NOT_FOUND) {
         *present = false;
-        return SAPFS_STATUS_OK;
+        return PHIPFS_STATUS_OK;
     }
-    if (status != SAPFS_STATUS_OK) {
+    if (status != PHIPFS_STATUS_OK) {
         return status;
     }
     if (stat.directory) {
-        return SAPFS_STATUS_IS_DIRECTORY;
+        return PHIPFS_STATUS_IS_DIRECTORY;
     }
     *present = true;
-    return SAPFS_STATUS_OK;
+    return PHIPFS_STATUS_OK;
 }
 
-static enum sapfs_status studio_recover_project(void)
+static enum phipfs_status media_source_recover_project(void)
 {
-    static const char project[] = "SAPSTUDI.SAP";
-    static const char scratch[] = "STUTEMP.SAP";
-    static const char backup[] = "STUBACK.SAP";
+    static const char project[] = "MEDIAEDT.PHI";
+    static const char scratch[] = "MEDTEMP.PHI";
+    static const char backup[] = "MEDBACK.PHI";
     bool primary = false;
     bool saved = false;
     bool staged = false;
     bool changed = false;
-    enum sapfs_status status = studio_regular_presence(project, &primary);
+    enum phipfs_status status = media_source_regular_presence(project, &primary);
 
-    if (status == SAPFS_STATUS_OK) {
-        status = studio_regular_presence(backup, &saved);
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_regular_presence(backup, &saved);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = studio_regular_presence(scratch, &staged);
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_regular_presence(scratch, &staged);
     }
-    if (status != SAPFS_STATUS_OK) {
+    if (status != PHIPFS_STATUS_OK) {
         return status;
     }
     if (!primary && saved) {
-        status = sapfs_rename(SAPFS_VOLUME_DATA, backup, project);
-        changed = status == SAPFS_STATUS_OK;
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, backup, project);
+        changed = status == PHIPFS_STATUS_OK;
     } else if (!primary && !saved && staged) {
-        status = sapfs_rename(SAPFS_VOLUME_DATA, scratch, project);
-        changed = status == SAPFS_STATUS_OK;
-        staged = status != SAPFS_STATUS_OK;
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, scratch, project);
+        changed = status == PHIPFS_STATUS_OK;
+        staged = status != PHIPFS_STATUS_OK;
     } else if (primary && saved) {
-        status = studio_remove_if_present(backup);
-        changed = status == SAPFS_STATUS_OK;
+        status = media_source_remove_if_present(backup);
+        changed = status == PHIPFS_STATUS_OK;
     }
-    if (status == SAPFS_STATUS_OK && staged) {
-        status = studio_remove_if_present(scratch);
-        changed = changed || status == SAPFS_STATUS_OK;
+    if (status == PHIPFS_STATUS_OK && staged) {
+        status = media_source_remove_if_present(scratch);
+        changed = changed || status == PHIPFS_STATUS_OK;
     }
-    if (status == SAPFS_STATUS_OK && changed) {
-        status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK && changed) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
     }
     return status;
 }
 
-static enum sapfs_status studio_load(void)
+static enum phipfs_status media_source_load(void)
 {
-    static const char project[] = "SAPSTUDI.SAP";
-    uint8_t bytes[UI_STUDIO_PROJECT_BYTES];
-    struct sapfs_stat stat;
-    sapfs_handle handle;
+    static const char project[] = "MEDIAEDT.PHI";
+    uint8_t bytes[UI_MEDIA_SOURCE_PROJECT_BYTES];
+    struct phipfs_stat stat;
+    phipfs_handle handle;
     size_t read_bytes = 0U;
-    enum sapfs_status status = studio_recover_project();
+    enum phipfs_status status = media_source_recover_project();
 
-    studio_reset(false);
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_stat_path(SAPFS_VOLUME_DATA, project, &stat);
+    media_source_reset(false);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_stat_path(PHIPFS_VOLUME_DATA, project, &stat);
     }
-    if (status == SAPFS_STATUS_NOT_FOUND) {
-        studio_set_status("New project / ready to edit");
-        return SAPFS_STATUS_OK;
+    if (status == PHIPFS_STATUS_NOT_FOUND) {
+        media_source_set_status("New project / ready to edit");
+        return PHIPFS_STATUS_OK;
     }
-    if (status == SAPFS_STATUS_OK &&
-        (stat.directory || stat.size != UI_STUDIO_PROJECT_BYTES)) {
-        status = SAPFS_STATUS_CORRUPT;
+    if (status == PHIPFS_STATUS_OK &&
+        (stat.directory || stat.size != UI_MEDIA_SOURCE_PROJECT_BYTES)) {
+        status = PHIPFS_STATUS_CORRUPT;
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_open(SAPFS_VOLUME_DATA, project,
-            SAPFS_ACCESS_READ, &handle);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, project,
+            PHIPFS_ACCESS_READ, &handle);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_read(handle, bytes, sizeof(bytes), &read_bytes);
-        const enum sapfs_status close_status = sapfs_close(handle);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_read(handle, bytes, sizeof(bytes), &read_bytes);
+        const enum phipfs_status close_status = phipfs_close(handle);
 
-        if (status == SAPFS_STATUS_OK && close_status != SAPFS_STATUS_OK) {
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
             status = close_status;
         }
     }
-    if (status == SAPFS_STATUS_OK &&
-        (read_bytes != sizeof(bytes) || !studio_decode_project(bytes))) {
-        status = SAPFS_STATUS_CORRUPT;
+    if (status == PHIPFS_STATUS_OK &&
+        (read_bytes != sizeof(bytes) || !media_source_decode_project(bytes))) {
+        status = PHIPFS_STATUS_CORRUPT;
     }
-    if (status == SAPFS_STATUS_OK) {
-        studio_dirty = false;
-        if (studio_selected_clip != UINT8_MAX &&
-            studio_load_preview(studio_clip_paths[studio_selected_clip]) !=
-                SAPFS_STATUS_OK) {
-            studio_set_status("Project opened / source offline");
+    if (status == PHIPFS_STATUS_OK) {
+        media_source_dirty = false;
+        if (media_source_selected_clip != UINT8_MAX &&
+            media_source_load_preview(media_source_clip_paths[media_source_selected_clip]) !=
+                PHIPFS_STATUS_OK) {
+            media_source_set_status("Project opened / source offline");
         } else {
-            studio_set_status("Project opened");
+            media_source_set_status("Project opened");
         }
     } else {
-        studio_reset(false);
-        studio_set_status("Project unavailable");
+        media_source_reset(false);
+        media_source_set_status("Project unavailable");
     }
     return status;
 }
 
-static enum sapfs_status studio_write_scratch(const uint8_t *bytes)
+static enum phipfs_status media_source_write_scratch(const uint8_t *bytes)
 {
-    static const char scratch[] = "STUTEMP.SAP";
-    sapfs_handle handle;
+    static const char scratch[] = "MEDTEMP.PHI";
+    phipfs_handle handle;
     size_t written = 0U;
-    enum sapfs_status status = sapfs_create(SAPFS_VOLUME_DATA, scratch);
+    enum phipfs_status status = phipfs_create(PHIPFS_VOLUME_DATA, scratch);
 
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_open(SAPFS_VOLUME_DATA, scratch,
-            SAPFS_ACCESS_WRITE, &handle);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, scratch,
+            PHIPFS_ACCESS_WRITE, &handle);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_write(handle, bytes, UI_STUDIO_PROJECT_BYTES, &written);
-        const enum sapfs_status close_status = sapfs_close(handle);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_write(handle, bytes, UI_MEDIA_SOURCE_PROJECT_BYTES, &written);
+        const enum phipfs_status close_status = phipfs_close(handle);
 
-        if (status == SAPFS_STATUS_OK && close_status != SAPFS_STATUS_OK) {
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
             status = close_status;
         }
     }
-    if (status == SAPFS_STATUS_OK && written != UI_STUDIO_PROJECT_BYTES) {
-        status = SAPFS_STATUS_WRITEBACK;
+    if (status == PHIPFS_STATUS_OK && written != UI_MEDIA_SOURCE_PROJECT_BYTES) {
+        status = PHIPFS_STATUS_WRITEBACK;
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
     }
-    if (status != SAPFS_STATUS_OK) {
-        (void)studio_remove_if_present(scratch);
+    if (status != PHIPFS_STATUS_OK) {
+        (void)media_source_remove_if_present(scratch);
     }
     return status;
 }
 
-static enum sapfs_status studio_save(void)
+static enum phipfs_status media_source_save(void)
 {
-    static const char project[] = "SAPSTUDI.SAP";
-    static const char scratch[] = "STUTEMP.SAP";
-    static const char backup[] = "STUBACK.SAP";
-    uint8_t bytes[UI_STUDIO_PROJECT_BYTES];
-    struct sapfs_stat stat;
+    static const char project[] = "MEDIAEDT.PHI";
+    static const char scratch[] = "MEDTEMP.PHI";
+    static const char backup[] = "MEDBACK.PHI";
+    uint8_t bytes[UI_MEDIA_SOURCE_PROJECT_BYTES];
+    struct phipfs_stat stat;
     bool original_exists = false;
     bool backed_up = false;
     bool replacement_visible = false;
-    enum sapfs_status status = studio_recover_project();
+    enum phipfs_status status = media_source_recover_project();
 
-    studio_encode_project(bytes);
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_stat_path(SAPFS_VOLUME_DATA, project, &stat);
-        if (status == SAPFS_STATUS_OK) {
+    media_source_encode_project(bytes);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_stat_path(PHIPFS_VOLUME_DATA, project, &stat);
+        if (status == PHIPFS_STATUS_OK) {
             original_exists = true;
-        } else if (status == SAPFS_STATUS_NOT_FOUND) {
-            status = SAPFS_STATUS_OK;
+        } else if (status == PHIPFS_STATUS_NOT_FOUND) {
+            status = PHIPFS_STATUS_OK;
         }
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = studio_write_scratch(bytes);
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_write_scratch(bytes);
     }
-    if (status == SAPFS_STATUS_OK && original_exists) {
-        status = sapfs_rename(SAPFS_VOLUME_DATA, project, backup);
-        backed_up = status == SAPFS_STATUS_OK;
-        if (status == SAPFS_STATUS_OK) {
-            status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK && original_exists) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, project, backup);
+        backed_up = status == PHIPFS_STATUS_OK;
+        if (status == PHIPFS_STATUS_OK) {
+            status = phipfs_sync(PHIPFS_VOLUME_DATA);
         }
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_rename(SAPFS_VOLUME_DATA, scratch, project);
-        replacement_visible = status == SAPFS_STATUS_OK;
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, scratch, project);
+        replacement_visible = status == PHIPFS_STATUS_OK;
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
     }
-    if (status != SAPFS_STATUS_OK && backed_up) {
+    if (status != PHIPFS_STATUS_OK && backed_up) {
         if (replacement_visible) {
-            (void)sapfs_rename(SAPFS_VOLUME_DATA, project, scratch);
+            (void)phipfs_rename(PHIPFS_VOLUME_DATA, project, scratch);
         }
-        const enum sapfs_status restore = sapfs_rename(SAPFS_VOLUME_DATA,
+        const enum phipfs_status restore = phipfs_rename(PHIPFS_VOLUME_DATA,
             backup, project);
 
-        if (restore == SAPFS_STATUS_OK) {
-            (void)sapfs_sync(SAPFS_VOLUME_DATA);
-            (void)studio_remove_if_present(scratch);
+        if (restore == PHIPFS_STATUS_OK) {
+            (void)phipfs_sync(PHIPFS_VOLUME_DATA);
+            (void)media_source_remove_if_present(scratch);
         } else {
             status = restore;
         }
-    } else if (status != SAPFS_STATUS_OK) {
-        (void)studio_remove_if_present(scratch);
+    } else if (status != PHIPFS_STATUS_OK) {
+        (void)media_source_remove_if_present(scratch);
     }
-    if (status == SAPFS_STATUS_OK && original_exists) {
-        status = studio_remove_if_present(backup);
-        if (status == SAPFS_STATUS_OK) {
-            status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK && original_exists) {
+        status = media_source_remove_if_present(backup);
+        if (status == PHIPFS_STATUS_OK) {
+            status = phipfs_sync(PHIPFS_VOLUME_DATA);
         }
     }
-    if (status == SAPFS_STATUS_OK) {
-        studio_dirty = false;
-        studio_set_status("Project saved");
+    if (status == PHIPFS_STATUS_OK) {
+        media_source_dirty = false;
+        media_source_set_status("Project saved");
     } else {
-        studio_set_status("Save failed / project retained");
+        media_source_set_status("Save failed / project retained");
     }
     return status;
 }
 
-static bool studio_file_is_bmp(const char *name)
+static bool media_source_file_is_bmp(const char *name)
 {
     size_t length = 0U;
 
@@ -3078,170 +3407,170 @@ static bool studio_file_is_bmp(const char *name)
         (p == 'P' || p == 'p');
 }
 
-static bool studio_path_used(const char *path)
+static bool media_source_path_used(const char *path)
 {
-    for (size_t index = 0U; index < studio_clip_count; ++index) {
-        if (strings_equal(studio_clip_paths[index], path)) {
+    for (size_t index = 0U; index < media_source_clip_count; ++index) {
+        if (strings_equal(media_source_clip_paths[index], path)) {
             return true;
         }
     }
     return false;
 }
 
-static enum sapfs_status studio_load_preview(const char *path)
+static enum phipfs_status media_source_load_preview(const char *path)
 {
-    uint8_t header[UI_STUDIO_BMP_HEADER_BYTES];
-    struct sapfs_stat stat;
-    sapfs_handle handle = 0U;
+    uint8_t header[UI_MEDIA_SOURCE_BMP_HEADER_BYTES];
+    struct phipfs_stat stat;
+    phipfs_handle handle = 0U;
     size_t read_bytes = 0U;
-    enum sapfs_status status = sapfs_stat_path(SAPFS_VOLUME_DATA, path, &stat);
+    enum phipfs_status status = phipfs_stat_path(PHIPFS_VOLUME_DATA, path, &stat);
     uint32_t width = 0U;
     uint32_t height = 0U;
     uint32_t pixel_offset = 0U;
     uint32_t row_stride = 0U;
     bool top_down = false;
 
-    studio_preview_loaded = false;
-    if (status == SAPFS_STATUS_OK &&
+    media_source_preview_loaded = false;
+    if (status == PHIPFS_STATUS_OK &&
         (stat.directory || stat.size < sizeof(header))) {
-        status = SAPFS_STATUS_CORRUPT;
+        status = PHIPFS_STATUS_CORRUPT;
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_open(SAPFS_VOLUME_DATA, path, SAPFS_ACCESS_READ,
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, path, PHIPFS_ACCESS_READ,
             &handle);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_read(handle, header, sizeof(header), &read_bytes);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_read(handle, header, sizeof(header), &read_bytes);
     }
-    if (status == SAPFS_STATUS_OK && read_bytes != sizeof(header)) {
-        status = SAPFS_STATUS_CORRUPT;
+    if (status == PHIPFS_STATUS_OK && read_bytes != sizeof(header)) {
+        status = PHIPFS_STATUS_CORRUPT;
     }
-    if (status == SAPFS_STATUS_OK) {
-        const int32_t signed_width = (int32_t)studio_load_u32(header, 18U);
-        const int32_t signed_height = (int32_t)studio_load_u32(header, 22U);
+    if (status == PHIPFS_STATUS_OK) {
+        const int32_t signed_width = (int32_t)media_source_load_u32(header, 18U);
+        const int32_t signed_height = (int32_t)media_source_load_u32(header, 22U);
 
-        pixel_offset = studio_load_u32(header, 10U);
+        pixel_offset = media_source_load_u32(header, 10U);
         if (header[0U] != 'B' || header[1U] != 'M' ||
-            studio_load_u32(header, 14U) < 40U ||
-            studio_load_u16(header, 26U) != 1U ||
-            studio_load_u16(header, 28U) != 24U ||
-            studio_load_u32(header, 30U) != 0U ||
+            media_source_load_u32(header, 14U) < 40U ||
+            media_source_load_u16(header, 26U) != 1U ||
+            media_source_load_u16(header, 28U) != 24U ||
+            media_source_load_u32(header, 30U) != 0U ||
             signed_width <= 0 || signed_height == 0 ||
             signed_height == INT32_MIN) {
-            status = SAPFS_STATUS_CORRUPT;
+            status = PHIPFS_STATUS_CORRUPT;
         } else {
             width = (uint32_t)signed_width;
             top_down = signed_height < 0;
             height = (uint32_t)(top_down ? -signed_height : signed_height);
         }
     }
-    if (status == SAPFS_STATUS_OK &&
-        (width > UI_STUDIO_BMP_MAX_WIDTH ||
-            height > UI_STUDIO_BMP_MAX_HEIGHT ||
+    if (status == PHIPFS_STATUS_OK &&
+        (width > UI_MEDIA_SOURCE_BMP_MAX_WIDTH ||
+            height > UI_MEDIA_SOURCE_BMP_MAX_HEIGHT ||
             pixel_offset < sizeof(header))) {
-        status = SAPFS_STATUS_RANGE;
+        status = PHIPFS_STATUS_RANGE;
     }
-    if (status == SAPFS_STATUS_OK) {
+    if (status == PHIPFS_STATUS_OK) {
         const uint64_t row_bytes = (uint64_t)width * 3U;
         const uint64_t stride = (row_bytes + 3U) & ~UINT64_C(3);
         const uint64_t required = (uint64_t)pixel_offset +
             stride * height;
 
-        if (stride > sizeof(studio_bmp_row) || required > stat.size) {
-            status = SAPFS_STATUS_RANGE;
+        if (stride > sizeof(media_source_bmp_row) || required > stat.size) {
+            status = PHIPFS_STATUS_RANGE;
         } else {
             row_stride = (uint32_t)stride;
         }
     }
-    if (status == SAPFS_STATUS_OK) {
-        if ((uint64_t)width * UI_STUDIO_PREVIEW_HEIGHT <=
-            (uint64_t)height * UI_STUDIO_PREVIEW_WIDTH) {
-            studio_preview_height = UI_STUDIO_PREVIEW_HEIGHT;
-            studio_preview_width = (uint32_t)((uint64_t)width *
-                UI_STUDIO_PREVIEW_HEIGHT / height);
+    if (status == PHIPFS_STATUS_OK) {
+        if ((uint64_t)width * UI_MEDIA_SOURCE_PREVIEW_HEIGHT <=
+            (uint64_t)height * UI_MEDIA_SOURCE_PREVIEW_WIDTH) {
+            media_source_preview_height = UI_MEDIA_SOURCE_PREVIEW_HEIGHT;
+            media_source_preview_width = (uint32_t)((uint64_t)width *
+                UI_MEDIA_SOURCE_PREVIEW_HEIGHT / height);
         } else {
-            studio_preview_width = UI_STUDIO_PREVIEW_WIDTH;
-            studio_preview_height = (uint32_t)((uint64_t)height *
-                UI_STUDIO_PREVIEW_WIDTH / width);
+            media_source_preview_width = UI_MEDIA_SOURCE_PREVIEW_WIDTH;
+            media_source_preview_height = (uint32_t)((uint64_t)height *
+                UI_MEDIA_SOURCE_PREVIEW_WIDTH / width);
         }
-        if (studio_preview_width == 0U || studio_preview_height == 0U) {
-            status = SAPFS_STATUS_RANGE;
+        if (media_source_preview_width == 0U || media_source_preview_height == 0U) {
+            status = PHIPFS_STATUS_RANGE;
         }
     }
     for (size_t index = 0U;
-         index < UI_STUDIO_PREVIEW_WIDTH * UI_STUDIO_PREVIEW_HEIGHT; ++index) {
-        studio_preview_pixels[index] = framebuffer_pack(0U, 0U, 0U);
+         index < UI_MEDIA_SOURCE_PREVIEW_WIDTH * UI_MEDIA_SOURCE_PREVIEW_HEIGHT; ++index) {
+        media_source_preview_pixels[index] = framebuffer_pack(0U, 0U, 0U);
     }
-    for (uint32_t y = 0U; y < studio_preview_height &&
-         status == SAPFS_STATUS_OK; ++y) {
+    for (uint32_t y = 0U; y < media_source_preview_height &&
+         status == PHIPFS_STATUS_OK; ++y) {
         const uint32_t source_y = (uint32_t)((uint64_t)y * height /
-            studio_preview_height);
+            media_source_preview_height);
         const uint32_t stored_y = top_down ? source_y :
             height - 1U - source_y;
         const uint64_t row_offset = (uint64_t)pixel_offset +
             (uint64_t)stored_y * row_stride;
-        uint32_t position = 0U;
+        uint64_t position = 0U;
 
-        status = sapfs_seek(handle, (int64_t)row_offset, SAPFS_SEEK_START,
+        status = phipfs_seek(handle, (int64_t)row_offset, PHIPFS_SEEK_START,
             &position);
-        if (status == SAPFS_STATUS_OK && position != row_offset) {
-            status = SAPFS_STATUS_RANGE;
+        if (status == PHIPFS_STATUS_OK && position != row_offset) {
+            status = PHIPFS_STATUS_RANGE;
         }
-        if (status == SAPFS_STATUS_OK) {
-            status = sapfs_read(handle, studio_bmp_row, row_stride,
+        if (status == PHIPFS_STATUS_OK) {
+            status = phipfs_read(handle, media_source_bmp_row, row_stride,
                 &read_bytes);
         }
-        if (status == SAPFS_STATUS_OK && read_bytes != row_stride) {
-            status = SAPFS_STATUS_CORRUPT;
+        if (status == PHIPFS_STATUS_OK && read_bytes != row_stride) {
+            status = PHIPFS_STATUS_CORRUPT;
         }
-        for (uint32_t x = 0U; x < studio_preview_width &&
-             status == SAPFS_STATUS_OK; ++x) {
+        for (uint32_t x = 0U; x < media_source_preview_width &&
+             status == PHIPFS_STATUS_OK; ++x) {
             const uint32_t source_x = (uint32_t)((uint64_t)x * width /
-                studio_preview_width);
+                media_source_preview_width);
             const size_t source = (size_t)source_x * 3U;
 
-            studio_preview_pixels[(size_t)y * UI_STUDIO_PREVIEW_WIDTH + x] =
-                framebuffer_pack(studio_bmp_row[source + 2U],
-                    studio_bmp_row[source + 1U], studio_bmp_row[source]);
+            media_source_preview_pixels[(size_t)y * UI_MEDIA_SOURCE_PREVIEW_WIDTH + x] =
+                framebuffer_pack(media_source_bmp_row[source + 2U],
+                    media_source_bmp_row[source + 1U], media_source_bmp_row[source]);
         }
     }
-    if (status == SAPFS_STATUS_OK) {
-        studio_preview_loaded = true;
+    if (status == PHIPFS_STATUS_OK) {
+        media_source_preview_loaded = true;
     }
     if (handle != 0U) {
-        const enum sapfs_status close_status = sapfs_close(handle);
+        const enum phipfs_status close_status = phipfs_close(handle);
 
-        if (status == SAPFS_STATUS_OK && close_status != SAPFS_STATUS_OK) {
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
             status = close_status;
-            studio_preview_loaded = false;
+            media_source_preview_loaded = false;
         }
     }
     return status;
 }
 
-static void studio_import_clip(void)
+static void media_source_import_clip(void)
 {
-    struct sapfs_list_entry entries[12U];
+    struct phipfs_list_entry entries[12U];
     size_t count = 0U;
-    enum sapfs_status status;
+    enum phipfs_status status;
 
-    if (studio_clip_count >= UI_STUDIO_MAX_CLIPS) {
-        studio_set_status("Timeline is full");
+    if (media_source_clip_count >= UI_MEDIA_SOURCE_MAX_CLIPS) {
+        media_source_set_status("Timeline is full");
         return;
     }
-    status = sapfs_list(SAPFS_VOLUME_DATA, file_directory, entries,
+    status = phipfs_list(PHIPFS_VOLUME_DATA, file_directory, entries,
         sizeof(entries) / sizeof(entries[0]), &count);
-    if (status != SAPFS_STATUS_OK) {
-        studio_set_status("Import failed / data unavailable");
+    if (status != PHIPFS_STATUS_OK) {
+        media_source_set_status("Import failed / data unavailable");
         return;
     }
     for (size_t index = 0U; index < count; ++index) {
-        char path[SAPFS_MAX_PATH + 1U];
+        char path[PHIPFS_MAX_PATH + 1U];
 
         if (entries[index].directory ||
-            !studio_file_is_bmp(entries[index].name) ||
+            !media_source_file_is_bmp(entries[index].name) ||
             !entry_path(entries[index].name, path) ||
-            studio_path_used(path)) {
+            media_source_path_used(path)) {
             continue;
         }
         size_t path_length = 0U;
@@ -3249,131 +3578,149 @@ static void studio_import_clip(void)
         while (path[path_length] != '\0') {
             ++path_length;
         }
-        if (path_length > UI_STUDIO_PATH_BYTES) {
-            studio_set_status("Import path exceeds Studio bound");
+        if (path_length > UI_MEDIA_SOURCE_PATH_BYTES) {
+            media_source_set_status("Import path exceeds Media Editor bound");
             return;
         }
-        status = studio_load_preview(path);
-        if (status != SAPFS_STATUS_OK) {
-            studio_set_status("BMP rejected / 24-bit RGB required");
+        status = media_source_load_preview(path);
+        if (status != PHIPFS_STATUS_OK) {
+            media_source_set_status("BMP rejected / 24-bit RGB required");
             return;
         }
-        if (!copy_string(studio_clip_paths[studio_clip_count],
-                sizeof(studio_clip_paths[studio_clip_count]), path)) {
-            studio_set_status("Import path exceeds Studio bound");
+        if (!copy_string(media_source_clip_paths[media_source_clip_count],
+                sizeof(media_source_clip_paths[media_source_clip_count]), path)) {
+            media_source_set_status("Import path exceeds Media Editor bound");
             return;
         }
-        studio_clip_durations[studio_clip_count] = 180U;
-        studio_selected_clip = studio_clip_count;
-        ++studio_clip_count;
-        studio_dirty = true;
-        studio_set_status("BMP imported / ready to edit");
+        media_source_clip_durations[media_source_clip_count] = 180U;
+        media_source_selected_clip = media_source_clip_count;
+        ++media_source_clip_count;
+        media_source_dirty = true;
+        media_source_set_status("BMP imported / ready to edit");
         return;
     }
-    studio_set_status("No new BMP in current data folder");
+    media_source_set_status("No new BMP in current data folder");
 }
 
-static void studio_trim_clip(void)
+static void media_source_trim_clip(void)
 {
-    if (studio_selected_clip == UINT8_MAX ||
-        studio_selected_clip >= studio_clip_count) {
-        studio_set_status("Select a clip to trim");
+    if (media_source_selected_clip == UINT8_MAX ||
+        media_source_selected_clip >= media_source_clip_count) {
+        media_source_set_status("Select a clip to trim");
         return;
     }
-    if (studio_clip_durations[studio_selected_clip] <= 24U) {
-        studio_set_status("Clip reached one-second minimum");
+    if (media_source_clip_durations[media_source_selected_clip] <= 24U) {
+        media_source_set_status("Clip reached one-second minimum");
         return;
     }
-    studio_clip_durations[studio_selected_clip] -= 24U;
-    studio_dirty = true;
-    studio_set_status("Trimmed one second");
+    media_source_clip_durations[media_source_selected_clip] -= 24U;
+    media_source_dirty = true;
+    media_source_set_status("Trimmed one second");
 }
 
-static enum sapfs_status studio_write_all(
-    sapfs_handle handle,
+static enum phipfs_status media_source_write_all(
+    phipfs_handle handle,
     const uint8_t *bytes,
     size_t count
 )
 {
     size_t written = 0U;
-    const enum sapfs_status status = sapfs_write(handle, bytes, count,
+    const enum phipfs_status status = phipfs_write(handle, bytes, count,
         &written);
 
-    return status == SAPFS_STATUS_OK && written != count ?
-        SAPFS_STATUS_WRITEBACK : status;
+    return status == PHIPFS_STATUS_OK && written != count ?
+        PHIPFS_STATUS_WRITEBACK : status;
 }
 
-static enum sapfs_status studio_write_export_scratch(void)
+static enum phipfs_status media_source_write_export_scratch(void)
 {
     static const char scratch[] = "STUOUT.BMP";
-    uint8_t header[UI_STUDIO_BMP_HEADER_BYTES] = { 0U };
+    uint8_t header[UI_MEDIA_SOURCE_BMP_HEADER_BYTES] = { 0U };
     const uint32_t row_stride =
-        (studio_preview_width * 3U + 3U) & ~UINT32_C(3);
-    const uint32_t file_bytes = UI_STUDIO_BMP_HEADER_BYTES +
-        row_stride * studio_preview_height;
-    sapfs_handle handle = 0U;
-    enum sapfs_status status = studio_remove_if_present(scratch);
+        (media_source_preview_width * 3U + 3U) & ~UINT32_C(3);
+    const uint32_t file_bytes = UI_MEDIA_SOURCE_BMP_HEADER_BYTES +
+        row_stride * media_source_preview_height;
+    const struct ui_rect stage = editor_stage_rect();
+    const uint32_t editor_x = stage.x +
+        (stage.width > media_source_preview_width ?
+            (stage.width - media_source_preview_width) / 2U : 0U);
+    const uint32_t editor_y = stage.y +
+        (stage.height > media_source_preview_height ?
+            (stage.height - media_source_preview_height) / 2U : 0U);
+    phipfs_handle handle = 0U;
+    enum phipfs_status status = media_source_remove_if_present(scratch);
 
     header[0U] = 'B';
     header[1U] = 'M';
-    studio_store_u32(header, 2U, file_bytes);
-    studio_store_u32(header, 10U, UI_STUDIO_BMP_HEADER_BYTES);
-    studio_store_u32(header, 14U, 40U);
-    studio_store_u32(header, 18U, studio_preview_width);
-    studio_store_u32(header, 22U, studio_preview_height);
-    studio_store_u16(header, 26U, 1U);
-    studio_store_u16(header, 28U, 24U);
-    studio_store_u32(header, 34U,
-        row_stride * studio_preview_height);
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_create(SAPFS_VOLUME_DATA, scratch);
+    media_source_store_u32(header, 2U, file_bytes);
+    media_source_store_u32(header, 10U, UI_MEDIA_SOURCE_BMP_HEADER_BYTES);
+    media_source_store_u32(header, 14U, 40U);
+    media_source_store_u32(header, 18U, media_source_preview_width);
+    media_source_store_u32(header, 22U, media_source_preview_height);
+    media_source_store_u16(header, 26U, 1U);
+    media_source_store_u16(header, 28U, 24U);
+    media_source_store_u32(header, 34U,
+        row_stride * media_source_preview_height);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_create(PHIPFS_VOLUME_DATA, scratch);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_open(SAPFS_VOLUME_DATA, scratch,
-            SAPFS_ACCESS_WRITE, &handle);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, scratch,
+            PHIPFS_ACCESS_WRITE, &handle);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = studio_write_all(handle, header, sizeof(header));
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_write_all(handle, header, sizeof(header));
     }
-    for (uint32_t row = 0U; row < studio_preview_height &&
-         status == SAPFS_STATUS_OK; ++row) {
-        const uint32_t source_y = studio_preview_height - 1U - row;
+    for (uint32_t row = 0U; row < media_source_preview_height &&
+         status == PHIPFS_STATUS_OK; ++row) {
+        const uint32_t source_y = media_source_preview_height - 1U - row;
 
         for (uint32_t x = 0U; x < row_stride; ++x) {
-            studio_bmp_row[x] = 0U;
+            media_source_bmp_row[x] = 0U;
         }
-        for (uint32_t x = 0U; x < studio_preview_width; ++x) {
-            const uint32_t pixel = studio_preview_pixels[
-                (size_t)source_y * UI_STUDIO_PREVIEW_WIDTH + x
-            ];
+        for (uint32_t x = 0U; x < media_source_preview_width; ++x) {
+            uint32_t pixel = media_source_preview_pixels[
+                (size_t)source_y * UI_MEDIA_SOURCE_PREVIEW_WIDTH + x];
             const size_t destination = (size_t)x * 3U;
 
-            studio_bmp_row[destination] =
+            if (media_editor_export_active &&
+                    (media_source_preview_width > stage.width ||
+                        media_source_preview_height > stage.height ||
+                        surface_read_pixel(canvas, editor_x + x,
+                            editor_y + source_y, &pixel) !=
+                                SURFACE_STATUS_OK)) {
+                status = PHIPFS_STATUS_IO;
+                break;
+            }
+
+            media_source_bmp_row[destination] =
                 (uint8_t)(pixel >> logo_blue_shift);
-            studio_bmp_row[destination + 1U] =
+            media_source_bmp_row[destination + 1U] =
                 (uint8_t)(pixel >> logo_green_shift);
-            studio_bmp_row[destination + 2U] =
+            media_source_bmp_row[destination + 2U] =
                 (uint8_t)(pixel >> logo_red_shift);
         }
-        status = studio_write_all(handle, studio_bmp_row, row_stride);
+        if (status == PHIPFS_STATUS_OK) {
+            status = media_source_write_all(handle, media_source_bmp_row, row_stride);
+        }
     }
     if (handle != 0U) {
-        const enum sapfs_status close_status = sapfs_close(handle);
+        const enum phipfs_status close_status = phipfs_close(handle);
 
-        if (status == SAPFS_STATUS_OK && close_status != SAPFS_STATUS_OK) {
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
             status = close_status;
         }
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
     }
-    if (status != SAPFS_STATUS_OK) {
-        (void)studio_remove_if_present(scratch);
+    if (status != PHIPFS_STATUS_OK) {
+        (void)media_source_remove_if_present(scratch);
     }
     return status;
 }
 
-static enum sapfs_status studio_recover_export(void)
+static enum phipfs_status media_source_recover_export(void)
 {
     static const char output[] = "EXPORT.BMP";
     static const char scratch[] = "STUOUT.BMP";
@@ -3382,104 +3729,593 @@ static enum sapfs_status studio_recover_export(void)
     bool scratch_exists = false;
     bool backup_exists = false;
     bool changed = false;
-    enum sapfs_status status = studio_regular_presence(output,
+    enum phipfs_status status = media_source_regular_presence(output,
         &output_exists);
 
-    if (status == SAPFS_STATUS_OK) {
-        status = studio_regular_presence(scratch, &scratch_exists);
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_regular_presence(scratch, &scratch_exists);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = studio_regular_presence(backup, &backup_exists);
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_regular_presence(backup, &backup_exists);
     }
-    if (status == SAPFS_STATUS_OK && !output_exists && backup_exists) {
-        status = sapfs_rename(SAPFS_VOLUME_DATA, backup, output);
-        changed = status == SAPFS_STATUS_OK;
-        backup_exists = status != SAPFS_STATUS_OK;
+    if (status == PHIPFS_STATUS_OK && !output_exists && backup_exists) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, backup, output);
+        changed = status == PHIPFS_STATUS_OK;
+        backup_exists = status != PHIPFS_STATUS_OK;
     }
-    if (status == SAPFS_STATUS_OK && output_exists && backup_exists) {
-        status = studio_remove_if_present(backup);
-        changed = status == SAPFS_STATUS_OK;
+    if (status == PHIPFS_STATUS_OK && output_exists && backup_exists) {
+        status = media_source_remove_if_present(backup);
+        changed = status == PHIPFS_STATUS_OK;
     }
-    if (status == SAPFS_STATUS_OK && scratch_exists) {
-        status = studio_remove_if_present(scratch);
-        changed = changed || status == SAPFS_STATUS_OK;
+    if (status == PHIPFS_STATUS_OK && scratch_exists) {
+        status = media_source_remove_if_present(scratch);
+        changed = changed || status == PHIPFS_STATUS_OK;
     }
-    if (status == SAPFS_STATUS_OK && changed) {
-        status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK && changed) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
     }
     return status;
 }
 
-static enum sapfs_status studio_export(void)
+static enum phipfs_status media_source_export(void)
 {
     static const char output[] = "EXPORT.BMP";
     static const char scratch[] = "STUOUT.BMP";
     static const char backup[] = "OUTBACK.BMP";
-    struct sapfs_stat stat;
+    struct phipfs_stat stat;
     bool original_exists = false;
     bool backed_up = false;
     bool replacement_visible = false;
-    enum sapfs_status status;
+    enum phipfs_status status;
 
-    if (!studio_preview_loaded) {
-        studio_set_status("Import a BMP before export");
-        return SAPFS_STATUS_NOT_FOUND;
+    if (!media_source_preview_loaded) {
+        media_source_set_status("Import a BMP before export");
+        return PHIPFS_STATUS_NOT_FOUND;
     }
-    status = studio_recover_export();
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_stat_path(SAPFS_VOLUME_DATA, output, &stat);
-        if (status == SAPFS_STATUS_OK) {
+    status = media_source_recover_export();
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_stat_path(PHIPFS_VOLUME_DATA, output, &stat);
+        if (status == PHIPFS_STATUS_OK) {
             original_exists = !stat.directory;
-            status = stat.directory ? SAPFS_STATUS_IS_DIRECTORY :
-                SAPFS_STATUS_OK;
-        } else if (status == SAPFS_STATUS_NOT_FOUND) {
-            status = SAPFS_STATUS_OK;
+            status = stat.directory ? PHIPFS_STATUS_IS_DIRECTORY :
+                PHIPFS_STATUS_OK;
+        } else if (status == PHIPFS_STATUS_NOT_FOUND) {
+            status = PHIPFS_STATUS_OK;
         }
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = studio_write_export_scratch();
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_write_export_scratch();
     }
-    if (status == SAPFS_STATUS_OK && original_exists) {
-        status = sapfs_rename(SAPFS_VOLUME_DATA, output, backup);
-        backed_up = status == SAPFS_STATUS_OK;
-        if (status == SAPFS_STATUS_OK) {
-            status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK && original_exists) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, output, backup);
+        backed_up = status == PHIPFS_STATUS_OK;
+        if (status == PHIPFS_STATUS_OK) {
+            status = phipfs_sync(PHIPFS_VOLUME_DATA);
         }
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_rename(SAPFS_VOLUME_DATA, scratch, output);
-        replacement_visible = status == SAPFS_STATUS_OK;
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, scratch, output);
+        replacement_visible = status == PHIPFS_STATUS_OK;
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
     }
-    if (status != SAPFS_STATUS_OK && backed_up) {
+    if (status != PHIPFS_STATUS_OK && backed_up) {
         if (replacement_visible) {
-            (void)sapfs_rename(SAPFS_VOLUME_DATA, output, scratch);
+            (void)phipfs_rename(PHIPFS_VOLUME_DATA, output, scratch);
         }
-        const enum sapfs_status restore = sapfs_rename(SAPFS_VOLUME_DATA,
+        const enum phipfs_status restore = phipfs_rename(PHIPFS_VOLUME_DATA,
             backup, output);
 
-        if (restore == SAPFS_STATUS_OK) {
-            (void)sapfs_sync(SAPFS_VOLUME_DATA);
-            (void)studio_remove_if_present(scratch);
+        if (restore == PHIPFS_STATUS_OK) {
+            (void)phipfs_sync(PHIPFS_VOLUME_DATA);
+            (void)media_source_remove_if_present(scratch);
         } else {
             status = restore;
         }
-    } else if (status != SAPFS_STATUS_OK) {
-        (void)studio_remove_if_present(scratch);
+    } else if (status != PHIPFS_STATUS_OK) {
+        (void)media_source_remove_if_present(scratch);
     }
-    if (status == SAPFS_STATUS_OK && original_exists) {
-        status = studio_remove_if_present(backup);
-        if (status == SAPFS_STATUS_OK) {
-            status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK && original_exists) {
+        status = media_source_remove_if_present(backup);
+        if (status == PHIPFS_STATUS_OK) {
+            status = phipfs_sync(PHIPFS_VOLUME_DATA);
         }
     }
-    if (status == SAPFS_STATUS_OK) {
-        studio_set_status("EXPORT.BMP written to data");
+    if (status == PHIPFS_STATUS_OK) {
+        media_source_set_status("EXPORT.BMP written to data");
         (void)files_refresh();
     } else {
-        studio_set_status("Export failed / previous output retained");
+        media_source_set_status("Export failed / previous output retained");
+    }
+    return status;
+}
+
+static enum phipfs_status paint_write_scratch(void)
+{
+    static const char scratch[] = "PNTTEMP.BMP";
+    const struct paint_image_info image = paint_image();
+    uint8_t header[UI_PAINT_BMP_HEADER_BYTES] = { 0U };
+    const uint32_t file_bytes = UI_PAINT_BMP_HEADER_BYTES +
+        image.row_stride * image.height;
+    phipfs_handle handle = 0U;
+    enum phipfs_status status = media_source_remove_if_present(scratch);
+
+    header[0U] = 'B';
+    header[1U] = 'M';
+    media_source_store_u32(header, 2U, file_bytes);
+    media_source_store_u32(header, 10U, UI_PAINT_BMP_HEADER_BYTES);
+    media_source_store_u32(header, 14U, 40U);
+    media_source_store_u32(header, 18U, image.width);
+    media_source_store_u32(header, 22U, image.height);
+    media_source_store_u16(header, 26U, 1U);
+    media_source_store_u16(header, 28U, 24U);
+    media_source_store_u32(header, 34U, image.row_stride * image.height);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_create(PHIPFS_VOLUME_DATA, scratch);
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, scratch,
+            PHIPFS_ACCESS_WRITE, &handle);
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_write_all(handle, header, sizeof(header));
+    }
+    for (uint32_t row = 0U; row < image.height &&
+         status == PHIPFS_STATUS_OK; ++row) {
+        size_t bytes = 0U;
+        const enum paint_status paint_status = paint_copy_bgr24_row(
+            image.height - 1U - row, paint_bmp_row, sizeof(paint_bmp_row),
+            &bytes);
+
+        if (paint_status != PAINT_STATUS_OK || bytes != image.row_stride) {
+            status = PHIPFS_STATUS_IO;
+            break;
+        }
+        status = media_source_write_all(handle, paint_bmp_row, bytes);
+    }
+    if (handle != 0U) {
+        const enum phipfs_status close_status = phipfs_close(handle);
+
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
+            status = close_status;
+        }
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
+    }
+    if (status != PHIPFS_STATUS_OK) {
+        (void)media_source_remove_if_present(scratch);
+    }
+    return status;
+}
+
+static enum phipfs_status paint_recover_save(void)
+{
+    static const char output[] = "PAINT.BMP";
+    static const char scratch[] = "PNTTEMP.BMP";
+    static const char backup[] = "PNTBACK.BMP";
+    bool output_exists = false;
+    bool scratch_exists = false;
+    bool backup_exists = false;
+    bool changed = false;
+    enum phipfs_status status = media_source_regular_presence(output,
+        &output_exists);
+
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_regular_presence(scratch, &scratch_exists);
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_regular_presence(backup, &backup_exists);
+    }
+    if (status == PHIPFS_STATUS_OK && !output_exists && backup_exists) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, backup, output);
+        changed = status == PHIPFS_STATUS_OK;
+        backup_exists = status != PHIPFS_STATUS_OK;
+    }
+    if (status == PHIPFS_STATUS_OK && output_exists && backup_exists) {
+        status = media_source_remove_if_present(backup);
+        changed = status == PHIPFS_STATUS_OK;
+    }
+    if (status == PHIPFS_STATUS_OK && scratch_exists) {
+        status = media_source_remove_if_present(scratch);
+        changed = changed || status == PHIPFS_STATUS_OK;
+    }
+    if (status == PHIPFS_STATUS_OK && changed) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
+    }
+    return status;
+}
+
+static enum phipfs_status paint_save(void)
+{
+    static const char output[] = "PAINT.BMP";
+    static const char scratch[] = "PNTTEMP.BMP";
+    static const char backup[] = "PNTBACK.BMP";
+    bool output_exists = false;
+    bool backed_up = false;
+    bool replacement_visible = false;
+    enum phipfs_status status = paint_recover_save();
+
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_regular_presence(output, &output_exists);
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = paint_write_scratch();
+    }
+    if (status == PHIPFS_STATUS_OK && output_exists) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, output, backup);
+        backed_up = status == PHIPFS_STATUS_OK;
+        if (status == PHIPFS_STATUS_OK) {
+            status = phipfs_sync(PHIPFS_VOLUME_DATA);
+        }
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, scratch, output);
+        replacement_visible = status == PHIPFS_STATUS_OK;
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
+    }
+    if (status != PHIPFS_STATUS_OK && backed_up) {
+        if (replacement_visible) {
+            (void)phipfs_rename(PHIPFS_VOLUME_DATA, output, scratch);
+        }
+        const enum phipfs_status restore = phipfs_rename(PHIPFS_VOLUME_DATA,
+            backup, output);
+
+        if (restore == PHIPFS_STATUS_OK) {
+            (void)phipfs_sync(PHIPFS_VOLUME_DATA);
+            (void)media_source_remove_if_present(scratch);
+        } else {
+            status = restore;
+        }
+    } else if (status != PHIPFS_STATUS_OK) {
+        (void)media_source_remove_if_present(scratch);
+    }
+    if (status == PHIPFS_STATUS_OK && output_exists) {
+        status = media_source_remove_if_present(backup);
+        if (status == PHIPFS_STATUS_OK) {
+            status = phipfs_sync(PHIPFS_VOLUME_DATA);
+        }
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        paint_mark_saved();
+        (void)files_refresh();
+        console_serial_write("Phipia: Paint saved PAINT.BMP\n");
+    }
+    return status;
+}
+
+/*
+ * The Media Editor keeps its text/effect timeline separate from the media
+ * source project's crash-safe import/export state.  The independently
+ * recoverable MEDIAEDT.PHI and PHIPMED.PHI files preserve both concerns.
+ */
+static void media_editor_clear_items(void)
+{
+    for (size_t index = 0U; index < EDITOR_MAX_ITEMS; ++index) {
+        (void)editor_set_item(index, NULL);
+    }
+}
+
+static void media_editor_sync_clip(void)
+{
+    struct editor_clip clip = { 0 };
+    struct ui_rect damage;
+
+    if (media_source_selected_clip == UINT8_MAX ||
+            media_source_selected_clip >= media_source_clip_count ||
+            !media_source_preview_loaded) {
+        (void)copy_string(clip.name, sizeof(clip.name), "No media loaded");
+        (void)editor_set_clip(&clip);
+        (void)editor_set_poster(NULL, 0U, 0U);
+        return;
+    }
+    (void)copy_string(clip.name, sizeof(clip.name),
+        media_source_clip_paths[media_source_selected_clip]);
+    clip.length_ms = media_source_clip_durations[media_source_selected_clip] >
+            UINT32_MAX / 1000U ? UINT32_MAX :
+        media_source_clip_durations[media_source_selected_clip] * 1000U;
+    (void)editor_set_clip(&clip);
+    (void)editor_set_poster(media_source_preview_pixels, media_source_preview_width,
+        media_source_preview_height);
+    (void)editor_seek(media_source_playhead > UINT32_MAX / 1000U ? UINT32_MAX :
+        media_source_playhead * 1000U, &damage);
+}
+
+static void media_editor_encode(uint8_t *bytes)
+{
+    static const uint8_t magic[8U] = {
+        'P', 'H', 'I', 'P', 'M', 'E', 'D', '1'
+    };
+
+    for (size_t index = 0U; index < UI_MEDIA_PROJECT_BYTES; ++index) {
+        bytes[index] = 0U;
+    }
+    for (size_t index = 0U; index < sizeof(magic); ++index) {
+        bytes[index] = magic[index];
+    }
+    for (size_t index = 0U; index < EDITOR_MAX_ITEMS; ++index) {
+        const struct editor_item *item = editor_item(index);
+        const size_t record = 16U + index * (16U + EDITOR_TEXT_BYTES);
+
+        if (item == NULL) {
+            continue;
+        }
+        bytes[record] = 1U;
+        bytes[record + 1U] = (uint8_t)item->track;
+        bytes[record + 2U] = (uint8_t)item->style;
+        bytes[record + 3U] = (uint8_t)item->effect;
+        media_source_store_u32(bytes, record + 4U, item->start_ms);
+        media_source_store_u32(bytes, record + 8U, item->length_ms);
+        bytes[record + 12U] = item->strength;
+        for (size_t at = 0U; at + 1U < EDITOR_TEXT_BYTES &&
+             item->label[at] != '\0'; ++at) {
+            bytes[record + 16U + at] = (uint8_t)item->label[at];
+        }
+    }
+}
+
+static bool media_editor_decode(const uint8_t *bytes)
+{
+    static const uint8_t magic[8U] = {
+        'P', 'H', 'I', 'P', 'M', 'E', 'D', '1'
+    };
+
+    for (size_t index = 0U; index < sizeof(magic); ++index) {
+        if (bytes[index] != magic[index]) {
+            return false;
+        }
+    }
+    media_editor_clear_items();
+    for (size_t index = 0U; index < EDITOR_MAX_ITEMS; ++index) {
+        const size_t record = 16U + index * (16U + EDITOR_TEXT_BYTES);
+        struct editor_item item = { 0 };
+        size_t length = 0U;
+
+        if (bytes[record] == 0U) {
+            continue;
+        }
+        if (bytes[record] != 1U ||
+                bytes[record + 1U] < EDITOR_TRACK_TEXT ||
+                bytes[record + 1U] > EDITOR_TRACK_EFFECT ||
+                bytes[record + 2U] >= EDITOR_STYLE_COUNT ||
+                bytes[record + 3U] >= EDITOR_EFFECT_COUNT ||
+                bytes[record + 12U] > 100U) {
+            media_editor_clear_items();
+            return false;
+        }
+        item.present = true;
+        item.track = (enum editor_track)bytes[record + 1U];
+        item.style = (enum editor_style)bytes[record + 2U];
+        item.effect = (enum editor_effect)bytes[record + 3U];
+        item.start_ms = media_source_load_u32(bytes, record + 4U);
+        item.length_ms = media_source_load_u32(bytes, record + 8U);
+        item.strength = bytes[record + 12U];
+        if (item.length_ms == 0U ||
+                item.start_ms > UINT32_MAX - item.length_ms) {
+            media_editor_clear_items();
+            return false;
+        }
+        while (length < EDITOR_TEXT_BYTES &&
+                bytes[record + 16U + length] != 0U) {
+            const uint8_t character = bytes[record + 16U + length];
+
+            if (character < 0x20U || character > 0x7EU ||
+                    length + 1U >= EDITOR_TEXT_BYTES) {
+                media_editor_clear_items();
+                return false;
+            }
+            item.label[length++] = (char)character;
+        }
+        item.label[length] = '\0';
+        if (editor_set_item(index, &item) != EDITOR_STATUS_OK) {
+            media_editor_clear_items();
+            return false;
+        }
+    }
+    return true;
+}
+
+static enum phipfs_status media_editor_recover(void)
+{
+    static const char project[] = "PHIPMED.PHI";
+    static const char scratch[] = "MEDTEMP.PHI";
+    static const char backup[] = "MEDBACK.PHI";
+    bool primary = false;
+    bool staged = false;
+    bool saved = false;
+    bool changed = false;
+    enum phipfs_status status = media_source_regular_presence(project, &primary);
+
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_regular_presence(scratch, &staged);
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_regular_presence(backup, &saved);
+    }
+    if (status == PHIPFS_STATUS_OK && !primary && saved) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, backup, project);
+        changed = status == PHIPFS_STATUS_OK;
+        saved = status != PHIPFS_STATUS_OK;
+    } else if (status == PHIPFS_STATUS_OK && !primary && !saved && staged) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, scratch, project);
+        changed = status == PHIPFS_STATUS_OK;
+        staged = status != PHIPFS_STATUS_OK;
+    }
+    if (status == PHIPFS_STATUS_OK && primary && saved) {
+        status = media_source_remove_if_present(backup);
+        changed = status == PHIPFS_STATUS_OK;
+    }
+    if (status == PHIPFS_STATUS_OK && staged) {
+        status = media_source_remove_if_present(scratch);
+        changed = changed || status == PHIPFS_STATUS_OK;
+    }
+    if (status == PHIPFS_STATUS_OK && changed) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
+    }
+    return status;
+}
+
+static enum phipfs_status media_editor_load(void)
+{
+    static const char project[] = "PHIPMED.PHI";
+    uint8_t bytes[UI_MEDIA_PROJECT_BYTES];
+    struct phipfs_stat stat;
+    phipfs_handle handle = 0U;
+    size_t read_bytes = 0U;
+    enum phipfs_status status = media_editor_recover();
+
+    media_editor_clear_items();
+    media_editor_dirty = false;
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_stat_path(PHIPFS_VOLUME_DATA, project, &stat);
+    }
+    if (status == PHIPFS_STATUS_NOT_FOUND) {
+        return PHIPFS_STATUS_OK;
+    }
+    if (status == PHIPFS_STATUS_OK &&
+            (stat.directory || stat.size != sizeof(bytes))) {
+        status = PHIPFS_STATUS_CORRUPT;
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, project,
+            PHIPFS_ACCESS_READ, &handle);
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_read(handle, bytes, sizeof(bytes), &read_bytes);
+    }
+    if (handle != 0U) {
+        const enum phipfs_status close_status = phipfs_close(handle);
+
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
+            status = close_status;
+        }
+    }
+    if (status == PHIPFS_STATUS_OK &&
+            (read_bytes != sizeof(bytes) || !media_editor_decode(bytes))) {
+        status = PHIPFS_STATUS_CORRUPT;
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        media_source_set_status("Media Editor project opened");
+    } else {
+        media_editor_clear_items();
+        media_source_set_status("Media Editor timeline unavailable");
+    }
+    return status;
+}
+
+static enum phipfs_status media_editor_write_scratch(const uint8_t *bytes)
+{
+    static const char scratch[] = "MEDTEMP.PHI";
+    phipfs_handle handle = 0U;
+    enum phipfs_status status = media_source_remove_if_present(scratch);
+
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_create(PHIPFS_VOLUME_DATA, scratch);
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, scratch,
+            PHIPFS_ACCESS_WRITE, &handle);
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_write_all(handle, bytes, UI_MEDIA_PROJECT_BYTES);
+    }
+    if (handle != 0U) {
+        const enum phipfs_status close_status = phipfs_close(handle);
+
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
+            status = close_status;
+        }
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
+    } else {
+        (void)media_source_remove_if_present(scratch);
+    }
+    return status;
+}
+
+static enum phipfs_status media_editor_save_timeline(void)
+{
+    static const char project[] = "PHIPMED.PHI";
+    static const char scratch[] = "MEDTEMP.PHI";
+    static const char backup[] = "MEDBACK.PHI";
+    uint8_t bytes[UI_MEDIA_PROJECT_BYTES];
+    struct phipfs_stat stat;
+    bool original_exists = false;
+    bool backed_up = false;
+    bool replacement_visible = false;
+    enum phipfs_status status = media_editor_recover();
+
+    media_editor_encode(bytes);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_stat_path(PHIPFS_VOLUME_DATA, project, &stat);
+        if (status == PHIPFS_STATUS_OK) {
+            original_exists = !stat.directory;
+            status = stat.directory ? PHIPFS_STATUS_IS_DIRECTORY :
+                PHIPFS_STATUS_OK;
+        } else if (status == PHIPFS_STATUS_NOT_FOUND) {
+            status = PHIPFS_STATUS_OK;
+        }
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_editor_write_scratch(bytes);
+    }
+    if (status == PHIPFS_STATUS_OK && original_exists) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, project, backup);
+        backed_up = status == PHIPFS_STATUS_OK;
+        if (status == PHIPFS_STATUS_OK) {
+            status = phipfs_sync(PHIPFS_VOLUME_DATA);
+        }
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, scratch, project);
+        replacement_visible = status == PHIPFS_STATUS_OK;
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
+    }
+    if (status != PHIPFS_STATUS_OK && backed_up) {
+        if (replacement_visible) {
+            (void)phipfs_rename(PHIPFS_VOLUME_DATA, project, scratch);
+        }
+        const enum phipfs_status restore = phipfs_rename(PHIPFS_VOLUME_DATA,
+            backup, project);
+
+        if (restore == PHIPFS_STATUS_OK) {
+            (void)phipfs_sync(PHIPFS_VOLUME_DATA);
+            (void)media_source_remove_if_present(scratch);
+        } else {
+            status = restore;
+        }
+    } else if (status != PHIPFS_STATUS_OK) {
+        (void)media_source_remove_if_present(scratch);
+    }
+    if (status == PHIPFS_STATUS_OK && original_exists) {
+        status = media_source_remove_if_present(backup);
+        if (status == PHIPFS_STATUS_OK) {
+            status = phipfs_sync(PHIPFS_VOLUME_DATA);
+        }
+    }
+    if (status == PHIPFS_STATUS_OK) {
+        media_editor_dirty = false;
+        media_source_set_status("Media Editor project saved");
+    } else {
+        media_source_set_status("Save failed / Media Editor project retained");
+    }
+    return status;
+}
+
+static enum phipfs_status media_editor_save(void)
+{
+    enum phipfs_status status;
+
+    media_source_playhead = editor_playhead_ms() / 1000U;
+    status = media_source_dirty ? media_source_save() : PHIPFS_STATUS_OK;
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_editor_save_timeline();
     }
     return status;
 }
@@ -3688,8 +4524,8 @@ static enum ui_status draw_settings_control_page(
         return status;
     }
     if (page == 8U) {
-        const struct sapfs_drive_info system = sapfs_drive(SAPFS_VOLUME_SYSTEM);
-        const struct sapfs_drive_info data = sapfs_drive(SAPFS_VOLUME_DATA);
+        const struct phipfs_drive_info system = phipfs_drive(PHIPFS_VOLUME_SYSTEM);
+        const struct phipfs_drive_info data = phipfs_drive(PHIPFS_VOLUME_DATA);
         char data_free[32] = "Unavailable";
 
         if (data.present) {
@@ -3752,10 +4588,10 @@ static enum ui_status draw_settings_control_page(
     }
     if (page == 11U) {
         status = draw_settings_row(0U, damage, "Kernel",
-            "Sapote 2.2.0 dev", false, false);
+            "Phipia 2.2.0 dev", false, false);
         if (status == UI_STATUS_OK) {
             status = draw_settings_row(1U, damage, "Interface",
-                "Sapote Redwood", false, false);
+                "Phipia Desktop", false, false);
         }
         if (status == UI_STATUS_OK) {
             status = draw_settings_row(2U, damage, "Rendering",
@@ -3996,7 +4832,7 @@ static enum ui_status draw_settings_wallpaper_choice(
         return UI_STATUS_BAD_ELEMENT;
     }
     if (clipped.width != 0U && clipped.height != 0U) {
-        if (sapote_wallpaper_decode((uint32_t)index,
+        if (phipia_wallpaper_decode((uint32_t)index,
                 settings_wallpaper_thumbnail_pixels, 128U * 72U,
                 preview.width, preview.height, logo_red_shift,
                 logo_green_shift, logo_blue_shift) != WALLPAPER_STATUS_OK) {
@@ -4128,7 +4964,7 @@ static enum ui_status draw_settings_app(struct ui_rect damage)
 static bool select_desktop_wallpaper(uint8_t index)
 {
     if (index >= UI_WALLPAPER_COUNT ||
-        sapote_wallpaper_decode(index, wallpaper_pixels, 1024U * 768U,
+        phipia_wallpaper_decode(index, wallpaper_pixels, 1024U * 768U,
             1024U, 768U, logo_red_shift, logo_green_shift,
             logo_blue_shift) != WALLPAPER_STATUS_OK) {
         return false;
@@ -4213,7 +5049,7 @@ static struct ui_rect camera_controls_rect(void)
         client.y + client.height - preview.y - preview.height - 4U };
 }
 
-static enum sapfs_status camera_capture(void)
+static enum phipfs_status camera_capture(void)
 {
     static const char scratch[] = "CAMTEMP.BMP";
     char output[] = "PHOTO00.BMP";
@@ -4221,8 +5057,8 @@ static enum sapfs_status camera_capture(void)
     const uint32_t row_stride = UI_CAMERA_CAPTURE_WIDTH * 3U;
     const uint32_t file_bytes = UI_CAMERA_BMP_HEADER_BYTES +
         row_stride * UI_CAMERA_CAPTURE_HEIGHT;
-    sapfs_handle handle = 0U;
-    enum sapfs_status status = SAPFS_STATUS_FULL;
+    phipfs_handle handle = 0U;
+    enum phipfs_status status = PHIPFS_STATUS_FULL;
     bool output_found = false;
     struct camera_frame_info frame;
 
@@ -4234,47 +5070,47 @@ static enum sapfs_status camera_capture(void)
         camera_frame_available = false;
         (void)copy_string(camera_status, sizeof(camera_status),
             "Connect a camera before taking a photo");
-        return SAPFS_STATUS_NOT_FOUND;
+        return PHIPFS_STATUS_NOT_FOUND;
     }
 
     for (uint32_t number = 0U; number < 100U; ++number) {
-        struct sapfs_stat stat;
+        struct phipfs_stat stat;
         output[5U] = (char)('0' + number / 10U);
         output[6U] = (char)('0' + number % 10U);
-        status = sapfs_stat_path(SAPFS_VOLUME_DATA, output, &stat);
-        if (status == SAPFS_STATUS_NOT_FOUND) {
-            status = SAPFS_STATUS_OK;
+        status = phipfs_stat_path(PHIPFS_VOLUME_DATA, output, &stat);
+        if (status == PHIPFS_STATUS_NOT_FOUND) {
+            status = PHIPFS_STATUS_OK;
             output_found = true;
             break;
         }
     }
-    if (!output_found || status != SAPFS_STATUS_OK) {
+    if (!output_found || status != PHIPFS_STATUS_OK) {
         (void)copy_string(camera_status, sizeof(camera_status),
             "Photo library is full");
         return status;
     }
     header[0U] = 'B'; header[1U] = 'M';
-    studio_store_u32(header, 2U, file_bytes);
-    studio_store_u32(header, 10U, UI_CAMERA_BMP_HEADER_BYTES);
-    studio_store_u32(header, 14U, 40U);
-    studio_store_u32(header, 18U, UI_CAMERA_CAPTURE_WIDTH);
-    studio_store_u32(header, 22U, UI_CAMERA_CAPTURE_HEIGHT);
-    studio_store_u16(header, 26U, 1U);
-    studio_store_u16(header, 28U, 24U);
-    studio_store_u32(header, 34U, row_stride * UI_CAMERA_CAPTURE_HEIGHT);
-    status = studio_remove_if_present(scratch);
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_create(SAPFS_VOLUME_DATA, scratch);
+    media_source_store_u32(header, 2U, file_bytes);
+    media_source_store_u32(header, 10U, UI_CAMERA_BMP_HEADER_BYTES);
+    media_source_store_u32(header, 14U, 40U);
+    media_source_store_u32(header, 18U, UI_CAMERA_CAPTURE_WIDTH);
+    media_source_store_u32(header, 22U, UI_CAMERA_CAPTURE_HEIGHT);
+    media_source_store_u16(header, 26U, 1U);
+    media_source_store_u16(header, 28U, 24U);
+    media_source_store_u32(header, 34U, row_stride * UI_CAMERA_CAPTURE_HEIGHT);
+    status = media_source_remove_if_present(scratch);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_create(PHIPFS_VOLUME_DATA, scratch);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_open(SAPFS_VOLUME_DATA, scratch,
-            SAPFS_ACCESS_WRITE, &handle);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_open(PHIPFS_VOLUME_DATA, scratch,
+            PHIPFS_ACCESS_WRITE, &handle);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = studio_write_all(handle, header, sizeof(header));
+    if (status == PHIPFS_STATUS_OK) {
+        status = media_source_write_all(handle, header, sizeof(header));
     }
     for (uint32_t row = 0U; row < UI_CAMERA_CAPTURE_HEIGHT &&
-         status == SAPFS_STATUS_OK; ++row) {
+         status == PHIPFS_STATUS_OK; ++row) {
         const uint32_t source_y = UI_CAMERA_CAPTURE_HEIGHT - 1U - row;
         for (uint32_t x = 0U; x < UI_CAMERA_CAPTURE_WIDTH; ++x) {
             const uint32_t pixel = camera_scene_pixels[
@@ -4287,31 +5123,31 @@ static enum sapfs_status camera_capture(void)
             camera_bmp_row[destination + 2U] =
                 (uint8_t)(pixel >> logo_red_shift);
         }
-        status = studio_write_all(handle, camera_bmp_row, row_stride);
+        status = media_source_write_all(handle, camera_bmp_row, row_stride);
     }
     if (handle != 0U) {
-        const enum sapfs_status close_status = sapfs_close(handle);
-        if (status == SAPFS_STATUS_OK && close_status != SAPFS_STATUS_OK) {
+        const enum phipfs_status close_status = phipfs_close(handle);
+        if (status == PHIPFS_STATUS_OK && close_status != PHIPFS_STATUS_OK) {
             status = close_status;
         }
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_rename(SAPFS_VOLUME_DATA, scratch, output);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_rename(PHIPFS_VOLUME_DATA, scratch, output);
     }
-    if (status == SAPFS_STATUS_OK) {
-        status = sapfs_sync(SAPFS_VOLUME_DATA);
+    if (status == PHIPFS_STATUS_OK) {
+        status = phipfs_sync(PHIPFS_VOLUME_DATA);
     }
-    if (status == SAPFS_STATUS_OK) {
+    if (status == PHIPFS_STATUS_OK) {
         ++camera_capture_count;
         size_t at = append_text(camera_status, sizeof(camera_status), 0U,
             "Saved ");
         (void)append_text(camera_status, sizeof(camera_status), at, output);
         (void)files_refresh();
     } else {
-        (void)studio_remove_if_present(scratch);
+        (void)media_source_remove_if_present(scratch);
         (void)copy_string(camera_status, sizeof(camera_status),
             "Capture failed / no partial photo retained");
     }
@@ -4538,7 +5374,7 @@ static enum ui_status draw_files_app(struct ui_rect damage)
     }
     if (status == UI_STATUS_OK) {
         status = draw_text(sidebar, damage, sidebar.x + 28U,
-            sidebar.y + 116U, "Sapote", state.theme.ink);
+            sidebar.y + 116U, "Phipia", state.theme.ink);
     }
     if (status == UI_STATUS_OK) {
         status = draw_text(sidebar, damage, sidebar.x + 28U,
@@ -4587,7 +5423,7 @@ static enum ui_status draw_files_app(struct ui_rect damage)
     for (size_t index = 0U; index < file_entry_count &&
          index < 12U && status == UI_STATUS_OK; ++index) {
         const struct ui_rect tile = file_entry_rect(index);
-        const struct sapfs_list_entry *entry = &file_entries[index];
+        const struct phipfs_list_entry *entry = &file_entries[index];
         const struct ui_rect icon = { tile.x + (tile.width - 50U) / 2U,
             tile.y + 4U, 50U, 48U };
 
@@ -4625,7 +5461,7 @@ static enum ui_status draw_files_app(struct ui_rect damage)
         }
     }
     if (status == UI_STATUS_OK) {
-        const struct sapfs_drive_info drive = sapfs_drive(SAPFS_VOLUME_DATA);
+        const struct phipfs_drive_info drive = phipfs_drive(PHIPFS_VOLUME_DATA);
         char capacity[64U];
         size_t at = append_u64(capacity, sizeof(capacity), 0U,
             file_entry_count);
@@ -4724,16 +5560,16 @@ static enum ui_status draw_notes_app(struct ui_rect damage)
     return status;
 }
 
-static struct ui_rect studio_toolbar_rect(void)
+static struct ui_rect media_source_toolbar_rect(void)
 {
     const struct ui_rect client = state.layout.panel_client;
 
     return (struct ui_rect){ client.x, client.y, client.width, 38U };
 }
 
-static struct ui_rect studio_button_rect(size_t index)
+static struct ui_rect media_source_button_rect(size_t index)
 {
-    const struct ui_rect toolbar = studio_toolbar_rect();
+    const struct ui_rect toolbar = media_source_toolbar_rect();
     static const uint32_t widths[] = { 64U, 68U, 68U, 60U, 68U };
     uint32_t x = toolbar.x + 10U;
 
@@ -4745,7 +5581,7 @@ static struct ui_rect studio_button_rect(size_t index)
         (struct ui_rect){ 0U, 0U, 0U, 0U };
 }
 
-static struct ui_rect studio_timeline_rect(void)
+static struct ui_rect media_source_timeline_rect(void)
 {
     const struct ui_rect client = state.layout.panel_client;
     const uint32_t upper_height = (client.height - 38U) * 56U / 100U;
@@ -4754,7 +5590,7 @@ static struct ui_rect studio_timeline_rect(void)
         client.width, client.height - 38U - upper_height };
 }
 
-static enum ui_status draw_studio_button(
+static enum ui_status draw_media_source_button(
     struct ui_rect button,
     struct ui_rect damage,
     const char *label
@@ -4801,12 +5637,12 @@ static enum ui_status draw_wallpaper_preview(
     return UI_STATUS_OK;
 }
 
-static enum ui_status draw_studio_preview(
+static enum ui_status draw_media_source_preview(
     struct ui_rect bounds,
     struct ui_rect damage
 )
 {
-    if (!studio_preview_loaded) {
+    if (!media_source_preview_loaded) {
         return draw_wallpaper_preview(bounds, damage);
     }
     const struct ui_rect clipped = rect_intersection(bounds, damage);
@@ -4814,16 +5650,16 @@ static enum ui_status draw_studio_preview(
     for (uint32_t y = 0U; y < clipped.height; ++y) {
         const uint32_t target_y = clipped.y + y;
         const uint32_t source_y = (target_y - bounds.y) *
-            studio_preview_height / bounds.height;
+            media_source_preview_height / bounds.height;
 
         for (uint32_t x = 0U; x < clipped.width; ++x) {
             const uint32_t target_x = clipped.x + x;
             const uint32_t source_x = (target_x - bounds.x) *
-                studio_preview_width / bounds.width;
+                media_source_preview_width / bounds.width;
 
             if (surface_pixel(canvas, target_x, target_y,
-                    studio_preview_pixels[(size_t)source_y *
-                        UI_STUDIO_PREVIEW_WIDTH + source_x]) !=
+                    media_source_preview_pixels[(size_t)source_y *
+                        UI_MEDIA_SOURCE_PREVIEW_WIDTH + source_x]) !=
                     SURFACE_STATUS_OK) {
                 return UI_STATUS_SURFACE_FAILURE;
             }
@@ -4832,7 +5668,7 @@ static enum ui_status draw_studio_preview(
     return UI_STATUS_OK;
 }
 
-static void studio_short_label(const char *path, char *label, size_t capacity)
+static void media_source_short_label(const char *path, char *label, size_t capacity)
 {
     const char *name = path;
     size_t length = 0U;
@@ -4849,11 +5685,11 @@ static void studio_short_label(const char *path, char *label, size_t capacity)
     label[length] = '\0';
 }
 
-static enum ui_status draw_studio_app(struct ui_rect damage)
+static enum ui_status draw_media_source_app(struct ui_rect damage)
 {
     const struct ui_rect client = state.layout.panel_client;
-    const struct ui_rect toolbar = studio_toolbar_rect();
-    const struct ui_rect timeline = studio_timeline_rect();
+    const struct ui_rect toolbar = media_source_toolbar_rect();
+    const struct ui_rect timeline = media_source_timeline_rect();
     const struct ui_rect upper = { client.x, toolbar.y + toolbar.height,
         client.width, timeline.y - toolbar.y - toolbar.height };
     const uint32_t side_width = client.width / 5U;
@@ -4879,12 +5715,12 @@ static enum ui_status draw_studio_app(struct ui_rect damage)
         0x68U, 0x6DU, 0x71U, 0x25U, 0x29U, 0x2CU);
 
     for (size_t index = 0U; index < 5U && status == UI_STATUS_OK; ++index) {
-        status = draw_studio_button(studio_button_rect(index), damage,
+        status = draw_media_source_button(media_source_button_rect(index), damage,
             button_labels[index]);
     }
     if (status == UI_STATUS_OK) {
         status = draw_text(toolbar, damage, toolbar.x + toolbar.width - 198U,
-            toolbar.y + 25U, studio_dirty ? "Project - Edited" :
+            toolbar.y + 25U, media_source_dirty ? "Project - Edited" :
             "Project", state.theme.white);
     }
     if (status == UI_STATUS_OK) {
@@ -4918,30 +5754,30 @@ static enum ui_status draw_studio_app(struct ui_rect damage)
     }
     if (status == UI_STATUS_OK) {
         status = draw_text(browser, damage, browser.x + 16U,
-            browser.y + 49U, "SapStudio Library", state.theme.white);
+            browser.y + 49U, "Media Editor Library", state.theme.white);
     }
     if (status == UI_STATUS_OK) {
         status = draw_text(browser, damage, browser.x + 10U,
             browser.y + 82U, "IMPORTED MEDIA", state.theme.title_inactive);
     }
-    for (size_t index = 0U; index < studio_clip_count &&
+    for (size_t index = 0U; index < media_source_clip_count &&
          status == UI_STATUS_OK; ++index) {
         char label[18U];
 
-        studio_short_label(studio_clip_paths[index], label, sizeof(label));
+        media_source_short_label(media_source_clip_paths[index], label, sizeof(label));
         status = draw_text(browser, damage, browser.x + 14U,
             browser.y + 108U + (uint32_t)index * 23U, label,
-            index == studio_selected_clip ? state.theme.accent_teal :
+            index == media_source_selected_clip ? state.theme.accent_teal :
                 state.theme.white);
     }
     if (status == UI_STATUS_OK) {
         status = draw_text(viewer, damage, viewer.x + 12U,
-            viewer.y + 20U, studio_preview_loaded ?
+            viewer.y + 20U, media_source_preview_loaded ?
             "VIEWER / 24-BIT BMP" : "VIEWER / NO MEDIA",
             state.theme.title_inactive);
     }
     if (status == UI_STATUS_OK) {
-        status = draw_studio_preview(preview, damage);
+        status = draw_media_source_preview(preview, damage);
     }
     if (status == UI_STATUS_OK) {
         status = stroke_clipped(preview, damage, 1U,
@@ -4980,7 +5816,7 @@ static enum ui_status draw_studio_app(struct ui_rect damage)
     }
     if (status == UI_STATUS_OK) {
         status = draw_text(timeline, damage, timeline.x + 10U,
-            timeline.y + 19U, studio_status, state.theme.white);
+            timeline.y + 19U, media_source_status, state.theme.white);
     }
     for (uint32_t tick = 0U; tick <= 10U && status == UI_STATUS_OK; ++tick) {
         const uint32_t x = timeline.x + 54U +
@@ -5002,10 +5838,10 @@ static enum ui_status draw_studio_app(struct ui_rect damage)
         }
     }
     uint32_t clip_x = timeline.x + 42U;
-    for (size_t index = 0U; index < studio_clip_count &&
+    for (size_t index = 0U; index < media_source_clip_count &&
          status == UI_STATUS_OK; ++index) {
         uint32_t available;
-        uint32_t clip_width = 92U + studio_clip_durations[index] / 12U;
+        uint32_t clip_width = 92U + media_source_clip_durations[index] / 12U;
 
         if (clip_x >= timeline.x + timeline.width - 12U) {
             break;
@@ -5020,14 +5856,14 @@ static enum ui_status draw_studio_app(struct ui_rect damage)
         const struct ui_rect clip = { clip_x, timeline.y + 42U,
             clip_width, 22U };
         status = gradient_rect(clip, damage,
-            index == studio_selected_clip ? 0x96U : 0x68U,
-            index == studio_selected_clip ? 0xBCU : 0x96U,
-            index == studio_selected_clip ? 0xD0U : 0xAEU,
+            index == media_source_selected_clip ? 0x96U : 0x68U,
+            index == media_source_selected_clip ? 0xBCU : 0x96U,
+            index == media_source_selected_clip ? 0xD0U : 0xAEU,
             0x32U, 0x62U, 0x7CU);
         if (status == UI_STATUS_OK) {
             char label[14U];
 
-            studio_short_label(studio_clip_paths[index], label,
+            media_source_short_label(media_source_clip_paths[index], label,
                 sizeof(label));
             status = draw_text(clip, damage, clip.x + 6U, clip.y + 16U,
                 label, state.theme.white);
@@ -5036,7 +5872,7 @@ static enum ui_status draw_studio_app(struct ui_rect damage)
     }
     if (status == UI_STATUS_OK) {
         const uint32_t playhead_x = timeline.x + 38U +
-            studio_playhead * (timeline.width - 48U) / 1000U;
+            media_source_playhead * (timeline.width - 48U) / 1000U;
 
         status = fill_clipped((struct ui_rect){ playhead_x,
             timeline.y + 28U, 2U, timeline.height - 32U }, damage,
@@ -5095,6 +5931,104 @@ static struct ui_rect store_nav_rect(size_t index)
             (uint32_t)(index - 11U) * 25U;
     }
     return (struct ui_rect){ client.x + 9U, y, width - 18U, 22U };
+}
+
+static struct ui_rect store_package_card_rect(void)
+{
+    const struct ui_rect client = state.layout.panel_client;
+    const uint32_t sidebar_width = store_sidebar_width();
+
+    return (struct ui_rect){ client.x + sidebar_width + 29U,
+        client.y + 198U, client.width - sidebar_width - 57U, 108U };
+}
+
+static struct ui_rect store_package_action_rect(void)
+{
+    const struct ui_rect card = store_package_card_rect();
+
+    return (struct ui_rect){ card.x + card.width - 142U, card.y + 59U,
+        124U, 28U };
+}
+
+static uint8_t store_ascii_lower(uint8_t value)
+{
+    return value >= (uint8_t)'A' && value <= (uint8_t)'Z' ?
+        (uint8_t)(value + ((uint8_t)'a' - (uint8_t)'A')) : value;
+}
+
+static bool store_query_matches(const char *candidate)
+{
+    if (store_query_length == 0U) {
+        return true;
+    }
+    size_t candidate_bytes = 0U;
+    while (candidate[candidate_bytes] != '\0') {
+        ++candidate_bytes;
+    }
+    if (store_query_length > candidate_bytes) {
+        return false;
+    }
+    for (size_t start = 0U;
+         start + store_query_length <= candidate_bytes; ++start) {
+        bool matches = true;
+
+        for (size_t index = 0U; index < store_query_length; ++index) {
+            matches = matches && store_ascii_lower(
+                (uint8_t)candidate[start + index]) == store_ascii_lower(
+                    (uint8_t)store_query[index]);
+        }
+        if (matches) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool store_package_visible(void)
+{
+    if (store_query_length != 0U) {
+        return store_query_matches("SDL Chess Board") ||
+            store_query_matches("Games");
+    }
+    return store_section == 0U || store_section == 3U ||
+        store_section == 7U;
+}
+
+static enum ui_status draw_store_package(
+    struct ui_rect damage
+)
+{
+    const struct ui_rect card = store_package_card_rect();
+    const struct ui_rect action = store_package_action_rect();
+    enum ui_status status = fill_clipped(card, damage,
+        framebuffer_pack(0xFAU, 0xFAU, 0xFBU));
+
+    if (status == UI_STATUS_OK) {
+        status = stroke_clipped(card, damage, 1U,
+            framebuffer_pack(0xD9U, 0xDDU, 0xE1U));
+    }
+    if (status == UI_STATUS_OK) {
+        status = draw_store_ui_icon(8U, (struct ui_rect){
+            card.x + 18U, card.y + 19U, 56U, 56U
+        }, damage);
+    }
+    if (status == UI_STATUS_OK) {
+        status = draw_text(card, damage, card.x + 92U, card.y + 31U,
+            "SDL Chess Board", state.theme.ink);
+    }
+    if (status == UI_STATUS_OK) {
+        status = draw_text(card, damage, card.x + 92U, card.y + 55U,
+            "Native SDL 2.32.10 game", framebuffer_pack(0x65U, 0x6CU, 0x73U));
+    }
+    if (status == UI_STATUS_OK) {
+        status = draw_text(card, damage, card.x + 92U, card.y + 80U,
+            "Signed package", framebuffer_pack(0x65U, 0x6CU, 0x73U));
+    }
+    if (status == UI_STATUS_OK) {
+        status = draw_button(action, damage,
+            store_installer_queued ? "Opening Phip" : "Install / Update");
+    }
+    return status;
 }
 
 static enum ui_status draw_store_ui_icon(
@@ -5270,17 +6204,17 @@ static enum ui_status draw_store_app(struct ui_rect damage)
     }
     if (status == UI_STATUS_OK) {
         status = draw_text(content, damage, content.x + 28U,
-            content.y + 57U, "Applications for Sapote Redwood",
+            content.y + 57U, "Applications for Phipia",
             framebuffer_pack(0x6DU, 0x73U, 0x79U));
     }
 
     if (status != UI_STATUS_OK) {
         return status;
     }
-    if (store_query_length != 0U) {
+    if (store_query_length != 0U && !store_package_visible()) {
         return draw_store_empty(content, damage,
             "No applications found",
-            "No packages have been published to the catalog yet.");
+            "No signed application matches this search.");
     }
     if (store_section == 11U) {
         status = draw_store_info_row(content, damage, 0U,
@@ -5297,10 +6231,10 @@ static enum ui_status draw_store_app(struct ui_rect damage)
     }
     if (store_section == 12U) {
         status = draw_store_info_row(content, damage, 0U,
-            "Application", "Sapote Store");
+            "Application", "Phipia Store");
         if (status == UI_STATUS_OK) {
             status = draw_store_info_row(content, damage, 1U,
-                "Platform", "Sapote native ABI v1");
+                "Platform", "Phipia native ABI v1");
         }
         if (status == UI_STATUS_OK) {
             status = draw_store_info_row(content, damage, 2U,
@@ -5326,7 +6260,7 @@ static enum ui_status draw_store_app(struct ui_rect damage)
     }
     if (status == UI_STATUS_OK) {
         status = draw_text(hero, damage, hero.x + 116U, hero.y + 39U,
-            "Sapote Store", state.theme.ink);
+            "Phipia Store", state.theme.ink);
     }
     if (status == UI_STATUS_OK) {
         status = draw_text(hero, damage, hero.x + 116U, hero.y + 65U,
@@ -5346,14 +6280,17 @@ static enum ui_status draw_store_app(struct ui_rect damage)
             "No updates available",
             "There are no published packages to check.");
     }
+    if (store_package_visible()) {
+        return draw_store_package(damage);
+    }
     if (store_section >= 3U && store_section <= 10U) {
         return draw_store_empty(content, damage,
             "No applications in this category",
-            "The catalog is ready for its first published package.");
+            "No signed application is published in this category.");
     }
     return draw_store_empty(content, damage,
-        "The catalog is ready",
-        "Applications will appear here after they are published.");
+        "No applications available",
+        "The signed catalog is currently empty.");
 }
 
 static void begin_dock_spring(void)
@@ -5367,6 +6304,643 @@ static void begin_dock_spring(void)
     }
 }
 
+static bool phipia_panel(enum ui_panel_id panel)
+{
+    return panel == UI_PANEL_FILES || panel == UI_PANEL_TERMINAL ||
+        panel == UI_PANEL_NOTES || panel == UI_PANEL_MEDIA_EDITOR ||
+        panel == UI_PANEL_CAMERA || panel == UI_PANEL_PAINT ||
+        panel == UI_PANEL_STORE || panel == UI_PANEL_SETTINGS ||
+        panel == UI_PANEL_TASKMGR;
+}
+
+static enum ui_status phipia_set_panel_frame(
+    enum ui_panel_id panel,
+    struct ui_rect frame
+)
+{
+    if (!phipia_shell_ready || !phipia_panel(panel)) {
+        return UI_STATUS_OK;
+    }
+    switch (panel) {
+    case UI_PANEL_FILES:
+        return explorer_set_frame(frame) == EXPLORER_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_PANEL;
+    case UI_PANEL_TERMINAL:
+        return terminal_set_frame(frame) == TERMINAL_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_PANEL;
+    case UI_PANEL_NOTES:
+        return notes_set_frame(frame) == NOTES_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_PANEL;
+    case UI_PANEL_MEDIA_EDITOR:
+        return editor_set_frame(frame) == EDITOR_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_PANEL;
+    case UI_PANEL_CAMERA:
+        return phipia_camera_set_frame(frame) == PHIPIA_CAMERA_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_PANEL;
+    case UI_PANEL_PAINT:
+        return paint_set_frame(frame) == PAINT_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_PANEL;
+    case UI_PANEL_STORE:
+        return store_set_frame(frame) == STORE_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_PANEL;
+    case UI_PANEL_SETTINGS:
+        return settings_set_frame(frame) == SETTINGS_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_PANEL;
+    case UI_PANEL_TASKMGR:
+        return taskmgr_set_frame(frame) == TASKMGR_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_PANEL;
+    default:
+        return UI_STATUS_OK;
+    }
+}
+
+static void phipia_set_panel_focus(enum ui_panel_id panel, bool focused)
+{
+    if (!phipia_shell_ready) {
+        return;
+    }
+    switch (panel) {
+    case UI_PANEL_FILES:
+        (void)explorer_set_focus(focused);
+        break;
+    case UI_PANEL_TERMINAL:
+        (void)terminal_set_focus(focused);
+        break;
+    case UI_PANEL_NOTES:
+        (void)notes_set_focus(focused);
+        break;
+    case UI_PANEL_CAMERA:
+        (void)phipia_camera_set_focus(focused);
+        break;
+    case UI_PANEL_PAINT:
+        (void)paint_set_focus(focused);
+        break;
+    case UI_PANEL_STORE:
+        (void)store_set_focus(focused);
+        break;
+    case UI_PANEL_SETTINGS:
+        (void)settings_set_focus(focused);
+        break;
+    case UI_PANEL_TASKMGR:
+        (void)taskmgr_set_focus(focused);
+        break;
+    default:
+        break;
+    }
+}
+
+static enum ui_status phipia_draw_camera_panel(struct ui_rect damage)
+{
+    const bool feed = camera_refresh_frame();
+    const struct ui_rect view = phipia_camera_viewfinder_bounds();
+    const struct ui_rect clipped = rect_intersection(view, damage);
+
+    (void)phipia_camera_set_feed(feed);
+    if (feed) {
+        for (uint32_t y = 0U; y < clipped.height; ++y) {
+            for (uint32_t x = 0U; x < clipped.width; ++x) {
+                camera_preview_row[x] = camera_frame_pixel(
+                    clipped.x - view.x + x, clipped.y - view.y + y,
+                    view.width, view.height);
+            }
+            if (surface_blit(canvas, clipped.x, clipped.y + y,
+                    camera_preview_row, clipped.width, 1U,
+                    clipped.width * SURFACE_BYTES_PER_PIXEL) !=
+                        SURFACE_STATUS_OK) {
+                return UI_STATUS_SURFACE_FAILURE;
+            }
+        }
+    }
+    return phipia_camera_draw(damage) == PHIPIA_CAMERA_STATUS_OK ?
+        UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
+}
+
+static enum ui_status phipia_draw_active_panel(
+    struct ui_rect damage,
+    bool focused
+)
+{
+    phipia_set_panel_focus(state.active_panel, focused);
+    switch (state.active_panel) {
+    case UI_PANEL_FILES:
+        return explorer_draw(damage) == EXPLORER_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
+    case UI_PANEL_TERMINAL:
+        if (terminal_draw(damage) != TERMINAL_STATUS_OK) {
+            return UI_STATUS_SURFACE_FAILURE;
+        }
+        const struct ui_rect terminal_clip = rect_intersection(
+            terminal_client_bounds(), damage);
+
+        if (terminal_clip.width != 0U && terminal_clip.height != 0U &&
+                screen_redraw_region(surface_rect_of(terminal_clip)) !=
+                    SCREEN_STATUS_OK) {
+            return UI_STATUS_SCREEN_FAILURE;
+        }
+        return UI_STATUS_OK;
+    case UI_PANEL_NOTES:
+        return notes_draw(damage) == NOTES_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
+    case UI_PANEL_MEDIA_EDITOR:
+        return editor_draw(damage) == EDITOR_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
+    case UI_PANEL_CAMERA:
+        return phipia_draw_camera_panel(damage);
+    case UI_PANEL_PAINT:
+        return paint_draw(damage) == PAINT_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
+    case UI_PANEL_STORE:
+        return store_draw(damage) == STORE_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
+    case UI_PANEL_SETTINGS:
+        return settings_draw(damage) == SETTINGS_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
+    case UI_PANEL_TASKMGR:
+        return taskmgr_draw(damage) == TASKMGR_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
+    default:
+        return UI_STATUS_BAD_PANEL;
+    }
+}
+
+static enum ui_status phipia_pointer_move_active(
+    struct ui_point point,
+    struct ui_rect *damage
+)
+{
+    if (!phipia_shell_ready || !phipia_panel(state.active_panel)) {
+        return UI_STATUS_OK;
+    }
+    switch (state.active_panel) {
+    case UI_PANEL_FILES:
+        return explorer_pointer_move(point, damage) == EXPLORER_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    case UI_PANEL_NOTES:
+        return notes_pointer_move(point, damage) == NOTES_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    case UI_PANEL_MEDIA_EDITOR:
+        return editor_pointer_move(point, damage) == EDITOR_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    case UI_PANEL_CAMERA:
+        return phipia_camera_pointer_move(point, damage) ==
+            PHIPIA_CAMERA_STATUS_OK ? UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    case UI_PANEL_PAINT:
+        return paint_pointer_move(point, damage) == PAINT_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    case UI_PANEL_STORE:
+        return store_pointer_move(point, damage) == STORE_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    case UI_PANEL_SETTINGS:
+        return settings_pointer_move(point, damage) == SETTINGS_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    case UI_PANEL_TASKMGR:
+        return taskmgr_pointer_move(point, damage) == TASKMGR_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    default:
+        return UI_STATUS_OK;
+    }
+}
+
+static enum ui_status phipia_pointer_press_active(
+    struct ui_point point,
+    struct ui_rect *damage
+)
+{
+    switch (state.active_panel) {
+    case UI_PANEL_FILES:
+        return explorer_pointer_press(point, damage) == EXPLORER_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    case UI_PANEL_NOTES:
+        return notes_pointer_press(point, damage) == NOTES_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    case UI_PANEL_MEDIA_EDITOR: {
+        const enum editor_status status = editor_pointer_press(point, damage);
+
+        if (status == EDITOR_STATUS_OK && damage->width != 0U &&
+                damage->height != 0U) {
+            media_editor_dirty = true;
+        }
+        return status == EDITOR_STATUS_OK ? UI_STATUS_OK :
+            UI_STATUS_BAD_ELEMENT;
+    }
+    case UI_PANEL_CAMERA:
+        return phipia_camera_pointer_press(point, damage) ==
+            PHIPIA_CAMERA_STATUS_OK ? UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    case UI_PANEL_PAINT: {
+        const enum paint_status status = paint_pointer_press(point, damage);
+
+        if (status != PAINT_STATUS_OK) {
+            return UI_STATUS_BAD_ELEMENT;
+        }
+        if (paint_take_save_request() && paint_save() != PHIPFS_STATUS_OK) {
+            return UI_STATUS_FILESYSTEM_FAILURE;
+        }
+        return UI_STATUS_OK;
+    }
+    case UI_PANEL_STORE:
+        return store_pointer_press(point, damage) == STORE_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    case UI_PANEL_SETTINGS:
+        return settings_pointer_press(point, damage) == SETTINGS_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    case UI_PANEL_TASKMGR:
+        return taskmgr_pointer_press(point, damage) == TASKMGR_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    default:
+        return UI_STATUS_OK;
+    }
+}
+
+static enum cursor_kind phipia_cursor_over(struct ui_point point)
+{
+    enum cursor_kind kind = CURSOR_NORMAL_SELECT;
+
+    if (!phipia_shell_ready || dialog_is_open()) {
+        return kind;
+    }
+    switch (state.active_panel) {
+    case UI_PANEL_FILES:
+        kind = explorer_cursor_at(point);
+        break;
+    case UI_PANEL_TERMINAL:
+        kind = terminal_cursor_at(point);
+        break;
+    case UI_PANEL_NOTES:
+        kind = notes_cursor_at(point);
+        break;
+    case UI_PANEL_PAINT:
+        kind = paint_cursor_at(point);
+        break;
+    case UI_PANEL_SETTINGS:
+        kind = settings_cursor_at(point);
+        break;
+    case UI_PANEL_TASKMGR:
+        kind = taskmgr_cursor_at(point);
+        break;
+    default:
+        break;
+    }
+    return kind != CURSOR_NORMAL_SELECT ? kind : taskbar_cursor_at(point);
+}
+
+static enum taskbar_run_state taskbar_run_for(enum ui_panel_id panel)
+{
+    if (panel <= UI_PANEL_NONE || panel >= UI_PANEL_COUNT ||
+            !panel_open[panel]) {
+        return TASKBAR_RUN_PINNED;
+    }
+    if (panel_minimized[panel] || state.active_panel != panel) {
+        return TASKBAR_RUN_BACKGROUND;
+    }
+    return TASKBAR_RUN_FOREGROUND;
+}
+
+static void taskbar_install_app(
+    size_t index,
+    const char *label,
+    const char *art,
+    enum taskbar_glyph glyph,
+    enum ui_panel_id panel,
+    bool present
+)
+{
+    struct taskbar_app app = {
+        .present = present,
+        .icon = {
+            .art = art,
+            .glyph = glyph,
+            .glyph_colour = UINT32_C(0x00FFFFFF)
+        },
+        .run = taskbar_run_for(panel),
+        .window_count = panel_open[panel] ? 1U : 0U,
+        .panel = panel
+    };
+
+    (void)copy_string(app.label, sizeof(app.label), label);
+    (void)taskbar_set_app(index, &app);
+}
+
+static void taskbar_install_apps(void)
+{
+    static const char *const labels[] = {
+        "Files", "Phip", "Notes", "Media Editor", "Camera", "Paint",
+        "Store", "Settings", "Task Manager"
+    };
+    static const char *const art[] = {
+        "files", "terminal", "notes", "editor", "camera", "paint",
+        "store", "settings", "taskmgr"
+    };
+    static const enum taskbar_glyph glyphs[] = {
+        TASKBAR_GLYPH_FILE_EXPLORER, TASKBAR_GLYPH_TERMINAL,
+        TASKBAR_GLYPH_NOTES, TASKBAR_GLYPH_CANVAS, TASKBAR_GLYPH_CAMERA,
+        TASKBAR_GLYPH_CANVAS, TASKBAR_GLYPH_STORE, TASKBAR_GLYPH_SETTINGS,
+        TASKBAR_GLYPH_SETTINGS
+    };
+    static const enum ui_panel_id panels[] = {
+        UI_PANEL_FILES, UI_PANEL_TERMINAL, UI_PANEL_NOTES, UI_PANEL_MEDIA_EDITOR,
+        UI_PANEL_CAMERA, UI_PANEL_PAINT, UI_PANEL_STORE, UI_PANEL_SETTINGS,
+        UI_PANEL_TASKMGR
+    };
+
+    for (size_t index = 0U; index < sizeof(panels) / sizeof(panels[0]);
+         ++index) {
+        taskbar_install_app(index, labels[index], art[index], glyphs[index],
+            panels[index], index != 8U || panel_open[UI_PANEL_TASKMGR]);
+        struct taskbar_start_entry entry = {
+            .present = true,
+            .heading = false,
+            .icon = { .art = art[index], .glyph = glyphs[index] },
+            .panel = panels[index]
+        };
+
+        (void)copy_string(entry.label, sizeof(entry.label), labels[index]);
+        (void)taskbar_set_start_entry(index, &entry);
+    }
+    (void)taskbar_set_start_group(0U, "Phipia");
+    for (size_t index = 0U; index < 8U; ++index) {
+        struct taskbar_start_tile tile = {
+            .present = true,
+            .icon = { .art = art[index], .glyph = glyphs[index] },
+            .group = 0U,
+            .column = (uint8_t)((index % 3U) * 2U),
+            .row = (uint8_t)((index / 3U) * 2U),
+            .columns = 2U,
+            .rows = 2U,
+            .panel = panels[index]
+        };
+
+        (void)copy_string(tile.label, sizeof(tile.label), labels[index]);
+        (void)taskbar_set_start_tile(index, &tile);
+    }
+}
+
+static bool phipia_seed_store(void)
+{
+    static const struct store_app package = {
+        .present = true,
+        .spotlight = true,
+        .shelf = 0U,
+        .rating = 48U,
+        .name = "SDL Chess Board",
+        .category = "Games",
+        .price = "Install",
+        .tagline = "Signed native SDL 2.32.10 game",
+        .reviews = "Verified package",
+        .art = "paint",
+        .colour = 0U
+    };
+
+    return store_set_shelf(0U, "Signed applications") == STORE_STATUS_OK &&
+        store_set_app(0U, &package) == STORE_STATUS_OK;
+}
+
+static void taskbar_sync_run_states(void)
+{
+    static const enum ui_panel_id panels[] = {
+        UI_PANEL_FILES, UI_PANEL_TERMINAL, UI_PANEL_NOTES, UI_PANEL_MEDIA_EDITOR,
+        UI_PANEL_CAMERA, UI_PANEL_PAINT, UI_PANEL_STORE, UI_PANEL_SETTINGS
+    };
+
+    if (!taskbar_is_initialized()) {
+        return;
+    }
+    for (size_t index = 0U; index < sizeof(panels) / sizeof(panels[0]);
+         ++index) {
+        (void)taskbar_set_run_state(index, taskbar_run_for(panels[index]));
+    }
+    taskbar_install_app(8U, "Task Manager", "taskmgr",
+        TASKBAR_GLYPH_SETTINGS, UI_PANEL_TASKMGR,
+        panel_open[UI_PANEL_TASKMGR]);
+}
+
+static bool taskbar_hit_test(struct ui_point point)
+{
+    return taskbar_contains(point) ||
+        (taskbar_start_menu_open() &&
+            rect_contains_point(taskbar_start_menu_bounds(), point)) ||
+        (taskbar_search_panel_open() &&
+            rect_contains_point(taskbar_search_panel_bounds(), point)) ||
+        (taskbar_flyout_open() &&
+            rect_contains_point(taskbar_flyout_bounds(), point));
+}
+
+static void phipia_seed_settings(void)
+{
+    static const struct settings_tile tiles[] = {
+        { true, "System", "Taskbar and desktop behaviour", "monitor", 0U },
+        { true, "Personalization", "Colour, transparency and layout", "brush", 0U },
+        { true, "Network & internet", "Live connection status", "globe", 0U },
+        { true, "Apps", "Store and installed applications", "layout-grid", 0U },
+        { true, "Privacy & security", "Camera and platform security", "shield-check", 0U },
+        { true, "About", "Phipia system information", "circle-user", 0U }
+    };
+    static const struct settings_row system_rows[] = {
+        { true, SETTINGS_ROW_HEADING, "Taskbar", "", 0U, { "" } },
+        { true, SETTINGS_ROW_CHOICE, "Search", "Choose the taskbar search control", 3U,
+            { "Hidden", "Icon", "Icon + label", "Search box" } },
+        { true, SETTINGS_ROW_TOGGLE, "Show desktop button", "Use the strip at the far right", 1U,
+            { "" } }
+    };
+    static const struct settings_row personalization_rows[] = {
+        { true, SETTINGS_ROW_HEADING, "Taskbar appearance", "", 0U, { "" } },
+        { true, SETTINGS_ROW_CHOICE, "Theme", "Choose dark or light taskbar chrome", 0U,
+            { "Dark", "Light", "", "" } },
+        { true, SETTINGS_ROW_CHOICE, "Alignment", "Place apps at the left or centre", 1U,
+            { "Center", "Left", "", "" } },
+        { true, SETTINGS_ROW_TOGGLE, "Transparency", "Let the wallpaper tint the taskbar", 1U,
+            { "" } }
+    };
+    static const struct settings_row network_rows[] = {
+        { true, SETTINGS_ROW_HEADING, "Connection", "", 0U, { "" } },
+        { true, SETTINGS_ROW_ACTION, "Network status", "Read the live adapter and address state", 0U,
+            { "View", "", "", "" } }
+    };
+    static const struct settings_row app_rows[] = {
+        { true, SETTINGS_ROW_HEADING, "Applications", "", 0U, { "" } },
+        { true, SETTINGS_ROW_ACTION, "Phipia Store", "Browse signed applications", 0U,
+            { "Open", "", "", "" } }
+    };
+    static const struct settings_row privacy_rows[] = {
+        { true, SETTINGS_ROW_HEADING, "App permissions", "", 0U, { "" } },
+        { true, SETTINGS_ROW_ACTION, "Camera", "Open the camera permission surface", 0U,
+            { "Open", "", "", "" } }
+    };
+    static const struct settings_row about_rows[] = {
+        { true, SETTINGS_ROW_HEADING, "Phipia", "", 0U, { "" } },
+        { true, SETTINGS_ROW_ACTION, "System information", "Read live kernel resource state", 0U,
+            { "View", "", "", "" } }
+    };
+    static const struct {
+        const struct settings_row *rows;
+        size_t count;
+    } pages[] = {
+        { system_rows, sizeof(system_rows) / sizeof(system_rows[0]) },
+        { personalization_rows, sizeof(personalization_rows) /
+            sizeof(personalization_rows[0]) },
+        { network_rows, sizeof(network_rows) / sizeof(network_rows[0]) },
+        { app_rows, sizeof(app_rows) / sizeof(app_rows[0]) },
+        { privacy_rows, sizeof(privacy_rows) / sizeof(privacy_rows[0]) },
+        { about_rows, sizeof(about_rows) / sizeof(about_rows[0]) }
+    };
+
+    for (size_t page = 0U; page < sizeof(tiles) / sizeof(tiles[0]); ++page) {
+        (void)settings_set_tile(page, &tiles[page]);
+        for (size_t row = 0U; row < pages[page].count; ++row) {
+            (void)settings_set_row(page, row, &pages[page].rows[row]);
+        }
+    }
+}
+
+static void phipia_apply_settings(void)
+{
+    const uint32_t search = settings_row_state(0U, 1U);
+
+    (void)taskbar_set_search_mode((enum taskbar_search_mode)search);
+    (void)taskbar_set_search_visible(search != TASKBAR_SEARCH_HIDDEN);
+    (void)taskbar_set_show_desktop_button(
+        settings_row_state(0U, 2U) != 0U);
+    (void)taskbar_set_theme(settings_row_state(1U, 1U) == 0U ?
+        TASKBAR_THEME_DARK : TASKBAR_THEME_LIGHT);
+    (void)taskbar_set_alignment(settings_row_state(1U, 2U) == 0U ?
+        TASKBAR_ALIGNMENT_CENTER : TASKBAR_ALIGNMENT_LEFT);
+    (void)taskbar_set_transparency(settings_row_state(1U, 3U) != 0U);
+}
+
+static bool phipia_refresh_taskmgr(bool force)
+{
+    static const enum ui_panel_id panels[] = {
+        UI_PANEL_FILES, UI_PANEL_TERMINAL, UI_PANEL_NOTES, UI_PANEL_MEDIA_EDITOR,
+        UI_PANEL_CAMERA, UI_PANEL_PAINT, UI_PANEL_STORE, UI_PANEL_SETTINGS,
+        UI_PANEL_TASKMGR
+    };
+    static const char *const arts[] = {
+        "files", "terminal", "notes", "editor", "camera", "paint",
+        "store", "settings", "taskmgr"
+    };
+    const uint64_t second = clock_monotonic_ns() / UINT64_C(1000000000);
+    const struct heap_state heap = heap_get_state();
+    const struct thread_system_state threads = thread_get_state();
+    size_t slot = 0U;
+    struct taskmgr_process row = {
+        .present = true, .heading = true, .kind = TASKMGR_APP
+    };
+
+    if (!force && second == taskmgr_last_refresh_second) {
+        return false;
+    }
+    taskmgr_last_refresh_second = second;
+    (void)copy_string(row.name, sizeof(row.name), "Apps");
+    (void)taskmgr_set_process(slot++, &row);
+    for (size_t index = 0U; index < sizeof(panels) / sizeof(panels[0]);
+         ++index) {
+        const enum ui_panel_id panel = panels[index];
+
+        if (!panel_open[panel]) {
+            continue;
+        }
+        row = (struct taskmgr_process){
+            .present = true,
+            .kind = TASKMGR_APP,
+            .art = arts[index],
+            .pid = (uint32_t)panel
+        };
+        (void)copy_string(row.name, sizeof(row.name), ui_panel_name(panel));
+        (void)copy_string(row.status, sizeof(row.status),
+            panel_minimized[panel] ? "Minimized" :
+                (state.active_panel == panel ? "Foreground" : "Running"));
+        (void)taskmgr_set_process(slot++, &row);
+    }
+    row = (struct taskmgr_process){
+        .present = true, .heading = true, .kind = TASKMGR_SYSTEM
+    };
+    (void)copy_string(row.name, sizeof(row.name), "System");
+    (void)taskmgr_set_process(slot++, &row);
+    row = (struct taskmgr_process){
+        .present = true,
+        .kind = TASKMGR_SYSTEM,
+        .pid = 1U,
+        .threads = threads.live > UINT16_MAX ? UINT16_MAX :
+            (uint16_t)threads.live,
+        .memory_kb = heap.allocated_bytes > UINT64_C(0xFFFFFFFF) * 1024U ?
+            UINT32_MAX : (uint32_t)(heap.allocated_bytes / 1024U),
+        .glyph = "box"
+    };
+    (void)copy_string(row.name, sizeof(row.name), "Phipia kernel");
+    (void)copy_string(row.status, sizeof(row.status), "Protected");
+    (void)taskmgr_set_process(slot++, &row);
+    while (slot < TASKMGR_MAX_PROCESSES) {
+        (void)taskmgr_set_process(slot++, NULL);
+    }
+    {
+        struct taskmgr_meter memory = {
+            .present = true,
+            .percent_tenths = heap.size == 0U ? 0U :
+                (uint16_t)(heap.allocated_bytes * 1000U / heap.size),
+            .used = (uint32_t)(heap.allocated_bytes / 1024U),
+            .total = (uint32_t)(heap.size / 1024U)
+        };
+
+        (void)copy_string(memory.detail, sizeof(memory.detail), "Kernel heap KiB");
+        (void)taskmgr_set_meter(TASKMGR_RESOURCE_CPU, NULL);
+        (void)taskmgr_set_meter(TASKMGR_RESOURCE_MEMORY, &memory);
+        (void)taskmgr_set_meter(TASKMGR_RESOURCE_DISK, NULL);
+        (void)taskmgr_set_meter(TASKMGR_RESOURCE_NETWORK, NULL);
+    }
+    (void)taskmgr_set_core_count(0U);
+    (void)taskmgr_set_uptime(second > UINT32_MAX ? UINT32_MAX :
+        (uint32_t)second);
+    return true;
+}
+
+static bool phipia_initialize_shell(uint32_t width, uint32_t height)
+{
+    phipia_shell_ready = false;
+    taskbar_shutdown();
+    if (cursor_initialize(canvas) != CURSOR_STATUS_OK ||
+            terminal_initialize(canvas, panel_home) != TERMINAL_STATUS_OK ||
+            notes_initialize(canvas, panel_home) != NOTES_STATUS_OK ||
+            explorer_initialize(canvas, panel_home) != EXPLORER_STATUS_OK ||
+            store_initialize(canvas, panel_home) != STORE_STATUS_OK ||
+            paint_initialize(canvas, panel_home) != PAINT_STATUS_OK ||
+            settings_initialize(canvas, panel_home) != SETTINGS_STATUS_OK ||
+            phipia_camera_initialize(canvas, panel_home) !=
+                PHIPIA_CAMERA_STATUS_OK ||
+            taskmgr_initialize(canvas, panel_home) != TASKMGR_STATUS_OK ||
+            editor_initialize(canvas, panel_home) != EDITOR_STATUS_OK ||
+            dialog_initialize(canvas, state.layout.surface) !=
+                DIALOG_STATUS_OK ||
+            taskbar_initialize(canvas, width, height) != TASKBAR_STATUS_OK) {
+        taskbar_shutdown();
+        return false;
+    }
+    (void)terminal_set_title("Phip");
+    (void)explorer_set_title("Files");
+    (void)paint_set_title("Paint");
+    (void)settings_set_account("Phipia", "Local account");
+    (void)settings_set_heading("Phipia Settings");
+    phipia_seed_settings();
+    (void)phipia_camera_set_feed(false);
+    (void)taskbar_set_theme(TASKBAR_THEME_DARK);
+    (void)taskbar_set_alignment(TASKBAR_ALIGNMENT_LEFT);
+    (void)taskbar_set_search_visible(true);
+    (void)taskbar_set_search_mode(TASKBAR_SEARCH_BOX);
+    (void)taskbar_set_task_view_visible(false);
+    (void)taskbar_set_action_center_visible(false);
+    (void)taskbar_set_chevron_visible(false);
+    (void)taskbar_set_show_desktop_button(true);
+    phipia_note_from_buffer();
+    taskbar_install_apps();
+    if (!phipia_seed_store()) {
+        taskbar_shutdown();
+        return false;
+    }
+    phipia_shell_ready = true;
+    phipia_apply_settings();
+    phipia_sync_explorer();
+    phipia_refresh_taskmgr(true);
+    return true;
+}
+
 static enum ui_status draw_one_panel(struct ui_rect damage, bool focused)
 {
     enum ui_status status;
@@ -5374,6 +6948,9 @@ static enum ui_status draw_one_panel(struct ui_rect damage, bool focused)
 
     if (state.active_panel == UI_PANEL_NONE) {
         return UI_STATUS_OK;
+    }
+    if (phipia_shell_ready && phipia_panel(state.active_panel)) {
+        return phipia_draw_active_panel(damage, focused);
     }
     status = window_shadows ?
         fill_clipped(drop_shadow_draw_rect(state.layout.panel, 6U),
@@ -5401,7 +6978,7 @@ static enum ui_status draw_one_panel(struct ui_rect damage, bool focused)
     if (status == UI_STATUS_OK) {
         status = fill_clipped(state.layout.panel_client, damage,
             state.active_panel == UI_PANEL_TERMINAL ||
-            state.active_panel == UI_PANEL_STUDIO ?
+            state.active_panel == UI_PANEL_MEDIA_EDITOR ?
             framebuffer_pack(0x08U, 0x10U, 0x12U) :
             (window_high_contrast ? framebuffer_pack(0xFFU, 0xFFU, 0xFFU) :
                 state.theme.white));
@@ -5489,8 +7066,8 @@ static enum ui_status draw_one_panel(struct ui_rect damage, bool focused)
     if (state.active_panel == UI_PANEL_NOTES) {
         return draw_notes_app(damage);
     }
-    if (state.active_panel == UI_PANEL_STUDIO) {
-        return draw_studio_app(damage);
+    if (state.active_panel == UI_PANEL_MEDIA_EDITOR) {
+        return draw_media_source_app(damage);
     }
     if (state.active_panel == UI_PANEL_CAMERA) {
         return draw_camera_app(damage);
@@ -5585,44 +7162,15 @@ static enum ui_status draw_panel(struct ui_rect damage)
     return status;
 }
 
-static uint32_t cursor_draw_width(void)
-{
-    return cursor_large ? 24U : UI_CURSOR_WIDTH;
-}
-
-static uint32_t cursor_draw_height(void)
-{
-    return cursor_large ? 33U : UI_CURSOR_HEIGHT;
-}
-
 static struct ui_rect cursor_rect_for(struct ui_point point)
 {
-    uint32_t x;
-    uint32_t y;
-    uint32_t width;
-    uint32_t height;
-
     if (point.x < 0 || point.y < 0 || state.layout.surface.width == 0U ||
         state.layout.surface.height == 0U) {
         return (struct ui_rect){ 0U, 0U, 0U, 0U };
     }
-    x = (uint32_t)point.x;
-    y = (uint32_t)point.y;
-    if (x >= state.layout.surface.width) {
-        x = state.layout.surface.width - 1U;
-    }
-    if (y >= state.layout.surface.height) {
-        y = state.layout.surface.height - 1U;
-    }
-    width = cursor_draw_width();
-    height = cursor_draw_height();
-    if (width > state.layout.surface.width - x) {
-        width = state.layout.surface.width - x;
-    }
-    if (height > state.layout.surface.height - y) {
-        height = state.layout.surface.height - y;
-    }
-    return (struct ui_rect){ x, y, width, height };
+    const struct ui_rect placed = cursor_placement(cursor_get_kind(), point);
+
+    return rect_intersection(placed, state.layout.surface);
 }
 
 static struct ui_rect cursor_damage_rect_for(struct ui_point point)
@@ -5667,25 +7215,8 @@ static enum ui_status draw_cursor(struct ui_rect damage)
     if (!state.pointer_present || !rects_intersect(cursor, damage)) {
         return UI_STATUS_OK;
     }
-    for (uint32_t y = 0U; y < cursor.height; ++y) {
-        for (uint32_t x = 0U; x < cursor.width; ++x) {
-            uint32_t pixel;
-
-            if (!cursor_mask_contains(cursor_outer, x, y,
-                    cursor.width, cursor.height)) {
-                continue;
-            }
-            pixel = cursor_mask_contains(cursor_inner, x, y,
-                cursor.width, cursor.height) ?
-                (cursor_dark ? state.theme.ink : state.theme.white) :
-                (cursor_dark ? state.theme.white : state.theme.ink);
-            if (surface_pixel(canvas, cursor.x + x, cursor.y + y, pixel) !=
-                SURFACE_STATUS_OK) {
-                return UI_STATUS_SURFACE_FAILURE;
-            }
-        }
-    }
-    return UI_STATUS_OK;
+    return cursor_draw(state.pointer, damage) == CURSOR_STATUS_OK ?
+        UI_STATUS_OK : UI_STATUS_SURFACE_FAILURE;
 }
 
 static enum ui_status draw_desktop_pattern(struct ui_rect damage)
@@ -6127,21 +7658,21 @@ static enum ui_status render_region(struct ui_rect damage, bool full)
     }
     status = draw_desktop_pattern(damage);
 
-    if (status == UI_STATUS_OK) {
+    if (status == UI_STATUS_OK && !phipia_shell_ready) {
         status = menu_glass ?
             gradient_rect(state.layout.menu_bar, damage,
                 0xF8U, 0xFAU, 0xFBU, 0xA9U, 0xB3U, 0xB8U) :
             fill_clipped(state.layout.menu_bar, damage,
                 framebuffer_pack(0xD2U, 0xD6U, 0xD8U));
     }
-    if (status == UI_STATUS_OK) {
+    if (status == UI_STATUS_OK && !phipia_shell_ready) {
         status = fill_clipped((struct ui_rect){
             state.layout.menu_bar.x,
             state.layout.menu_bar.y + state.layout.menu_bar.height - 1U,
             state.layout.menu_bar.width, 1U
         }, damage, framebuffer_pack(0x65U, 0x6BU, 0x6EU));
     }
-    if (status == UI_STATUS_OK) {
+    if (status == UI_STATUS_OK && !phipia_shell_ready) {
         status = draw_menu_brand(damage);
     }
     if (status == UI_STATUS_OK) {
@@ -6150,15 +7681,25 @@ static enum ui_status render_region(struct ui_rect damage, bool full)
     if (status == UI_STATUS_OK && ui_anim_running(&panel_anim)) {
         status = draw_animated_panel(damage);
     }
-    if (status == UI_STATUS_OK) {
+    if (status == UI_STATUS_OK && !phipia_shell_ready) {
         status = draw_launcher(damage);
     }
-    if (status == UI_STATUS_OK) {
+    if (status == UI_STATUS_OK && phipia_shell_ready) {
+        if (taskbar_capture_backdrop() != TASKBAR_STATUS_OK ||
+                taskbar_draw(damage) != TASKBAR_STATUS_OK) {
+            status = UI_STATUS_SURFACE_FAILURE;
+        }
+    }
+    if (status == UI_STATUS_OK && !phipia_shell_ready) {
         status = draw_dock_shelf(damage);
     }
     for (size_t index = 0U; index < UI_DOCK_ITEM_COUNT &&
-         status == UI_STATUS_OK; ++index) {
+         status == UI_STATUS_OK && !phipia_shell_ready; ++index) {
         status = draw_dock_item(&state.layout.dock_items[index], damage);
+    }
+    if (status == UI_STATUS_OK && dialog_is_open() &&
+            dialog_draw(damage) != DIALOG_STATUS_OK) {
+        status = UI_STATUS_SURFACE_FAILURE;
     }
     if (status == UI_STATUS_OK) {
         status = draw_cursor(damage);
@@ -6329,12 +7870,12 @@ enum ui_status ui_construct(bool pointer_present)
         return status;
     }
     panel_home = state.layout.panel;
-    if (sapote_logo_geometry(&logo_width, &logo_height) != LOGO_STATUS_OK ||
+    if (phipia_logo_geometry(&logo_width, &logo_height) != LOGO_STATUS_OK ||
         logo_width != UI_LOGO_WIDTH || logo_height != UI_LOGO_HEIGHT ||
-        sapote_logo_decode(logo_pixels, UI_LOGO_PIXELS,
+        phipia_logo_decode(logo_pixels, UI_LOGO_PIXELS,
             framebuffer.red_position, framebuffer.green_position,
             framebuffer.blue_position, 0U) != LOGO_STATUS_OK ||
-        sapote_logo_decode_alpha(logo_alpha, UI_LOGO_PIXELS) !=
+        phipia_logo_decode_alpha(logo_alpha, UI_LOGO_PIXELS) !=
             LOGO_STATUS_OK) {
         canvas = NULL;
         return UI_STATUS_LOGO_FAILURE;
@@ -6342,123 +7883,123 @@ enum ui_status ui_construct(bool pointer_present)
     logo_red_shift = framebuffer.red_position;
     logo_green_shift = framebuffer.green_position;
     logo_blue_shift = framebuffer.blue_position;
-    if (sapote_studio_icon_geometry(&studio_icon_width,
-            &studio_icon_height) != LOGO_STATUS_OK ||
-        studio_icon_width == 0U || studio_icon_width > 80U ||
-        studio_icon_height == 0U || studio_icon_height > 80U ||
-        sapote_studio_icon_decode(studio_icon_pixels,
-            (size_t)studio_icon_width * studio_icon_height,
+    if (phipia_media_editor_icon_geometry(&media_editor_icon_width,
+            &media_editor_icon_height) != LOGO_STATUS_OK ||
+        media_editor_icon_width == 0U || media_editor_icon_width > 80U ||
+        media_editor_icon_height == 0U || media_editor_icon_height > 80U ||
+        phipia_media_editor_icon_decode(media_editor_icon_pixels,
+            (size_t)media_editor_icon_width * media_editor_icon_height,
             framebuffer.red_position, framebuffer.green_position,
             framebuffer.blue_position, 0U) != LOGO_STATUS_OK ||
-        sapote_studio_icon_decode_alpha(studio_icon_alpha,
-            (size_t)studio_icon_width * studio_icon_height) != LOGO_STATUS_OK) {
+        phipia_media_editor_icon_decode_alpha(media_editor_icon_alpha,
+            (size_t)media_editor_icon_width * media_editor_icon_height) != LOGO_STATUS_OK) {
         canvas = NULL;
-        return UI_STATUS_STUDIO_ICON_FAILURE;
+        return UI_STATUS_MEDIA_EDITOR_ICON_FAILURE;
     }
-    if (sapote_settings_icon_geometry(&settings_icon_width,
+    if (phipia_settings_icon_geometry(&settings_icon_width,
             &settings_icon_height) != LOGO_STATUS_OK ||
         settings_icon_width == 0U || settings_icon_width > 80U ||
         settings_icon_height == 0U || settings_icon_height > 80U ||
-        sapote_settings_icon_decode(settings_icon_pixels,
+        phipia_settings_icon_decode(settings_icon_pixels,
             (size_t)settings_icon_width * settings_icon_height,
             framebuffer.red_position, framebuffer.green_position,
             framebuffer.blue_position, 0U) != LOGO_STATUS_OK ||
-        sapote_settings_icon_decode_alpha(settings_icon_alpha,
+        phipia_settings_icon_decode_alpha(settings_icon_alpha,
             (size_t)settings_icon_width * settings_icon_height) !=
                 LOGO_STATUS_OK ||
-        sapote_camera_icon_geometry(&camera_icon_width,
+        phipia_camera_icon_geometry(&camera_icon_width,
             &camera_icon_height) != LOGO_STATUS_OK ||
         camera_icon_width == 0U || camera_icon_width > 80U ||
         camera_icon_height == 0U || camera_icon_height > 80U ||
-        sapote_camera_icon_decode(camera_icon_pixels,
+        phipia_camera_icon_decode(camera_icon_pixels,
             (size_t)camera_icon_width * camera_icon_height,
             framebuffer.red_position, framebuffer.green_position,
             framebuffer.blue_position, 0U) != LOGO_STATUS_OK ||
-        sapote_camera_icon_decode_alpha(camera_icon_alpha,
+        phipia_camera_icon_decode_alpha(camera_icon_alpha,
             (size_t)camera_icon_width * camera_icon_height) !=
                 LOGO_STATUS_OK ||
-        sapote_canvas_icon_geometry(&canvas_icon_width,
+        phipia_canvas_icon_geometry(&canvas_icon_width,
             &canvas_icon_height) != LOGO_STATUS_OK ||
         canvas_icon_width == 0U || canvas_icon_width > 80U ||
         canvas_icon_height == 0U || canvas_icon_height > 80U ||
-        sapote_canvas_icon_decode(canvas_icon_pixels,
+        phipia_canvas_icon_decode(canvas_icon_pixels,
             (size_t)canvas_icon_width * canvas_icon_height,
             framebuffer.red_position, framebuffer.green_position,
             framebuffer.blue_position, 0U) != LOGO_STATUS_OK ||
-        sapote_canvas_icon_decode_alpha(canvas_icon_alpha,
+        phipia_canvas_icon_decode_alpha(canvas_icon_alpha,
             (size_t)canvas_icon_width * canvas_icon_height) !=
                 LOGO_STATUS_OK) {
         canvas = NULL;
         return UI_STATUS_APP_ICON_FAILURE;
     }
-    if (sapote_files_icon_geometry(&files_icon_width,
+    if (phipia_files_icon_geometry(&files_icon_width,
             &files_icon_height) != LOGO_STATUS_OK ||
         files_icon_width == 0U || files_icon_width > 80U ||
         files_icon_height == 0U || files_icon_height > 80U ||
-        sapote_files_icon_decode(files_icon_pixels,
+        phipia_files_icon_decode(files_icon_pixels,
             (size_t)files_icon_width * files_icon_height,
             framebuffer.red_position, framebuffer.green_position,
             framebuffer.blue_position, 0U) != LOGO_STATUS_OK ||
-        sapote_files_icon_decode_alpha(files_icon_alpha,
+        phipia_files_icon_decode_alpha(files_icon_alpha,
             (size_t)files_icon_width * files_icon_height) != LOGO_STATUS_OK ||
-        sapote_terminal_icon_geometry(&terminal_icon_width,
+        phipia_terminal_icon_geometry(&terminal_icon_width,
             &terminal_icon_height) != LOGO_STATUS_OK ||
         terminal_icon_width == 0U || terminal_icon_width > 80U ||
         terminal_icon_height == 0U || terminal_icon_height > 80U ||
-        sapote_terminal_icon_decode(terminal_icon_pixels,
+        phipia_terminal_icon_decode(terminal_icon_pixels,
             (size_t)terminal_icon_width * terminal_icon_height,
             framebuffer.red_position, framebuffer.green_position,
             framebuffer.blue_position, 0U) != LOGO_STATUS_OK ||
-        sapote_terminal_icon_decode_alpha(terminal_icon_alpha,
+        phipia_terminal_icon_decode_alpha(terminal_icon_alpha,
             (size_t)terminal_icon_width * terminal_icon_height) !=
                 LOGO_STATUS_OK) {
         canvas = NULL;
         return UI_STATUS_APP_ICON_FAILURE;
     }
-    if (sapote_store_icon_geometry(&store_icon_width,
+    if (phipia_store_icon_geometry(&store_icon_width,
             &store_icon_height) != LOGO_STATUS_OK ||
         store_icon_width == 0U || store_icon_width > 80U ||
         store_icon_height == 0U || store_icon_height > 80U ||
-        sapote_store_icon_decode(store_icon_pixels,
+        phipia_store_icon_decode(store_icon_pixels,
             (size_t)store_icon_width * store_icon_height,
             framebuffer.red_position, framebuffer.green_position,
             framebuffer.blue_position, 0U) != LOGO_STATUS_OK ||
-        sapote_store_icon_decode_alpha(store_icon_alpha,
+        phipia_store_icon_decode_alpha(store_icon_alpha,
             (size_t)store_icon_width * store_icon_height) !=
                 LOGO_STATUS_OK ||
-        sapote_store_ui_icons_geometry(&store_ui_icon_width,
+        phipia_store_ui_icons_geometry(&store_ui_icon_width,
             &store_ui_icon_height) != LOGO_STATUS_OK ||
         store_ui_icon_width != UI_STORE_ICON_SHEET_WIDTH ||
         store_ui_icon_height != UI_STORE_ICON_SHEET_HEIGHT ||
-        sapote_store_ui_icons_decode(store_ui_icon_pixels,
+        phipia_store_ui_icons_decode(store_ui_icon_pixels,
             UI_STORE_ICON_SHEET_WIDTH * UI_STORE_ICON_SHEET_HEIGHT,
             framebuffer.red_position, framebuffer.green_position,
             framebuffer.blue_position, 0U) != LOGO_STATUS_OK ||
-        sapote_store_ui_icons_decode_alpha(store_ui_icon_alpha,
+        phipia_store_ui_icons_decode_alpha(store_ui_icon_alpha,
             UI_STORE_ICON_SHEET_WIDTH * UI_STORE_ICON_SHEET_HEIGHT) !=
                 LOGO_STATUS_OK) {
         canvas = NULL;
         return UI_STATUS_APP_ICON_FAILURE;
     }
-    if (sapote_settings_category_icons_geometry(
+    if (phipia_settings_category_icons_geometry(
             &settings_category_icon_width,
             &settings_category_icon_height) != LOGO_STATUS_OK ||
         settings_category_icon_width != 256U ||
         settings_category_icon_height != 192U ||
-        sapote_settings_category_icons_decode(settings_category_icon_pixels,
+        phipia_settings_category_icons_decode(settings_category_icon_pixels,
             256U * 192U, framebuffer.red_position,
             framebuffer.green_position, framebuffer.blue_position, 0U) !=
                 LOGO_STATUS_OK ||
-        sapote_settings_category_icons_decode_alpha(
+        phipia_settings_category_icons_decode_alpha(
             settings_category_icon_alpha, 256U * 192U) != LOGO_STATUS_OK) {
         canvas = NULL;
         return UI_STATUS_APP_ICON_FAILURE;
     }
-    if (sapote_wallpaper_geometry(&wallpaper_width, &wallpaper_height,
+    if (phipia_wallpaper_geometry(&wallpaper_width, &wallpaper_height,
             &wallpaper_frames) != WALLPAPER_STATUS_OK ||
         wallpaper_width != 1024U || wallpaper_height != 768U ||
         wallpaper_frames != UI_WALLPAPER_COUNT ||
-        sapote_wallpaper_decode(0U, wallpaper_pixels, 1024U * 768U,
+        phipia_wallpaper_decode(0U, wallpaper_pixels, 1024U * 768U,
             1024U, 768U,
             framebuffer.red_position, framebuffer.green_position,
             framebuffer.blue_position) != WALLPAPER_STATUS_OK) {
@@ -6501,10 +8042,13 @@ enum ui_status ui_construct(bool pointer_present)
     store_search_focused = false;
     store_query_length = 0U;
     store_query[0] = '\0';
+    store_installer_queued = false;
     desktop_wallpaper = 0U;
     camera_capture_count = 0U;
     camera_frame_available = false;
     camera_seen_generation = 0U;
+    media_editor_export_active = false;
+    media_editor_dirty = false;
     camera_initialize();
     ui_anim_reset(&panel_anim);
     panel_anim_panel = UI_PANEL_NONE;
@@ -6541,6 +8085,10 @@ enum ui_status ui_construct(bool pointer_present)
     dock3d_set_pointer(&dock_model, state.pointer.x, state.pointer.y,
         pointer_present, dock_magnification);
     dock_sync_layout();
+    if (!phipia_initialize_shell(framebuffer.width, framebuffer.height)) {
+        canvas = NULL;
+        return UI_STATUS_BAD_PANEL;
+    }
 
     if (screen_set_palette(0x08U, 0x10U, 0x12U,
             0x9DU, 0xD7U, 0xA3U) != SCREEN_STATUS_OK ||
@@ -6699,6 +8247,100 @@ enum ui_status ui_handle_keyboard(const struct keyboard_event *event)
     if (!state.active) {
         return UI_STATUS_OK;
     }
+    if (phipia_shell_ready && dialog_is_open()) {
+        if (!event->pressed) {
+            return UI_STATUS_OK;
+        }
+        if (event->scancode == 0x01U) {
+            ui_event.type = UI_EVENT_PANEL_CLOSE;
+        } else if (event->scancode == 0x1CU) {
+            ui_event.type = UI_EVENT_KEYBOARD_ACTIVATION;
+        } else {
+            return UI_STATUS_OK;
+        }
+        return ui_event_publish(&ui_event);
+    }
+    if (phipia_shell_ready && event->pressed && event->control &&
+            event->shift && event->scancode == 0x01U) {
+        ui_event.type = UI_EVENT_TASK_MANAGER;
+        return ui_event_publish(&ui_event);
+    }
+    if (phipia_shell_ready && event->pressed && event->alt &&
+            event->scancode == 0x3EU) {
+        ui_event.type = UI_EVENT_PANEL_CLOSE;
+        return ui_event_publish(&ui_event);
+    }
+    if (phipia_shell_ready && !event->pressed) {
+        return UI_STATUS_OK;
+    }
+    if (phipia_shell_ready && taskbar_search_panel_open()) {
+        if (event->scancode == 0x01U) {
+            ui_event.type = UI_EVENT_PANEL_CLOSE;
+        } else if (event->scancode == 0x1CU) {
+            ui_event.type = UI_EVENT_KEYBOARD_ACTIVATION;
+        } else if (event->scancode == 0x0EU) {
+            ui_event.type = UI_EVENT_TEXT_INPUT;
+            ui_event.character = '\b';
+        } else if (!event->control && event->character >= ' ' &&
+                event->character <= '~') {
+            ui_event.type = UI_EVENT_TEXT_INPUT;
+            ui_event.character = event->character;
+        } else {
+            return UI_STATUS_OK;
+        }
+        return ui_event_publish(&ui_event);
+    }
+    if (phipia_shell_ready && state.active_panel == UI_PANEL_FILES &&
+            (event->scancode == 0x01U || event->scancode == 0x0EU ||
+                event->scancode == 0x1CU ||
+                (event->control && (event->character == 'k' ||
+                    event->character == 'K')) ||
+                (!event->control && event->character >= ' ' &&
+                    event->character <= '~'))) {
+        ui_event.type = event->scancode == 0x01U ? UI_EVENT_PANEL_CLOSE :
+            UI_EVENT_TEXT_INPUT;
+        ui_event.control = event->control;
+        ui_event.character = event->scancode == 0x0EU ? '\b' :
+            (event->scancode == 0x1CU ? '\n' : event->character);
+        return ui_event_publish(&ui_event);
+    }
+    if (phipia_shell_ready && state.active_panel == UI_PANEL_SETTINGS &&
+            (event->scancode == 0x01U || event->scancode == 0x0EU ||
+                event->scancode == 0x1CU ||
+                (!event->control && event->character >= ' ' &&
+                    event->character <= '~'))) {
+        ui_event.type = event->scancode == 0x01U ? UI_EVENT_PANEL_CLOSE :
+            UI_EVENT_TEXT_INPUT;
+        ui_event.character = event->scancode == 0x0EU ? '\b' :
+            (event->scancode == 0x1CU ? '\n' : event->character);
+        return ui_event_publish(&ui_event);
+    }
+    if (phipia_shell_ready && state.active_panel == UI_PANEL_NOTES &&
+            (event->scancode == 0x0EU || event->scancode == 0x1CU ||
+                (event->control && (event->character == 's' ||
+                    event->character == 'S')) ||
+                (!event->control && event->character >= ' ' &&
+                    event->character <= '~'))) {
+        ui_event.type = UI_EVENT_TEXT_INPUT;
+        ui_event.control = event->control;
+        ui_event.character = event->control ? 's' :
+            (event->scancode == 0x0EU ? '\b' :
+                (event->scancode == 0x1CU ? '\n' : event->character));
+        return ui_event_publish(&ui_event);
+    }
+    if (phipia_shell_ready && state.active_panel == UI_PANEL_PAINT &&
+            (event->scancode == 0x0EU || event->scancode == 0x1CU ||
+                (event->control && (event->character == 's' ||
+                    event->character == 'S')) ||
+                (!event->control && event->character >= ' ' &&
+                    event->character <= '~'))) {
+        ui_event.type = UI_EVENT_TEXT_INPUT;
+        ui_event.control = event->control;
+        ui_event.character = event->control ? 's' :
+            (event->scancode == 0x0EU ? '\b' :
+                (event->scancode == 0x1CU ? '\n' : event->character));
+        return ui_event_publish(&ui_event);
+    }
     if (launcher_open) {
         if (!event->pressed) {
             return UI_STATUS_OK;
@@ -6728,7 +8370,8 @@ enum ui_status ui_handle_keyboard(const struct keyboard_event *event)
                 ((uint32_t)(uint8_t)event->character << 8U),
             .value = event->pressed ? 1U : 0U,
             .modifiers = (event->shift ? 1U : 0U) |
-                (event->control ? 2U : 0U)
+                (event->control ? 2U : 0U) |
+                (event->alt ? 4U : 0U)
         };
 
         native_event_emit(state.active_panel, &native_event);
@@ -6745,14 +8388,19 @@ enum ui_status ui_handle_keyboard(const struct keyboard_event *event)
         ui_event.character = event->scancode == 0x0EU ? '\b' :
             event->character;
     } else if ((state.active_panel == UI_PANEL_NOTES ||
-            state.active_panel == UI_PANEL_STUDIO) &&
+            state.active_panel == UI_PANEL_MEDIA_EDITOR) &&
         event->scancode != 0x01U) {
         ui_event.type = UI_EVENT_TEXT_INPUT;
         ui_event.control = event->control;
         if (event->control && (event->character == 's' ||
-                event->character == 'S')) {
-            ui_event.character = 's';
-        } else if (state.active_panel == UI_PANEL_STUDIO) {
+                event->character == 'S' || event->character == 'o' ||
+                event->character == 'O' || event->character == 'e' ||
+                event->character == 'E' || event->character == 'n' ||
+                event->character == 'N')) {
+            ui_event.character = event->character >= 'A' &&
+                event->character <= 'Z' ?
+                (char)(event->character - 'A' + 'a') : event->character;
+        } else if (state.active_panel == UI_PANEL_MEDIA_EDITOR) {
             return UI_STATUS_OK;
         } else if (event->scancode == 0x0EU) {
             ui_event.character = '\b';
@@ -6825,13 +8473,15 @@ static enum ui_status set_panel(
         native_event_emit(old_panel, &close_event);
     }
     native_focus_emit(old_panel, false);
+    phipia_set_panel_focus(old_panel, false);
     if (panel == UI_PANEL_NONE && old_panel == UI_PANEL_NOTES && note_dirty &&
-            note_save() != SAPFS_STATUS_OK) {
+            note_save() != PHIPFS_STATUS_OK) {
         *damage = rect_union(*damage, state.layout.panel);
         return UI_STATUS_OK;
     }
-    if (panel == UI_PANEL_NONE && old_panel == UI_PANEL_STUDIO &&
-            studio_dirty && studio_save() != SAPFS_STATUS_OK) {
+    if (panel == UI_PANEL_NONE && old_panel == UI_PANEL_MEDIA_EDITOR &&
+            (media_source_dirty || media_editor_dirty) &&
+            media_editor_save() != PHIPFS_STATUS_OK) {
         *damage = rect_union(*damage, state.layout.panel);
         return UI_STATUS_OK;
     }
@@ -6845,6 +8495,14 @@ static enum ui_status set_panel(
     }
     if (panel == UI_PANEL_NONE) {
         if (old_panel != UI_PANEL_NONE) {
+            struct ui_rect close_damage = { 0U, 0U, 0U, 0U };
+
+            if (old_panel == UI_PANEL_MEDIA_EDITOR) {
+                (void)editor_close(&close_damage);
+            } else if (old_panel == UI_PANEL_TASKMGR) {
+                (void)taskmgr_close(&close_damage);
+            }
+            *damage = rect_union(*damage, close_damage);
             if (panel_anim_driver && window_motion) {
                 panel_anim_panel = old_panel;
                 panel_anim_frame = panel_windows[old_panel];
@@ -6868,9 +8526,26 @@ static enum ui_status set_panel(
             if (!native_panel_slot(panel, &native_slot)) {
                 const uint32_t offset_x = (uint32_t)panel_cascade * 14U;
                 const uint32_t offset_y = (uint32_t)panel_cascade * 11U;
+                const struct ui_rect work = taskbar_is_initialized() ?
+                    taskbar_work_area() : state.layout.surface;
+                const uint32_t maximum_x = work.x +
+                    (work.width > panel_home.width ?
+                        work.width - panel_home.width : 0U);
+                const uint32_t maximum_y = work.y +
+                    (work.height > panel_home.height ?
+                        work.height - panel_home.height : 0U);
+                uint32_t window_x = panel_home.x + offset_x;
+                uint32_t window_y = panel_home.y + offset_y;
+
+                if (window_x > maximum_x) {
+                    window_x = maximum_x;
+                }
+                if (window_y > maximum_y) {
+                    window_y = maximum_y;
+                }
 
                 panel_windows[panel] = (struct ui_rect){
-                    panel_home.x + offset_x, panel_home.y + offset_y,
+                    window_x, window_y,
                     panel_home.width, panel_home.height
                 };
                 panel_cascade = (uint8_t)((panel_cascade + 1U) %
@@ -6879,6 +8554,14 @@ static enum ui_status set_panel(
             panel_restore[panel] = panel_windows[panel];
             panel_maximized[panel] = false;
             panel_open[panel] = true;
+            struct ui_rect open_damage = { 0U, 0U, 0U, 0U };
+
+            if (panel == UI_PANEL_MEDIA_EDITOR) {
+                (void)editor_open(&open_damage);
+            } else if (panel == UI_PANEL_TASKMGR) {
+                (void)taskmgr_open(&open_damage);
+            }
+            *damage = rect_union(*damage, open_damage);
         }
         panel_minimized[panel] = false;
         bring_panel_to_front(panel);
@@ -6894,6 +8577,7 @@ static enum ui_status set_panel(
         }
     }
     native_focus_emit(state.active_panel, true);
+    phipia_set_panel_focus(state.active_panel, true);
     state.renders.panel_transitions += 1U;
     *damage = rect_union(*damage, state.layout.surface);
 
@@ -6906,16 +8590,16 @@ static enum ui_status set_panel(
         (void)files_refresh();
     } else if (opening && panel == UI_PANEL_NOTES) {
         (void)note_load();
-    } else if (opening && panel == UI_PANEL_STUDIO) {
-        (void)studio_load();
+    } else if (opening && panel == UI_PANEL_MEDIA_EDITOR) {
+        if (media_source_load() == PHIPFS_STATUS_OK && media_source_clip_count == 0U) {
+            media_source_import_clip();
+        }
+        media_editor_sync_clip();
+        (void)media_editor_load();
     }
 
     if (panel_open[UI_PANEL_TERMINAL]) {
-        const struct ui_rect terminal = panel_windows[UI_PANEL_TERMINAL];
-        const struct ui_rect terminal_client = {
-            terminal.x + 10U, terminal.y + 38U,
-            terminal.width - 20U, terminal.height - 48U
-        };
+        const struct ui_rect terminal_client = terminal_client_bounds();
 
         if (screen_set_viewport(surface_rect_of(terminal_client), true) !=
                 SCREEN_STATUS_OK) {
@@ -6923,22 +8607,30 @@ static enum ui_status set_panel(
         }
         if (opening && panel == UI_PANEL_TERMINAL && !terminal_welcomed) {
             if (screen_clear() != SCREEN_STATUS_OK ||
-                screen_write("Sapote terminal\n"
+                screen_write("Phipia Phip terminal\n"
                     "Type help for commands. Type fetch for system identity.\n"
-                    "\nsap> ") != SCREEN_STATUS_OK) {
+                    "\nP:\\> ") != SCREEN_STATUS_OK) {
                 return UI_STATUS_SCREEN_FAILURE;
             }
-            console_serial_write("Sapote: Redwood Terminal opened\n");
+            console_serial_write("Phipia: Phip terminal opened\n");
             terminal_welcomed = true;
         }
     } else if (screen_set_visible(false) != SCREEN_STATUS_OK) {
         return UI_STATUS_SCREEN_FAILURE;
+    }
+    taskbar_sync_run_states();
+    (void)phipia_refresh_taskmgr(true);
+    if (opening && panel == UI_PANEL_PAINT) {
+        console_serial_write("Phipia: Paint opened\n");
     }
     return UI_STATUS_OK;
 }
 
 static struct ui_rect maximized_panel_geometry(void)
 {
+    if (phipia_shell_ready && taskbar_is_initialized()) {
+        return taskbar_work_area();
+    }
     const uint32_t x = 8U;
     const uint32_t y = UI_MENU_HEIGHT + 8U;
     const uint32_t bottom = state.layout.surface.height > 98U ?
@@ -6970,11 +8662,12 @@ static enum ui_status toggle_panel_maximized(struct ui_rect *damage)
     panel_anim_pending = UI_ANIM_PENDING_NONE;
     panel_anim_panel = UI_PANEL_NONE;
     if (panel == UI_PANEL_TERMINAL &&
-            screen_set_viewport(surface_rect_of(state.layout.panel_client),
+            screen_set_viewport(surface_rect_of(terminal_client_bounds()),
                 true) != SCREEN_STATUS_OK) {
         return UI_STATUS_SCREEN_FAILURE;
     }
     state.renders.panel_transitions += 1U;
+    taskbar_sync_run_states();
     *damage = state.layout.surface;
     return UI_STATUS_OK;
 }
@@ -7008,54 +8701,160 @@ static enum ui_status minimize_active_panel(struct ui_rect *damage)
         return UI_STATUS_SCREEN_FAILURE;
     }
     if (state.active_panel == UI_PANEL_TERMINAL &&
-            screen_set_viewport(surface_rect_of(state.layout.panel_client),
+            screen_set_viewport(surface_rect_of(terminal_client_bounds()),
                 true) != SCREEN_STATUS_OK) {
         return UI_STATUS_SCREEN_FAILURE;
     }
     state.renders.panel_transitions += 1U;
+    taskbar_sync_run_states();
     *damage = state.layout.surface;
     return UI_STATUS_OK;
 }
 
+static enum ui_status taskbar_apply_action(
+    const struct taskbar_action *action,
+    struct ui_rect *damage
+)
+{
+    enum ui_status status = UI_STATUS_OK;
+
+    if (action == NULL || damage == NULL) {
+        return UI_STATUS_NULL_ARGUMENT;
+    }
+    switch (action->kind) {
+    case TASKBAR_ACTION_LAUNCH:
+    case TASKBAR_ACTION_ACTIVATE:
+    case TASKBAR_ACTION_NEW_INSTANCE:
+    case TASKBAR_ACTION_START_ENTRY:
+    case TASKBAR_ACTION_START_TILE:
+        if (action->panel != UI_PANEL_NONE) {
+            status = set_panel(action->panel, damage);
+        }
+        break;
+    case TASKBAR_ACTION_MINIMIZE:
+        status = minimize_active_panel(damage);
+        break;
+    case TASKBAR_ACTION_CLOSE:
+        if (action->panel == state.active_panel) {
+            status = set_panel(UI_PANEL_NONE, damage);
+        }
+        break;
+    case TASKBAR_ACTION_SHOW_DESKTOP:
+        while (status == UI_STATUS_OK &&
+                state.active_panel != UI_PANEL_NONE) {
+            status = minimize_active_panel(damage);
+        }
+        break;
+    case TASKBAR_ACTION_TASK_MANAGER:
+        status = set_panel(UI_PANEL_TASKMGR, damage);
+        break;
+    case TASKBAR_ACTION_OPEN_SETTINGS:
+    case TASKBAR_ACTION_NETWORK:
+    case TASKBAR_ACTION_VOLUME:
+    case TASKBAR_ACTION_BATTERY:
+        status = set_panel(UI_PANEL_SETTINGS, damage);
+        break;
+    case TASKBAR_ACTION_DOCUMENTS:
+    case TASKBAR_ACTION_PICTURES:
+        status = set_panel(UI_PANEL_FILES, damage);
+        break;
+    case TASKBAR_ACTION_START:
+    case TASKBAR_ACTION_SEARCH:
+    case TASKBAR_ACTION_TASK_VIEW:
+    case TASKBAR_ACTION_WIDGETS:
+    case TASKBAR_ACTION_TRAY_OVERFLOW:
+    case TASKBAR_ACTION_NOTIFICATIONS:
+    case TASKBAR_ACTION_CALENDAR:
+    case TASKBAR_ACTION_ACCOUNT:
+    case TASKBAR_ACTION_POWER:
+    case TASKBAR_ACTION_PIN:
+    case TASKBAR_ACTION_UNPIN:
+    case TASKBAR_ACTION_NONE:
+    default:
+        break;
+    }
+    taskbar_sync_run_states();
+    return status;
+}
+
 static enum ui_element_id active_hit(struct ui_point point)
 {
-    if (rect_contains_point(menu_search_rect(), point)) {
-        return UI_ELEMENT_MENU_SEARCH;
+    if (phipia_shell_ready && taskbar_hit_test(point)) {
+        return UI_ELEMENT_NONE;
     }
-    if (launcher_open) {
-        const struct ui_rect panel = launcher_bounds();
+    if (phipia_shell_ready && state.active_panel != UI_PANEL_NONE &&
+            phipia_panel(state.active_panel)) {
+        const struct ui_rect frame = state.layout.panel;
+        const uint32_t controls_x = frame.x + frame.width - 138U;
+        const struct ui_rect controls[3U] = {
+            { controls_x, frame.y + 1U, 46U, 31U },
+            { controls_x + 46U, frame.y + 1U, 46U, 31U },
+            { controls_x + 92U, frame.y + 1U, 46U, 31U }
+        };
+        static const enum ui_element_id ids[3U] = {
+            UI_ELEMENT_WINDOW_MINIMIZE, UI_ELEMENT_WINDOW_MAXIMIZE,
+            UI_ELEMENT_WINDOW_CLOSE
+        };
 
-        if (rect_contains_point(launcher_search_rect(), point)) {
-            return UI_ELEMENT_LAUNCHER_SEARCH;
-        }
-        for (size_t slot = 0U; slot < UI_LAUNCHER_APPS_PER_PAGE; ++slot) {
-            size_t dock_index;
-            const size_t visible = launcher_page *
-                UI_LAUNCHER_APPS_PER_PAGE + slot;
-
-            if (launcher_dock_index_at(visible, &dock_index) &&
-                    rect_contains_point(launcher_app_rect(slot), point)) {
-                return (enum ui_element_id)(UI_ELEMENT_LAUNCHER_APP_0 +
-                    dock_index);
+        for (size_t index = 0U; index < 3U; ++index) {
+            if (rect_contains_point(controls[index], point)) {
+                return ids[index];
             }
         }
-        const size_t pages = launcher_page_count();
-        for (size_t page = 0U; page < pages; ++page) {
-            if (rect_contains_point(launcher_page_rect(page), point)) {
-                return (enum ui_element_id)(UI_ELEMENT_LAUNCHER_PAGE_0 +
-                    page);
+        if (state.active_panel == UI_PANEL_STORE) {
+            struct ui_rect action;
+
+            if (store_primary_action_bounds(&action) == STORE_STATUS_OK &&
+                    action.width != 0U && action.height != 0U &&
+                    rect_contains_point(action, point)) {
+                return UI_ELEMENT_STORE_PACKAGE_ACTION;
             }
         }
-        return rect_contains_point(panel, point) ? UI_ELEMENT_NONE :
-            UI_ELEMENT_LAUNCHER_DISMISS;
+        return UI_ELEMENT_NONE;
     }
-    const int dock_hit = dock3d_hit(&dock_model, point.x, point.y);
-    enum ui_element_id hit = dock_hit >= 0 ?
-        (enum ui_element_id)(UI_ELEMENT_DOCK_FILES + dock_hit) :
-        UI_ELEMENT_NONE;
+    /* The Windows-style taskbar is the Phipia shell's only launcher.  The
+     * older menu and magnified Dock remain available to the legacy shell,
+     * but must not leave invisible hotspots over Phipia applications or the
+     * desktop. */
+    if (!phipia_shell_ready) {
+        if (rect_contains_point(menu_search_rect(), point)) {
+            return UI_ELEMENT_MENU_SEARCH;
+        }
+        if (launcher_open) {
+            const struct ui_rect panel = launcher_bounds();
 
-    if (hit != UI_ELEMENT_NONE) {
-        return hit;
+            if (rect_contains_point(launcher_search_rect(), point)) {
+                return UI_ELEMENT_LAUNCHER_SEARCH;
+            }
+            for (size_t slot = 0U; slot < UI_LAUNCHER_APPS_PER_PAGE; ++slot) {
+                size_t dock_index;
+                const size_t visible = launcher_page *
+                    UI_LAUNCHER_APPS_PER_PAGE + slot;
+
+                if (launcher_dock_index_at(visible, &dock_index) &&
+                        rect_contains_point(launcher_app_rect(slot), point)) {
+                    return (enum ui_element_id)(UI_ELEMENT_LAUNCHER_APP_0 +
+                        dock_index);
+                }
+            }
+            const size_t pages = launcher_page_count();
+            for (size_t page = 0U; page < pages; ++page) {
+                if (rect_contains_point(launcher_page_rect(page), point)) {
+                    return (enum ui_element_id)(UI_ELEMENT_LAUNCHER_PAGE_0 +
+                        page);
+                }
+            }
+            return rect_contains_point(panel, point) ? UI_ELEMENT_NONE :
+                UI_ELEMENT_LAUNCHER_DISMISS;
+        }
+        const int dock_hit = dock3d_hit(&dock_model, point.x, point.y);
+        const enum ui_element_id hit = dock_hit >= 0 ?
+            (enum ui_element_id)(UI_ELEMENT_DOCK_FILES + dock_hit) :
+            UI_ELEMENT_NONE;
+
+        if (hit != UI_ELEMENT_NONE) {
+            return hit;
+        }
     }
     if (state.active_panel == UI_PANEL_NONE) {
         return UI_ELEMENT_NONE;
@@ -7098,20 +8897,20 @@ static enum ui_element_id active_hit(struct ui_point point)
                 return (enum ui_element_id)(UI_ELEMENT_FILES_ENTRY_0 + index);
             }
         }
-    } else if (state.active_panel == UI_PANEL_STUDIO) {
+    } else if (state.active_panel == UI_PANEL_MEDIA_EDITOR) {
         static const enum ui_element_id ids[] = {
-            UI_ELEMENT_STUDIO_NEW, UI_ELEMENT_STUDIO_IMPORT,
-            UI_ELEMENT_STUDIO_TRIM, UI_ELEMENT_STUDIO_SAVE,
-            UI_ELEMENT_STUDIO_EXPORT
+            UI_ELEMENT_MEDIA_EDITOR_NEW, UI_ELEMENT_MEDIA_EDITOR_IMPORT,
+            UI_ELEMENT_MEDIA_EDITOR_TRIM, UI_ELEMENT_MEDIA_EDITOR_SAVE,
+            UI_ELEMENT_MEDIA_EDITOR_EXPORT
         };
 
         for (size_t index = 0U; index < 5U; ++index) {
-            if (rect_contains_point(studio_button_rect(index), point)) {
+            if (rect_contains_point(media_source_button_rect(index), point)) {
                 return ids[index];
             }
         }
-        if (rect_contains_point(studio_timeline_rect(), point)) {
-            return UI_ELEMENT_STUDIO_TIMELINE;
+        if (rect_contains_point(media_source_timeline_rect(), point)) {
+            return UI_ELEMENT_MEDIA_EDITOR_TIMELINE;
         }
     } else if (state.active_panel == UI_PANEL_STORE) {
         if (rect_contains_point(store_search_rect(), point)) {
@@ -7121,6 +8920,10 @@ static enum ui_element_id active_hit(struct ui_point point)
             if (rect_contains_point(store_nav_rect(index), point)) {
                 return (enum ui_element_id)(UI_ELEMENT_STORE_NAV_0 + index);
             }
+        }
+        if (store_package_visible() &&
+                rect_contains_point(store_package_action_rect(), point)) {
+            return UI_ELEMENT_STORE_PACKAGE_ACTION;
         }
     } else if (state.active_panel == UI_PANEL_SETTINGS) {
         if (settings_page < 0) {
@@ -7286,7 +9089,8 @@ static enum ui_status activate_element(
         dock3d_launch(&dock_model, dock_index);
         begin_dock_spring();
         if (state.layout.dock_items[dock_index].action ==
-                UI_ACTION_OPEN_CANVAS) {
+                UI_ACTION_OPEN_CANVAS &&
+                state.layout.dock_items[dock_index].panel == UI_PANEL_NONE) {
             pending_native_origin =
                 state.layout.dock_items[dock_index].icon_bounds;
             pending_native_origin_valid = true;
@@ -7305,7 +9109,8 @@ static enum ui_status activate_element(
         begin_dock_spring();
         *damage = rect_union(*damage, dock_visual_bounds(&state.layout));
         if (state.layout.dock_items[dock_index].action ==
-                UI_ACTION_OPEN_CANVAS) {
+                UI_ACTION_OPEN_CANVAS &&
+                state.layout.dock_items[dock_index].panel == UI_PANEL_NONE) {
             pending_native_origin =
                 state.layout.dock_items[dock_index].icon_bounds;
             pending_native_origin_valid = true;
@@ -7338,6 +9143,24 @@ static enum ui_status activate_element(
         *damage = rect_union(*damage, state.layout.panel_client);
         return UI_STATUS_OK;
     }
+    if (element == UI_ELEMENT_STORE_PACKAGE_ACTION &&
+            state.active_panel == UI_PANEL_STORE &&
+            (phipia_shell_ready || store_package_visible())) {
+        if (application_launch_path[0] != '\0' ||
+                !copy_string(application_launch_path,
+                    sizeof(application_launch_path), "PHIP.MAN")) {
+            return UI_STATUS_BAD_ELEMENT;
+        }
+        store_installer_queued = true;
+        struct ui_rect action = store_package_action_rect();
+
+        if (phipia_shell_ready &&
+                store_primary_action_bounds(&action) != STORE_STATUS_OK) {
+            return UI_STATUS_BAD_ELEMENT;
+        }
+        *damage = rect_union(*damage, action);
+        return UI_STATUS_OK;
+    }
     if (element == UI_ELEMENT_FILES_UP) {
         files_up();
     } else if (element == UI_ELEMENT_FILES_NEW_FILE) {
@@ -7347,7 +9170,7 @@ static enum ui_status activate_element(
     } else if (element == UI_ELEMENT_FILES_REFRESH) {
         (void)files_refresh();
     } else if (element == UI_ELEMENT_FILES_SYNC) {
-        set_app_status("sync", sapfs_sync(SAPFS_VOLUME_DATA));
+        set_app_status("sync", phipfs_sync(PHIPFS_VOLUME_DATA));
     } else if (element == UI_ELEMENT_FILES_ROOT) {
         if (!copy_string(file_directory, sizeof(file_directory), ".")) {
             return UI_STATUS_FILESYSTEM_FAILURE;
@@ -7356,7 +9179,7 @@ static enum ui_status activate_element(
     } else if (element >= UI_ELEMENT_FILES_ENTRY_0 &&
             element <= UI_ELEMENT_FILES_ENTRY_11) {
         const size_t index = (size_t)(element - UI_ELEMENT_FILES_ENTRY_0);
-        char path[SAPFS_MAX_PATH + 1U];
+        char path[PHIPFS_MAX_PATH + 1U];
 
         if (index >= file_entry_count ||
             !entry_path(file_entries[index].name, path)) {
@@ -7374,18 +9197,20 @@ static enum ui_status activate_element(
             (void)note_load();
             return set_panel(UI_PANEL_NOTES, damage);
         }
-    } else if (element == UI_ELEMENT_STUDIO_NEW) {
-        studio_reset(true);
-    } else if (element == UI_ELEMENT_STUDIO_IMPORT) {
-        studio_import_clip();
-    } else if (element == UI_ELEMENT_STUDIO_TRIM) {
-        studio_trim_clip();
-    } else if (element == UI_ELEMENT_STUDIO_SAVE) {
-        (void)studio_save();
-    } else if (element == UI_ELEMENT_STUDIO_EXPORT) {
-        (void)studio_export();
-    } else if (element == UI_ELEMENT_STUDIO_TIMELINE) {
-        const struct ui_rect timeline = studio_timeline_rect();
+    } else if (element == UI_ELEMENT_MEDIA_EDITOR_NEW) {
+        media_source_reset(true);
+    } else if (element == UI_ELEMENT_MEDIA_EDITOR_IMPORT) {
+        media_source_import_clip();
+    } else if (element == UI_ELEMENT_MEDIA_EDITOR_TRIM) {
+        media_source_trim_clip();
+    } else if (element == UI_ELEMENT_MEDIA_EDITOR_SAVE) {
+        (void)media_source_save();
+    } else if (element == UI_ELEMENT_MEDIA_EDITOR_EXPORT) {
+        media_editor_export_active = true;
+        (void)media_source_export();
+        media_editor_export_active = false;
+    } else if (element == UI_ELEMENT_MEDIA_EDITOR_TIMELINE) {
+        const struct ui_rect timeline = media_source_timeline_rect();
         const uint32_t left = timeline.x + 38U;
         const uint32_t right = timeline.x + timeline.width - 10U;
         uint32_t pointer_x = state.pointer.x < 0 ? left :
@@ -7396,28 +9221,28 @@ static enum ui_status activate_element(
         } else if (pointer_x > right) {
             pointer_x = right;
         }
-        studio_playhead = (pointer_x - left) * 1000U / (right - left);
-        studio_dirty = true;
+        media_source_playhead = (pointer_x - left) * 1000U / (right - left);
+        media_source_dirty = true;
         uint32_t clip_x = timeline.x + 42U;
 
-        for (size_t index = 0U; index < studio_clip_count; ++index) {
+        for (size_t index = 0U; index < media_source_clip_count; ++index) {
             const uint32_t clip_width = 92U +
-                studio_clip_durations[index] / 12U;
+                media_source_clip_durations[index] / 12U;
 
             if (pointer_x >= clip_x && pointer_x < clip_x + clip_width) {
-                studio_selected_clip = (uint8_t)index;
-                if (studio_load_preview(studio_clip_paths[index]) ==
-                    SAPFS_STATUS_OK) {
-                    studio_set_status("Clip selected / playhead moved");
+                media_source_selected_clip = (uint8_t)index;
+                if (media_source_load_preview(media_source_clip_paths[index]) ==
+                    PHIPFS_STATUS_OK) {
+                    media_source_set_status("Clip selected / playhead moved");
                 } else {
-                    studio_set_status("Source offline / playhead moved");
+                    media_source_set_status("Source offline / playhead moved");
                 }
                 break;
             }
             clip_x += clip_width + 5U;
         }
-        if (studio_selected_clip == UINT8_MAX) {
-            studio_set_status("Playhead moved");
+        if (media_source_selected_clip == UINT8_MAX) {
+            media_source_set_status("Playhead moved");
         }
     } else if (element == UI_ELEMENT_SETTINGS_BACK) {
         settings_page = -1;
@@ -7501,13 +9326,36 @@ static enum ui_status activate_element(
 
 static void note_input(char character, bool control)
 {
+    struct ui_rect damage = { 0U, 0U, 0U, 0U };
+    enum notes_status notes_status = NOTES_STATUS_OK;
+
     if (!note_savable) {
         set_app_status("note is read-only in this editor",
-            SAPFS_STATUS_RANGE);
+            PHIPFS_STATUS_RANGE);
         return;
     }
     if (control && (character == 's' || character == 'S')) {
+        if (phipia_shell_ready) {
+            phipia_note_to_buffer();
+        }
         (void)note_save();
+        return;
+    }
+    if (phipia_shell_ready) {
+        if (character == '\b') {
+            notes_status = notes_key_backspace(&damage);
+        } else if (character == '\n') {
+            notes_status = notes_key_enter(&damage);
+        } else if (character >= ' ' && character <= '~') {
+            notes_status = notes_text_input(character, &damage);
+        }
+        if (notes_status == NOTES_STATUS_OK &&
+                damage.width != 0U && damage.height != 0U) {
+            phipia_note_to_buffer();
+            set_app_status("editing in memory", PHIPFS_STATUS_OK);
+        } else if (notes_status != NOTES_STATUS_OK) {
+            set_app_status("edit note", PHIPFS_STATUS_RANGE);
+        }
         return;
     }
     if (character == '\b') {
@@ -7523,9 +9371,9 @@ static void note_input(char character, bool control)
         note_buffer[note_length++] = character;
         note_buffer[note_length] = '\0';
         note_dirty = true;
-        set_app_status("editing in memory", SAPFS_STATUS_OK);
+        set_app_status("editing in memory", PHIPFS_STATUS_OK);
     } else if (note_length + 1U >= sizeof(note_buffer)) {
-        set_app_status("note capacity reached", SAPFS_STATUS_RANGE);
+        set_app_status("note capacity reached", PHIPFS_STATUS_RANGE);
     }
 }
 
@@ -7587,6 +9435,135 @@ static enum ui_status apply_event(
         state.pressed = UI_ELEMENT_NONE;
         return UI_STATUS_OK;
     }
+    if (phipia_shell_ready && event->type == UI_EVENT_TASK_MANAGER) {
+        return set_panel(UI_PANEL_TASKMGR, damage);
+    }
+    if (phipia_shell_ready && event->type == UI_EVENT_PANEL_CLOSE) {
+        if (dialog_is_open()) {
+            return dialog_key_escape(damage) == DIALOG_STATUS_OK ?
+                UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+        }
+        if (taskbar_start_menu_open() || taskbar_search_panel_open() ||
+                taskbar_flyout_open()) {
+            return taskbar_dismiss(damage) == TASKBAR_STATUS_OK ?
+                UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+        }
+        if (state.active_panel == UI_PANEL_FILES &&
+                (explorer_renaming() || explorer_command_palette_open() ||
+                    explorer_search_focused())) {
+            return explorer_key_escape(damage) == EXPLORER_STATUS_OK ?
+                UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+        }
+        if (state.active_panel == UI_PANEL_SETTINGS &&
+                (settings_search_focused() ||
+                    settings_open_page() != (size_t)-1)) {
+            return settings_key_escape(damage) == SETTINGS_STATUS_OK ?
+                UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+        }
+        return set_panel(UI_PANEL_NONE, damage);
+    }
+    if (phipia_shell_ready && event->type == UI_EVENT_KEYBOARD_ACTIVATION &&
+            dialog_is_open()) {
+        return dialog_key_return(damage) == DIALOG_STATUS_OK ?
+            UI_STATUS_OK : UI_STATUS_BAD_ELEMENT;
+    }
+    if (phipia_shell_ready && event->type == UI_EVENT_TEXT_INPUT &&
+            taskbar_search_panel_open()) {
+        const enum taskbar_status taskbar_status = event->character == '\b' ?
+            taskbar_key_backspace(damage) :
+            taskbar_text_input(event->character, damage);
+
+        return taskbar_status == TASKBAR_STATUS_OK ? UI_STATUS_OK :
+            UI_STATUS_BAD_ELEMENT;
+    }
+    if (phipia_shell_ready && event->type == UI_EVENT_KEYBOARD_ACTIVATION &&
+            taskbar_search_panel_open()) {
+        struct taskbar_action action = {
+            TASKBAR_ACTION_NONE, 0U, UI_PANEL_NONE
+        };
+
+        if (taskbar_key_enter(damage, &action) != TASKBAR_STATUS_OK) {
+            return UI_STATUS_BAD_ELEMENT;
+        }
+        return taskbar_apply_action(&action, damage);
+    }
+    if (phipia_shell_ready && event->type == UI_EVENT_TEXT_INPUT &&
+            state.active_panel == UI_PANEL_FILES) {
+        enum explorer_status explorer_status;
+
+        if (event->control && (event->character == 'k' ||
+                event->character == 'K')) {
+            explorer_status = explorer_toggle_command_palette(damage);
+        } else if (event->character == '\b') {
+            explorer_status = explorer_key_backspace(damage);
+        } else if (event->character == '\n') {
+            explorer_status = explorer_key_enter(damage);
+        } else {
+            explorer_status = explorer_text_input(event->character, damage);
+        }
+        if (explorer_status == EXPLORER_STATUS_OK) {
+            phipia_apply_explorer_action();
+            *damage = rect_union(*damage, explorer_bounds());
+        }
+        return explorer_status == EXPLORER_STATUS_OK ? UI_STATUS_OK :
+            UI_STATUS_BAD_ELEMENT;
+    }
+    if (phipia_shell_ready && event->type == UI_EVENT_TEXT_INPUT &&
+            state.active_panel == UI_PANEL_SETTINGS) {
+        enum settings_status settings_status;
+
+        if (event->character == '\b') {
+            settings_status = settings_key_backspace(damage);
+        } else if (event->character == '\n') {
+            settings_status = settings_key_enter(damage);
+        } else {
+            settings_status = settings_text_input(event->character, damage);
+        }
+        return settings_status == SETTINGS_STATUS_OK ? UI_STATUS_OK :
+            UI_STATUS_BAD_ELEMENT;
+    }
+    if (phipia_shell_ready && event->type == UI_EVENT_TEXT_INPUT &&
+            state.active_panel == UI_PANEL_NOTES) {
+        enum notes_status notes_status;
+
+        if (event->control && (event->character == 's' ||
+                event->character == 'S')) {
+            phipia_note_to_buffer();
+            return note_save() == PHIPFS_STATUS_OK ? UI_STATUS_OK :
+                UI_STATUS_FILESYSTEM_FAILURE;
+        }
+        if (event->character == '\b') {
+            notes_status = notes_key_backspace(damage);
+        } else if (event->character == '\n') {
+            notes_status = notes_key_enter(damage);
+        } else {
+            notes_status = notes_text_input(event->character, damage);
+        }
+        if (notes_status == NOTES_STATUS_OK) {
+            phipia_note_to_buffer();
+            return UI_STATUS_OK;
+        }
+        return UI_STATUS_BAD_ELEMENT;
+    }
+    if (phipia_shell_ready && event->type == UI_EVENT_TEXT_INPUT &&
+            state.active_panel == UI_PANEL_PAINT) {
+        enum paint_status paint_status;
+
+        if (event->control && (event->character == 's' ||
+                event->character == 'S')) {
+            return paint_save() == PHIPFS_STATUS_OK ? UI_STATUS_OK :
+                UI_STATUS_FILESYSTEM_FAILURE;
+        }
+        if (event->character == '\b') {
+            paint_status = paint_key_backspace(damage);
+        } else if (event->character == '\n') {
+            paint_status = paint_key_enter(damage);
+        } else {
+            paint_status = paint_text_input(event->character, damage);
+        }
+        return paint_status == PAINT_STATUS_OK ? UI_STATUS_OK :
+            UI_STATUS_BAD_ELEMENT;
+    }
     if (event->type == UI_EVENT_POINTER_MOVEMENT) {
         const struct ui_rect old_cursor = cursor_damage_rect_for(state.pointer);
         const enum ui_element_id old_hover = state.hover;
@@ -7598,6 +9575,19 @@ static enum ui_status apply_event(
         dock_sync_layout();
         const struct ui_rect new_cursor = cursor_damage_rect_for(state.pointer);
         *damage = rect_union(*damage, rect_union(old_cursor, new_cursor));
+        if (phipia_shell_ready && dialog_is_open()) {
+            struct ui_rect dialog_damage = { 0U, 0U, 0U, 0U };
+
+            if (dialog_pointer_move(state.pointer, &dialog_damage) !=
+                    DIALOG_STATUS_OK) {
+                return UI_STATUS_BAD_ELEMENT;
+            }
+            (void)cursor_set_kind(CURSOR_NORMAL_SELECT);
+            *damage = rect_union(*damage, dialog_damage);
+            state.hover = UI_ELEMENT_NONE;
+            state.renders.cursor_moves += 1U;
+            return UI_STATUS_OK;
+        }
         if (panel_drag_active) {
             state.hover = UI_ELEMENT_NONE;
             state.renders.cursor_moves += 1U;
@@ -7608,6 +9598,33 @@ static enum ui_status apply_event(
                 begin_dock_spring();
             }
             return drag_panel_to(state.pointer, damage);
+        }
+        if (phipia_shell_ready) {
+            struct ui_rect shell_damage = { 0U, 0U, 0U, 0U };
+
+            if (taskbar_pointer_move(state.pointer, &shell_damage) !=
+                    TASKBAR_STATUS_OK) {
+                return UI_STATUS_BAD_ELEMENT;
+            }
+            *damage = rect_union(*damage, shell_damage);
+            if (!taskbar_hit_test(state.pointer)) {
+                shell_damage = (struct ui_rect){ 0U, 0U, 0U, 0U };
+                const enum ui_status move_status = phipia_pointer_move_active(
+                    state.pointer, &shell_damage);
+
+                if (move_status != UI_STATUS_OK) {
+                    return move_status;
+                }
+                *damage = rect_union(*damage, shell_damage);
+            }
+            (void)cursor_set_kind(phipia_cursor_over(state.pointer));
+            *damage = rect_union(*damage,
+                cursor_damage_rect_for(state.pointer));
+            state.hover = UI_ELEMENT_NONE;
+            state.renders.cursor_moves += 1U;
+            native_pointer_emit(UI_NATIVE_EVENT_POINTER_MOVE, state.pointer,
+                old_pointer, UI_POINTER_BUTTON_NONE, false);
+            return UI_STATUS_OK;
         }
         const int dock_hit = dock3d_hit(&dock_model,
             state.pointer.x, state.pointer.y);
@@ -7638,6 +9655,28 @@ static enum ui_status apply_event(
         event->button == UI_POINTER_BUTTON_LEFT) {
         enum ui_element_id dock_hit = UI_ELEMENT_NONE;
 
+        if (phipia_shell_ready && dialog_is_open()) {
+            struct ui_rect dialog_damage = { 0U, 0U, 0U, 0U };
+
+            if (dialog_pointer_press(event->point, &dialog_damage) !=
+                    DIALOG_STATUS_OK) {
+                return UI_STATUS_BAD_ELEMENT;
+            }
+            *damage = rect_union(*damage, dialog_damage);
+            state.pressed = UI_ELEMENT_NONE;
+            return UI_STATUS_OK;
+        }
+        if (phipia_shell_ready && taskbar_hit_test(event->point)) {
+            struct ui_rect shell_damage = { 0U, 0U, 0U, 0U };
+
+            if (taskbar_pointer_press(event->point, event->button,
+                    &shell_damage) != TASKBAR_STATUS_OK) {
+                return UI_STATUS_BAD_ELEMENT;
+            }
+            *damage = rect_union(*damage, shell_damage);
+            state.pressed = UI_ELEMENT_NONE;
+            return UI_STATUS_OK;
+        }
         const int dock_index = dock3d_hit(&dock_model,
             event->point.x, event->point.y);
         dock_hit = dock_index >= 0 ?
@@ -7659,11 +9698,131 @@ static enum ui_status apply_event(
         if (hit == UI_ELEMENT_NONE && state.active_panel != UI_PANEL_NONE &&
                 !ui_animation_active() &&
                 !panel_maximized[state.active_panel] &&
-                panel_title_contains(state.layout.panel, event->point)) {
+                panel_title_contains(state.layout.panel, event->point) &&
+                (!phipia_shell_ready ||
+                    (uint32_t)event->point.y < state.layout.panel.y + 32U)) {
             panel_drag_active = true;
             panel_drag_panel = state.active_panel;
             panel_drag_anchor = event->point;
             panel_drag_origin = panel_windows[state.active_panel];
+        }
+        if (phipia_shell_ready && hit == UI_ELEMENT_NONE &&
+                !panel_drag_active &&
+                rect_contains_point(state.layout.panel, event->point)) {
+            struct ui_rect shell_damage = { 0U, 0U, 0U, 0U };
+            const enum ui_status press_status = phipia_pointer_press_active(
+                event->point, &shell_damage);
+
+            if (press_status != UI_STATUS_OK) {
+                return press_status;
+            }
+            *damage = rect_union(*damage, shell_damage);
+            if (state.active_panel == UI_PANEL_FILES) {
+                phipia_apply_explorer_action();
+                *damage = rect_union(*damage, explorer_bounds());
+            }
+            if (state.active_panel == UI_PANEL_NOTES &&
+                    shell_damage.width != 0U && shell_damage.height != 0U) {
+                phipia_note_to_buffer();
+            }
+            if (state.active_panel == UI_PANEL_SETTINGS) {
+                size_t page;
+                size_t row;
+
+                phipia_apply_settings();
+                *damage = rect_union(*damage, taskbar_bounds());
+                if (settings_take_action(&page, &row)) {
+                    if (page == 3U && row == 1U) {
+                        return set_panel(UI_PANEL_STORE, damage);
+                    }
+                    if (page == 4U && row == 1U) {
+                        return set_panel(UI_PANEL_CAMERA, damage);
+                    }
+                    if (page == 2U && row == 1U) {
+                        const struct network_state network =
+                            network_get_state();
+                        struct dialog_request request = {
+                            .title = "Network status",
+                            .icon = network.active ? DIALOG_ICON_NONE :
+                                DIALOG_ICON_WARNING,
+                            .buttons = 1U,
+                            .defaulted = 0U,
+                            .button = { "OK" }
+                        };
+
+                        (void)copy_string(request.message,
+                            sizeof(request.message), network.active ?
+                                "The Phipia network stack is active." :
+                                "No active network stack is available.");
+                        (void)copy_string(request.detail,
+                            sizeof(request.detail),
+                            network.configuration.configured ?
+                                "An IPv4 address is configured." :
+                                "No IPv4 address is configured.");
+                        (void)dialog_open(&request, damage);
+                    } else if (page == 5U && row == 1U) {
+                        const struct heap_state heap = heap_get_state();
+                        const struct thread_system_state threads =
+                            thread_get_state();
+                        struct dialog_request request = {
+                            .title = "About Phipia",
+                            .message =
+                                "Phipia kernel and desktop are running.",
+                            .icon = DIALOG_ICON_NONE,
+                            .buttons = 1U,
+                            .defaulted = 0U,
+                            .button = { "OK" }
+                        };
+
+                        (void)copy_string(request.detail,
+                            sizeof(request.detail),
+                            heap.active && threads.active ?
+                                "Memory and scheduler services are active." :
+                                "A core service is not active.");
+                        (void)dialog_open(&request, damage);
+                    }
+                }
+            }
+            if (state.active_panel == UI_PANEL_TASKMGR) {
+                char ended[TASKMGR_NAME_BYTES];
+
+                if (taskmgr_take_ended_task(ended, sizeof(ended))) {
+                    static const enum ui_panel_id panels[] = {
+                        UI_PANEL_FILES, UI_PANEL_TERMINAL, UI_PANEL_NOTES,
+                        UI_PANEL_MEDIA_EDITOR, UI_PANEL_CAMERA, UI_PANEL_PAINT,
+                        UI_PANEL_STORE, UI_PANEL_SETTINGS, UI_PANEL_TASKMGR
+                    };
+
+                    for (size_t index = 0U;
+                         index < sizeof(panels) / sizeof(panels[0]); ++index) {
+                        const enum ui_panel_id panel = panels[index];
+
+                        if (!strings_equal(ended, ui_panel_name(panel))) {
+                            continue;
+                        }
+                        if (panel == UI_PANEL_TASKMGR) {
+                            return set_panel(UI_PANEL_NONE, damage);
+                        }
+                        panel_open[panel] = false;
+                        panel_minimized[panel] = false;
+                        panel_maximized[panel] = false;
+                        if (panel == UI_PANEL_MEDIA_EDITOR) {
+                            struct ui_rect closed;
+
+                            (void)editor_close(&closed);
+                        }
+                        taskbar_sync_run_states();
+                        *damage = rect_union(*damage, taskbar_bounds());
+                        phipia_refresh_taskmgr(true);
+                        break;
+                    }
+                }
+            }
+            if (state.active_panel == UI_PANEL_CAMERA &&
+                    rect_contains_point(phipia_camera_capture_bounds(),
+                        event->point)) {
+                (void)camera_capture();
+            }
         }
         state.pressed = hit;
         native_pointer_emit(UI_NATIVE_EVENT_POINTER_BUTTON, event->point,
@@ -7678,6 +9837,32 @@ static enum ui_status apply_event(
         event->button == UI_POINTER_BUTTON_LEFT) {
         const enum ui_element_id pressed = state.pressed;
 
+        if (phipia_shell_ready && state.active_panel == UI_PANEL_PAINT) {
+            struct ui_rect paint_damage = { 0U, 0U, 0U, 0U };
+
+            if (paint_pointer_release(event->point, &paint_damage) !=
+                    PAINT_STATUS_OK) {
+                return UI_STATUS_BAD_ELEMENT;
+            }
+            *damage = rect_union(*damage, paint_damage);
+        }
+        if (phipia_shell_ready && !panel_drag_active) {
+            struct ui_rect shell_damage = { 0U, 0U, 0U, 0U };
+            struct taskbar_action action = {
+                TASKBAR_ACTION_NONE, 0U, UI_PANEL_NONE
+            };
+
+            if (taskbar_pointer_release(event->point, event->button,
+                    &shell_damage, &action) != TASKBAR_STATUS_OK) {
+                return UI_STATUS_BAD_ELEMENT;
+            }
+            *damage = rect_union(*damage, shell_damage);
+            if (action.kind != TASKBAR_ACTION_NONE ||
+                    taskbar_hit_test(event->point)) {
+                state.pressed = UI_ELEMENT_NONE;
+                return taskbar_apply_action(&action, damage);
+            }
+        }
         if (panel_drag_active) {
             panel_drag_active = false;
             panel_drag_panel = UI_PANEL_NONE;
@@ -7708,10 +9893,20 @@ static enum ui_status apply_event(
 
         state.focus = next_focus(state.focus,
             event->type == UI_EVENT_KEYBOARD_FOCUS_PREVIOUS);
-        *damage = rect_union(*damage,
-            dock_bounds_for(&state.layout, old_focus));
-        *damage = rect_union(*damage,
-            dock_bounds_for(&state.layout, state.focus));
+        if (phipia_shell_ready) {
+            const size_t focus_index = (size_t)(state.focus -
+                UI_ELEMENT_DOCK_FILES);
+
+            if (taskbar_set_focus(focus_index) != TASKBAR_STATUS_OK) {
+                return UI_STATUS_BAD_ELEMENT;
+            }
+            *damage = rect_union(*damage, taskbar_bounds());
+        } else {
+            *damage = rect_union(*damage,
+                dock_bounds_for(&state.layout, old_focus));
+            *damage = rect_union(*damage,
+                dock_bounds_for(&state.layout, state.focus));
+        }
         state.renders.dock_state_changes += 1U;
     } else if (event->type == UI_EVENT_KEYBOARD_ACTIVATION) {
         if (launcher_open) {
@@ -7768,9 +9963,31 @@ static enum ui_status apply_event(
         note_input(event->character, event->control);
         *damage = rect_union(*damage, state.layout.panel);
     } else if (event->type == UI_EVENT_TEXT_INPUT &&
-        state.active_panel == UI_PANEL_STUDIO && event->control &&
-        (event->character == 's' || event->character == 'S')) {
-        (void)studio_save();
+            state.active_panel == UI_PANEL_MEDIA_EDITOR && event->control) {
+        if (event->character == 's') {
+            if (media_editor_save() != PHIPFS_STATUS_OK) {
+                return UI_STATUS_FILESYSTEM_FAILURE;
+            }
+        } else if (event->character == 'o') {
+            media_source_import_clip();
+            media_editor_sync_clip();
+            media_editor_dirty = true;
+        } else if (event->character == 'e') {
+            media_editor_export_active = true;
+            const enum phipfs_status status = media_source_export();
+
+            media_editor_export_active = false;
+            if (status != PHIPFS_STATUS_OK) {
+                return UI_STATUS_FILESYSTEM_FAILURE;
+            }
+        } else if (event->character == 'n') {
+            media_source_reset(true);
+            media_editor_clear_items();
+            media_editor_sync_clip();
+            media_editor_dirty = true;
+        } else {
+            return UI_STATUS_OK;
+        }
         *damage = rect_union(*damage, state.layout.panel);
     } else if (event->type == UI_EVENT_REDRAW_REQUEST) {
         *damage = state.layout.surface;
@@ -7828,6 +10045,44 @@ enum ui_status ui_flush(void)
             }
         }
         damage = rect_union(damage, bounds);
+    }
+    if (phipia_shell_ready) {
+        struct ui_rect motion_damage = { 0U, 0U, 0U, 0U };
+        bool moving = taskbar_animate(&motion_damage);
+
+        if (phipia_refresh_taskmgr(false) &&
+                state.active_panel == UI_PANEL_TASKMGR) {
+            damage = rect_union(damage, taskmgr_bounds());
+        }
+
+        damage = rect_union(damage, motion_damage);
+        motion_damage = (struct ui_rect){ 0U, 0U, 0U, 0U };
+        moving = explorer_animate(&motion_damage) || moving;
+        damage = rect_union(damage, motion_damage);
+        motion_damage = (struct ui_rect){ 0U, 0U, 0U, 0U };
+        moving = store_animate(&motion_damage) || moving;
+        damage = rect_union(damage, motion_damage);
+        motion_damage = (struct ui_rect){ 0U, 0U, 0U, 0U };
+        moving = settings_animate(&motion_damage) || moving;
+        damage = rect_union(damage, motion_damage);
+        motion_damage = (struct ui_rect){ 0U, 0U, 0U, 0U };
+        moving = phipia_camera_animate(&motion_damage) || moving;
+        damage = rect_union(damage, motion_damage);
+        motion_damage = (struct ui_rect){ 0U, 0U, 0U, 0U };
+        moving = taskmgr_animate(&motion_damage) || moving;
+        damage = rect_union(damage, motion_damage);
+        motion_damage = (struct ui_rect){ 0U, 0U, 0U, 0U };
+        moving = editor_animate(&motion_damage) || moving;
+        damage = rect_union(damage, motion_damage);
+        motion_damage = (struct ui_rect){ 0U, 0U, 0U, 0U };
+        moving = terminal_blink(&motion_damage) || moving;
+        damage = rect_union(damage, motion_damage);
+        motion_damage = (struct ui_rect){ 0U, 0U, 0U, 0U };
+        moving = cursor_animate(&motion_damage) || moving;
+        damage = rect_union(damage, motion_damage);
+        if (moving && timer_is_started() && motion_timer_id == 0U) {
+            (void)motion_schedule_wake(clock_monotonic_ns());
+        }
     }
     if (dock_spring_active) {
         const uint64_t now = clock_monotonic_ns();
@@ -8163,6 +10418,7 @@ bool ui_application_launch_dequeue(char *manifest_path, size_t capacity)
         manifest_path[index] = application_launch_path[index];
     }
     application_launch_path[0] = '\0';
+    store_installer_queued = false;
     if (enabled) {
         cpu_interrupt_enable();
     }
@@ -8285,7 +10541,7 @@ bool ui_self_test(void)
     enum ui_element_id hit;
     enum ui_status status;
 
-    self_test_failure = "Sapote Redwood UI self-test passed";
+    self_test_failure = "Phipia UI self-test passed";
     if (!ui_font_self_test()) {
         self_test_failure = "UI font suite rejected its valid fixture";
         return false;
@@ -8390,7 +10646,7 @@ bool ui_self_test(void)
     const uint64_t stable = synthetic_render_hash(false);
     if (stable != UINT64_C(0xCD65C2C6A1DC2975) ||
         stable == synthetic_render_hash(true)) {
-        self_test_failure = "synthetic Sapote Redwood render hash is invalid";
+        self_test_failure = "synthetic Phipia render hash is invalid";
         return false;
     }
     return true;
@@ -8405,26 +10661,26 @@ enum ui_status ui_verify_installed(struct ui_proof *proof)
 {
     static const enum ui_element_id ids[UI_DOCK_ITEM_COUNT] = {
         UI_ELEMENT_DOCK_FILES, UI_ELEMENT_DOCK_TERMINAL,
-        UI_ELEMENT_DOCK_NOTES, UI_ELEMENT_DOCK_STUDIO,
+        UI_ELEMENT_DOCK_NOTES, UI_ELEMENT_DOCK_MEDIA_EDITOR,
         UI_ELEMENT_DOCK_CAMERA, UI_ELEMENT_DOCK_CANVAS,
         UI_ELEMENT_DOCK_STORE,
         UI_ELEMENT_DOCK_SETTINGS
     };
     static const enum ui_action actions[UI_DOCK_ITEM_COUNT] = {
         UI_ACTION_OPEN_FILES, UI_ACTION_OPEN_TERMINAL,
-        UI_ACTION_OPEN_NOTES, UI_ACTION_OPEN_STUDIO,
+        UI_ACTION_OPEN_NOTES, UI_ACTION_OPEN_MEDIA_EDITOR,
         UI_ACTION_OPEN_CAMERA, UI_ACTION_OPEN_CANVAS,
         UI_ACTION_OPEN_STORE,
         UI_ACTION_OPEN_SETTINGS
     };
     static const enum ui_panel_id panels[UI_DOCK_ITEM_COUNT] = {
-        UI_PANEL_FILES, UI_PANEL_TERMINAL, UI_PANEL_NOTES, UI_PANEL_STUDIO,
-        UI_PANEL_CAMERA, UI_PANEL_NONE, UI_PANEL_STORE, UI_PANEL_SETTINGS
+        UI_PANEL_FILES, UI_PANEL_TERMINAL, UI_PANEL_NOTES, UI_PANEL_MEDIA_EDITOR,
+        UI_PANEL_CAMERA, UI_PANEL_PAINT, UI_PANEL_STORE, UI_PANEL_SETTINGS
     };
 
     if (proof == NULL) {
         installed_proof_failure =
-            "Sapote Redwood installed proof received no result buffer";
+            "Phipia installed proof received no result buffer";
         return UI_STATUS_NULL_ARGUMENT;
     }
     if (!state.active || canvas == NULL || !ui_font_is_verified() ||
@@ -8432,12 +10688,12 @@ enum ui_status ui_verify_installed(struct ui_proof *proof)
         state.hover >= UI_ELEMENT_COUNT || state.pressed >= UI_ELEMENT_COUNT ||
         state.active_panel >= UI_PANEL_COUNT) {
         installed_proof_failure =
-            "Sapote Redwood installed UI state is invalid";
+            "Phipia installed UI state is invalid";
         return UI_STATUS_INSTALLED_PROOF_FAILURE;
     }
     if (ui_layout_validate(&state.layout) != UI_STATUS_OK) {
         installed_proof_failure =
-            "Sapote Redwood live Dock layout is invalid";
+            "Phipia live Dock layout is invalid";
         return UI_STATUS_INSTALLED_PROOF_FAILURE;
     }
     if (state.pointer_present) {
@@ -8448,7 +10704,7 @@ enum ui_status ui_verify_installed(struct ui_proof *proof)
             state.pointer.y < 0 || (uint32_t)state.pointer.x >= canvas->width ||
             (uint32_t)state.pointer.y >= canvas->height) {
             installed_proof_failure =
-                "Sapote Redwood pointer installation is invalid";
+                "Phipia pointer installation is invalid";
             return UI_STATUS_INSTALLED_PROOF_FAILURE;
         }
     }
@@ -8466,7 +10722,7 @@ enum ui_status ui_verify_installed(struct ui_proof *proof)
         state.theme.shadow != framebuffer_pack(0x05U, 0x0CU, 0x12U) ||
         state.theme.window_face != framebuffer_pack(0xD9U, 0xDFU, 0xE0U)) {
         installed_proof_failure =
-            "Sapote Redwood theme installation is invalid";
+            "Phipia theme installation is invalid";
         return UI_STATUS_INSTALLED_PROOF_FAILURE;
     }
     for (size_t index = 0U; index < UI_DOCK_ITEM_COUNT; ++index) {
@@ -8474,7 +10730,7 @@ enum ui_status ui_verify_installed(struct ui_proof *proof)
             state.layout.dock_items[index].action != actions[index] ||
             state.layout.dock_items[index].panel != panels[index]) {
             installed_proof_failure =
-                "Sapote Redwood Dock action metadata is invalid";
+                "Phipia Dock action metadata is invalid";
             return UI_STATUS_INSTALLED_PROOF_FAILURE;
         }
     }
@@ -8483,19 +10739,20 @@ enum ui_status ui_verify_installed(struct ui_proof *proof)
     snapshot_redraw_tiles();
     if (render_region(state.layout.surface, true) != UI_STATUS_OK) {
         installed_proof_failure =
-            "Sapote Redwood full redraw failed";
+            "Phipia full redraw failed";
         return UI_STATUS_INSTALLED_PROOF_FAILURE;
     }
     const uint64_t second_hash = surface_hash();
     if (first_hash != second_hash) {
         report_redraw_tile_mismatch();
         installed_proof_failure =
-            "Sapote Redwood full redraw is not idempotent";
+            "Phipia full redraw is not idempotent";
         return UI_STATUS_INSTALLED_PROOF_FAILURE;
     }
     state.stable_render_hash = second_hash;
 
     const struct boot_ledger *ledger = boot_ledger_installed();
+    const struct taskbar_counters taskbar_render = taskbar_get_counters();
     *proof = (struct ui_proof){
         .width = canvas->width,
         .height = canvas->height,
@@ -8504,11 +10761,15 @@ enum ui_status ui_verify_installed(struct ui_proof *proof)
         .panels = state.renders.panel_transitions,
         .cursor_moves = state.renders.cursor_moves,
         .damage_rectangles = state.renders.damage_rectangles,
-        .glyphs = state.renders.glyphs,
+        /* The Phipia taskbar owns its font and therefore its glyph counter.
+         * Folding that measured work into the compositor proof keeps the
+         * receipt meaningful when the legacy Dock is not the active shell. */
+        .glyphs = state.renders.glyphs +
+            (phipia_shell_ready ? taskbar_render.glyphs : 0U),
         .ledger_fingerprint = ledger == NULL ? 0U : ledger->fingerprint,
         .render_hash = second_hash
     };
-    installed_proof_failure = "Sapote Redwood installed proof passed";
+    installed_proof_failure = "Phipia installed proof passed";
     return UI_STATUS_OK;
 }
 
@@ -8520,8 +10781,8 @@ const char *ui_installed_proof_failure(void)
 const char *ui_panel_name(enum ui_panel_id panel)
 {
     static const char *const names[] = {
-        "None", "Files", "Terminal", "Notes", "SapStudio",
-        "Camera", "Store", "Settings"
+        "None", "Files", "Phip", "Notes", "Media Editor",
+        "Camera", "Paint", "Store", "Settings", "Task Manager"
     };
     uint32_t slot;
 
@@ -8545,19 +10806,19 @@ const char *ui_element_name(enum ui_element_id element)
         return "Files";
     }
     if (element == UI_ELEMENT_DOCK_TERMINAL) {
-        return "Terminal";
+        return "Phip";
     }
     if (element == UI_ELEMENT_DOCK_NOTES) {
         return "Notes";
     }
-    if (element == UI_ELEMENT_DOCK_STUDIO) {
-        return "SapStudio";
+    if (element == UI_ELEMENT_DOCK_MEDIA_EDITOR) {
+        return "Media Editor";
     }
     if (element == UI_ELEMENT_DOCK_CAMERA) {
         return "Camera";
     }
     if (element == UI_ELEMENT_DOCK_CANVAS) {
-        return "Canvas";
+        return "Paint";
     }
     if (element == UI_ELEMENT_DOCK_STORE) {
         return "Store";
@@ -8574,10 +10835,10 @@ const char *ui_status_string(enum ui_status status)
     static const char *const messages[] = {
         "ok",
         "null UI argument",
-        "Sapote Redwood is already initialized",
-        "Sapote Redwood is not initialized",
-        "Sapote Redwood is not active",
-        "unsupported Sapote Redwood framebuffer geometry",
+        "Phipia is already initialized",
+        "Phipia is not initialized",
+        "Phipia is not active",
+        "unsupported Phipia framebuffer geometry",
         "UI rectangle arithmetic overflowed",
         "UI rectangle lies outside its surface",
         "duplicate UI element identifier",
@@ -8593,12 +10854,12 @@ const char *ui_status_string(enum ui_status status)
         "UI font rendering failed",
         "cached surface rendering failed",
         "canonical logo rendering failed",
-        "SapStudio icon rendering failed",
+        "Media Editor icon rendering failed",
         "application icon rendering failed",
         "desktop wallpaper rendering failed",
         "application filesystem operation failed",
         "terminal viewport rendering failed",
-        "installed Sapote Redwood proof failed"
+        "installed Phipia proof failed"
     };
 
     _Static_assert(sizeof(messages) / sizeof(messages[0]) ==

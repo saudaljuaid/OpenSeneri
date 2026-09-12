@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Verify every committed and generated Sapote Redwood asset."""
+"""Verify every committed and generated Phipia desktop asset."""
 
 from hashlib import sha256
 from pathlib import Path
 
 
 PINNED = {
-    "assets/sapote-logo.png": "f7d932cfb5b2fcc7ec9a33291326217cc17e2e36c604a880083ba7bb459fa912",
-    "assets/sapote-logo-source.png": "90f1c5613af4eaa817bbf69b151fc2e387ba45873643cc7c220bb471423c6663",
-    "build/logo.srl": "cae1b3979144f528e5245697474397b881c9ed234838821d5ea4625065562b5e",
-    "build/wallpaper.spw": "1154a4b9a8feccdd4a422e07e9794c4b610a2bf467ef9a6fa9985d1d4707ec1d",
-    "assets/sapstudio-icon.png": "466ab943da6ca035c88988d8bf819625e46ca85a5fe11a2a39b7f34f2e3e1df7",
-    "build/sapstudio-icon.srl": "0e30ba0bfd43ee19ecbef903ae2bf05cab4c0f1e9e28e0c9233907ff6f3bcddd",
+    "assets/phipia/logo.png": "6a07abe324c2d80aa0f1dd3a318c103c3b6a81fef1f72d5f4808d589626b1e88",
+    "assets/phipia/wallpaper.png": "ce1df11fa3a5575b55b47a2fba7216216b21ce09c53824d85610515848184981",
+    "build/logo.srl": "8bbc453422c7ce3f678bc6932a6ebe7640051dd49c972d65ed65baa01ab3eb1b",
+    "build/wallpaper.spw": "84aeb9472a35c1d8846120c2a5e646dae30525bb66ad75e0bbae8616ba042fef",
+    "assets/phipia/media-editor.png": "c5d706b274132b5fcaf0bb016d0da56ddd1dc54b417709364874ad1a58611eb5",
+    "build/media-editor-icon.srl": "0e30ba0bfd43ee19ecbef903ae2bf05cab4c0f1e9e28e0c9233907ff6f3bcddd",
     "assets/settings-icon-dock.png": "29bbd3bf688a4eb7ae7c67ef8b9bdbe7c8d101f6694485c585d74e6cd36bbc7f",
     "build/settings-icon.srl": "646fcc71ffb1e621d6a2e828405a1dfcea9930aff50062755fb34698d2c813ba",
     "assets/settings-icon.png": "858e9fc54d2760e7fd486c992f9660831ceb8258b814e5d600e7145f679d9f6b",
@@ -78,7 +78,7 @@ PINNED = {
 }
 
 WALLPAPERS = [
-    "assets/sapote-redwood-wallpaper.png",
+    "assets/phipia/wallpaper.png",
     *[f"assets/wallpapers/{number:02d}-{name}.png" for number, name in enumerate((
         "galaxy-stars", "milky-way-lake", "milky-way-reflection",
         "forest-waterfall", "waterfall-valley", "desert-dunes", "aurora",
@@ -86,7 +86,7 @@ WALLPAPERS = [
         "alpine-lake", "tropical-sunset", "ocean-cliffs",
     ), 1)],
 ]
-WALLPAPER_MANIFEST = "3e0c3c3f115b0a44563a5745da37a384df4e20f48a5c821a6efe74edf4d8cf2b"
+WALLPAPER_MANIFEST = "ce40bd3445223a0e7cc037a610538023df381155a3d72726b96b649e8a03e0d9"
 
 
 def digest(path: str) -> str:

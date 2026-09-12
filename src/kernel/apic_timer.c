@@ -3,11 +3,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/apic.h>
-#include <sapote/apic_timer.h>
-#include <sapote/cpu.h>
-#include <sapote/interrupts.h>
-#include <sapote/pm_timer.h>
+#include <phipia/apic.h>
+#include <phipia/apic_timer.h>
+#include <phipia/cpu.h>
+#include <phipia/interrupts.h>
+#include <phipia/pm_timer.h>
 
 /* Intel SDM volume 3A table 11-1 places the timer registers at these offsets. */
 #define APIC_REGISTER_LVT_TIMER UINT32_C(0x0320)
@@ -39,10 +39,8 @@
 #define APIC_TIMER_MAX_COUNT UINT32_C(0xFFFFFFFF)
 
 /*
- * The reference interval: a tenth of a second of the ACPI power management
- * timer, whose rate the ACPI specification fixes rather than one this kernel
- * measured. The PIT used to serve here, but its mode-3 edge count made it an
- * unsuitable independent calibration reference.
+ * Calibrate against one tenth of a second on the fixed-rate ACPI PM timer.
+ * The PIT's mode-3 edge count is not suitable as an independent reference.
  */
 #define REFERENCE_PM_TICKS (PM_TIMER_FREQUENCY_HZ / 10U)
 
@@ -202,7 +200,7 @@ static void stop_counting(void)
 
 /*
  * Measure the local APIC timer against the ACPI power management timer. The APIC
- * timer's input is the processor's bus or core crystal clock, whose rate Sapote
+ * timer's input is the processor's bus or core crystal clock, whose rate Phipia
  * is not told, so the only honest way to use it as a clock is to count it
  * against a reference whose rate is known. The PM timer's rate is stated by
  * the ACPI specification and measured against nothing, which is what makes it

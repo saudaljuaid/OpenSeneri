@@ -2,10 +2,10 @@
 
 # Measured Linux x86_64 syscall boundary
 
-Sapote runs three pinned static BusyBox programs as bounded compatibility
+Phipia runs three pinned static BusyBox programs as bounded compatibility
 proofs:
 
-- v0.8.0: `busybox echo SAPOTE`;
+- v0.8.0: `busybox echo PHIPIA`;
 - v0.9.0: `busybox uname -s`;
 - v1.1.0: `busybox cat`.
 
@@ -13,7 +13,7 @@ Version 2.0.0 preserves those executables and the bounded interactive
 `linux cat` lifecycle unchanged while moving the current system-volume path to
 immutable FAT32. This does not establish a broad userspace ABI.
 
-This is not POSIX, a native Sapote ABI, or a general Linux personality. Each
+This is not POSIX, a native Phipia ABI, or a general Linux personality. Each
 profile has a distinct executable, configuration, storage contract, initial stack,
 syscall allowlist, output sink, lifecycle, and checksum.
 
@@ -37,7 +37,7 @@ The committed trace is `userspace/busybox/syscall-allowlist.txt`.
 
 | Number | Call | Accepted operation |
 | ---: | --- | --- |
-| 1 | `write` | fd 1, exactly `SAPOTE\n`, once |
+| 1 | `write` | fd 1, exactly `PHIPIA\n`, once |
 | 9 | `mmap` | the measured anonymous guard and RW page only |
 | 11 | `munmap` | the preceding measured RW page only |
 | 12 | `brk` | fixed-base query and one exact 8192-byte growth |
@@ -81,7 +81,7 @@ Linux x86_64 syscall 63 writes one complete 390-byte `new_utsname` record:
 The whole destination must be canonical, mapped, user-owned, and RW/NX before
 any byte changes. Null, wrapped, supervisor, executable, read-only, unmapped,
 MMIO, DMA, page-table, guard, foreign, and cross-resource ranges return
-`-EFAULT` with no partial output. The record is immutable and Sapote-owned;
+`-EFAULT` with no partial output. The record is immutable and Phipia-owned;
 there is no hostname mutation or UTS namespace.
 
 ## Cat profile
@@ -111,12 +111,12 @@ authenticated RW/NX stack mapping before a read can wait. A wrong fd returns
 `-EBADF`; an invalid complete range returns `-EFAULT` without copying; an
 unexpected syscall returns `-ENOSYS`. A successful write must use fd 1, the
 same measured buffer, the exact preceding read length, and bytes identical to
-the line supplied by Sapote Redwood. Those bytes are copied back from userspace
+the line supplied by Phipia. Those bytes are copied back from userspace
 before they are published to the terminal and serial stream.
 
 At read entry the kernel authenticates the generation, CR3, ordinal, register
 frame, selectors, flags, destination, and ownership. It saves one resumable
-frame, restores the kernel CR3 and launch stack, and yields to the Sapote Redwood
+frame, restores the kernel CR3 and launch stack, and yields to the Phipia
 event loop. A complete line or EOF revalidates those invariants, performs one
 all-or-nothing copy-out, and resumes immediately after the authentic
 `SYSCALL`. A read cannot be completed or resumed twice. The lifecycle is
@@ -139,13 +139,13 @@ executable-stack, and W+X shapes are refused.
 Each profile receives its exact measured argument vector, an empty environment,
 and the measured `AT_PAGESZ`/`AT_NULL` auxiliary vector in a guarded RW/NX stack. The
 historical scenarios keep their separate read-only 16 MiB FAT16 fixtures.
-The v2.0.0 Sapote Redwood path uses one deterministic read-only 64 MiB FAT32 system
+The v2.0.0 Phipia path uses one deterministic read-only 64 MiB FAT32 system
 image with the exact `BUSYBOX`, `UNAMEBOX`, and `CATBOX` entries. It is attached
 through ordinary emulated NVMe; DMA ownership returns to the CPU before Rust
 inspects metadata or complete file bytes. Filesystem writes are rejected below
 the shell for this mount.
 
-The Sapote Redwood owner assigns a fresh generation, invokes only the selected
+The Phipia owner assigns a fresh generation, invokes only the selected
 profile's measured launcher, and accepts success only after private CPL3 entry,
 the architectural `SYSCALL` instruction, exact stdout, status-zero exit, kernel
 CR3 restoration, mapping teardown, and an equal resource census. Failed and
@@ -158,7 +158,7 @@ Checksums, source provenance, and reproducible build instructions are in
 ## Deliberate limits
 
 There are no paths, writable files, signals, multiple processes, dynamic
-linking, PIE, sockets, native Sapote syscalls, general mappings, general
+linking, PIE, sockets, native Phipia syscalls, general mappings, general
 descriptors, a descriptor table, job control, a userspace scheduler, hostname
 mutation, `int 0x80`, POSIX claim, production-readiness claim, or general Linux
 binary promise. Adding another program means measuring and pinning a new

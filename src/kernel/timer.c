@@ -3,14 +3,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sapote/apic_timer.h>
-#include <sapote/clock.h>
-#include <sapote/cpu.h>
-#include <sapote/heap.h>
-#include <sapote/timer.h>
+#include <phipia/apic_timer.h>
+#include <phipia/clock.h>
+#include <phipia/cpu.h>
+#include <phipia/heap.h>
+#include <phipia/timer.h>
 
 /*
- * Sapote policy bound on the shortest deadline that may be armed. The local APIC
+ * Phipia policy bound on the shortest deadline that may be armed. The local APIC
  * timer counts at tens of megahertz, so a deadline closer than this would often
  * have passed by the time the count is written, and rearming from inside the
  * expiry handler would then spin the interrupt rather than make progress.
@@ -18,7 +18,7 @@
 #define TIMER_MINIMUM_INTERVAL_NS UINT64_C(100000)
 
 /*
- * Sapote policy bound on a sleep. A deadline that has not arrived by twice its
+ * Phipia policy bound on a sleep. A deadline that has not arrived by twice its
  * own interval plus this grace has not been delivered, and the sleep gives up
  * with a status instead of halting forever. The grace covers the case of a very
  * short interval where twice it is still shorter than one timer interrupt.

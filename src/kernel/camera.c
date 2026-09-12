@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-#include <sapote/camera.h>
-#include <sapote/cpu.h>
+#include <phipia/camera.h>
+#include <phipia/cpu.h>
 
 #define CAMERA_BUFFER_BYTES \
     ((size_t)CAMERA_MAX_WIDTH * CAMERA_MAX_HEIGHT * 3U)

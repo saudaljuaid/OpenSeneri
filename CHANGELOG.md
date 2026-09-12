@@ -2,10 +2,10 @@
 
 # Changelog
 
-## Sapote Redwood
+## Phipia
 
-- Replaced the former shell presentation with the Redwood desktop and the
-  canonical Sapote identity.
+- Replaced the former shell presentation with the Phipia desktop and the
+  canonical Phipia identity.
 - Added the six-application 3D Dock with magnification, reflections, tooltips,
   launch feedback, and light and dark shelf colours.
 - Added overlapping movable windows with focus, stacking, close controls, and
@@ -14,9 +14,9 @@
 - Added Files and Notes over the writable FAT32 data volume.
 - Added the Camera application and double-buffered frame-provider interface.
   The default QEMU profile reports that no camera is connected.
-- Added the native SapStudio window with BMP import, timeline editing, project
+- Added the native Media Editor window with BMP import, timeline editing, project
   persistence, and BMP export.
-- Updated the vendored SapStudio source to commit
+- Updated the vendored Media Editor source to commit
   `034ba9336f6dee3cd5a524a42b740b41013ca852`.
 - Added high-resolution screenshots and a 25-second QEMU demonstration.
 
@@ -34,9 +34,8 @@
   validator and device-model tests.
 - Increased the QEMU suite to 101 scenarios.
 
-The process layer does not yet provide `fork`, `exec`, signals, process IDs,
-IPC, or preemptive user scheduling. HD Audio does not stream samples. The
-NVIDIA layer does not perform graphics acceleration or mode setting.
+This release omitted `fork`, `exec`, signals, process IDs, IPC, preemptive user
+scheduling, HD Audio streaming, NVIDIA graphics acceleration, and mode setting.
 
 ## 2.1.0
 

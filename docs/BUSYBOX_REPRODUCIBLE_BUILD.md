@@ -3,7 +3,7 @@
 # Reproducible BusyBox proof inputs
 
 BusyBox and musl are separate userspace works. Neither is copied into or linked
-with Sapote's GPL-3.0-only kernel. Their source, configurations, licenses,
+with Phipia's GPL-3.0-only kernel. Their source, configurations, licenses,
 traces, and build records remain distinct release materials.
 
 ## Pinned source inputs
@@ -36,7 +36,7 @@ byte-identical results. It rejects changed inputs, configurations, output
 hashes, unexpected ELF shape, runtime relocations, dynamic dependencies, W+X,
 and exercised MMX/SSE/AVX instructions.
 
-The images are deliberately static non-PIE `ET_EXEC` files at fixed high user
+The images are static non-PIE `ET_EXEC` files at fixed high user
 addresses. The build selects musl's `crt1.o`, disables linker relaxation, uses
 the large code model, and omits unused constructor bookends. The uname build
 adds a build-only scalar target attribute to musl `vfprintf`; the published
@@ -46,8 +46,8 @@ source archives remain byte-identical.
 
 | Profile | Executable | Size | Executable SHA-256 | FAT16 fixture SHA-256 |
 | --- | --- | ---: | --- | --- |
-| v0.8.0 | `echo SAPOTE` | 33,584 | `B308F2CAD5B5CD0EEB92A622DEC8D71C1A08F628A22CDC5BCDE2B98B53220746` | `41513E5D6F4C33F898F887D4F40F37149A29B1AE13B5E8A600495C18A38C7A6F` |
-| v0.9.0 | `uname -s` | 38,368 | `389AD6B13804EB7307BA589C8E8A7C702F91302005A7C5FC6E9E99124FCEAF43` | `48C3465E924D1D2B3C8AB659D2783CAC4AF57DFD83504606AD0DF8F64D7316E3` |
+| v0.8.0 | `echo PHIPIA` | 33,584 | `B308F2CAD5B5CD0EEB92A622DEC8D71C1A08F628A22CDC5BCDE2B98B53220746` | `79EE482967A1979C34DCFC87B68813C5DA79B27292362DDA890839B6263FF821` |
+| v0.9.0 | `uname -s` | 38,368 | `389AD6B13804EB7307BA589C8E8A7C702F91302005A7C5FC6E9E99124FCEAF43` | `CDB8E920F06AC93F63E73854FC5A6A63CDBCC7DCEDBBFB62325C7EC4B408AD36` |
 | v1.1.0 | `cat` | 38,632 | `8191596A22778B575942895071A2E50CCEEE0F82F4D88B6D986584CE0914FC3E` | composed v1.1.0 volume |
 
 All three executables have five program headers, four load segments, no interpreter,
@@ -55,18 +55,18 @@ dynamic section, runtime relocation, PIE, shared object, or RWX segment. Their
 exact syscall traces and allowlists are committed beside the configurations.
 
 Version 1.1.0 places all three exact executables in one 16 MiB read-only FAT16
-volume. `tools/make-redwood-proof-userland.py` rebuilds every byte, independently
+volume. `tools/make-phipia-proof-userland.py` rebuilds every byte, independently
 verifies each file and root entry, runs negative mutations, and pins the volume
 SHA-256 to
-`F2115B909842ADACB8460287515E5145E36B34DE7E0B8C658E92D22DDFA7EBDB`.
+`C2A2B2FEC703C654E1260EF07A91FF1DD7808F8D83734C0D7AFD3967525B34B9`.
 The same builder preserves the v1.0.0 echo/uname-only image byte-for-byte as the
 v1.1.0 missing-cat negative fixture with SHA-256
-`12F7EB4B4EE2F39CA721623AFCC6D337964FB32D2F081893DF182101514211CE`.
+`F7DB823EE1CB7FF2A05E7020DB0F4502656B9950EFBBE79E23ED0EA755FC8478`.
 
 Version 2.0.0 places those same executable bytes in the deterministic immutable
 FAT32 system image. `tools/fat32_image.py` verifies each filename, size, digest,
 and complete allocation chain independently. The system image SHA-256 is
-`5C9463E3C62A7351E12F7B7832C8A97FF016A264F9C7F356A76201DF4E17317E`.
+`A88A44BE394AEFB6D5B7729A6378F4D180E214D60EB6035B3425C6C724936F04`.
 The historical FAT16 images and checksums above remain release contracts.
 
 ## Release requirement
