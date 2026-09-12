@@ -166,17 +166,14 @@ jobs:
                   } >evidence/filesystem/controlled-robustness-results.txt
                   (
                       cd evidence/filesystem
-                      sha256sum \
-                          Phipia-filesystem-regression.iso \
-                          filesystem-proof-transcript.txt \
-                          verification-summary.txt \
-                          controlled-robustness-results.txt \
-                          fixture-layout-digest.txt \
-                          accelerator-results.txt \
-                          tcg-sweep-{01..10}.txt >SHA256SUMS
+                      find . -type f ! -name SHA256SUMS -print0 \
+                          | LC_ALL=C sort -z \
+                          | xargs -0 -r sha256sum >SHA256SUMS
                   )
                   cat evidence/filesystem/verification-summary.txt
-                  cat evidence/filesystem/SHA256SUMS
+                  printf 'SHA256SUMS members: %s\n' \
+                      "$(wc -l <evidence/filesystem/SHA256SUMS)"
+                  sha256sum evidence/filesystem/SHA256SUMS
             - name: Upload the bounded milestone evidence
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:

@@ -43,6 +43,9 @@ long phipia_cancel(phipia_handle_t handle)
 int phipia_window_create(const char *title, uint32_t width, uint32_t height,
     struct phipia_window_create_response *response)
 {
+    if (title == NULL) {
+        return phipia_result(-PHIPIA_EFAULT);
+    }
     const struct phipia_window_create_request request = {
         sizeof(request), PHIPIA_ABI_VERSION, (uint64_t)(uintptr_t)title,
         (uint32_t)strlen(title), width, height, PHIPIA_PIXEL_XRGB8888, 0U, 0U
@@ -72,7 +75,11 @@ long phipia_pointer_capture(phipia_handle_t window, int capture)
 { return phipia_syscall2(PHIPIA_SYS_POINTER_CAPTURE, window, capture != 0); }
 
 long phipia_dns_resolve(const char *hostname, uint64_t deadline_ns)
-{ return phipia_syscall3(PHIPIA_SYS_DNS_RESOLVE, (uint64_t)(uintptr_t)hostname, strlen(hostname), deadline_ns); }
+{
+    if (hostname == NULL) return -PHIPIA_EFAULT;
+    return phipia_syscall3(PHIPIA_SYS_DNS_RESOLVE,
+        (uint64_t)(uintptr_t)hostname, strlen(hostname), deadline_ns);
+}
 long phipia_stream_open(void) { return phipia_syscall0(PHIPIA_SYS_STREAM_OPEN); }
 long phipia_stream_connect(phipia_handle_t stream,
     const struct phipia_ipv4_endpoint *endpoint, uint64_t deadline_ns)
@@ -114,7 +121,12 @@ long phipia_datagram_bind(phipia_handle_t datagram, uint16_t port)
 long phipia_datagram_send(phipia_handle_t datagram,
     const struct phipia_ipv4_endpoint *destination, const void *buffer,
     size_t length, uint64_t deadline_ns)
-{ struct phipia_ipv4_endpoint endpoint = *destination; return network_io(PHIPIA_SYS_DATAGRAM_SEND, datagram, (void *)(uintptr_t)buffer, length, deadline_ns, &endpoint); }
+{
+    if (destination == NULL) return -PHIPIA_EFAULT;
+    struct phipia_ipv4_endpoint endpoint = *destination;
+    return network_io(PHIPIA_SYS_DATAGRAM_SEND, datagram,
+        (void *)(uintptr_t)buffer, length, deadline_ns, &endpoint);
+}
 long phipia_datagram_receive(phipia_handle_t datagram,
     struct phipia_ipv4_endpoint *source, void *buffer, size_t length,
     uint64_t deadline_ns)

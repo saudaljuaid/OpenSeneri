@@ -49,7 +49,7 @@ static long write_body(void *context, const void *bytes, size_t byte_count)
         long count = phipia_file_write(sink->handle, source + written,
             byte_count - written);
         if (count <= 0 || (size_t)count > byte_count - written) {
-            sink->error = count <= 0 ? count : -(long)PHIPIA_EIO;
+            sink->error = count < 0 ? count : -(long)PHIPIA_EIO;
             return -1;
         }
         br_sha256_update(&sink->sha256, source + written, (size_t)count);
@@ -78,7 +78,7 @@ static long write_upload_body(void *context, const void *bytes,
             source + written, chunk);
 
         if (count <= 0 || (size_t)count > chunk) {
-            sink->error = count <= 0 ? count : -(long)PHIPIA_EIO;
+            sink->error = count < 0 ? count : -(long)PHIPIA_EIO;
             return -1;
         }
         written += (size_t)count;

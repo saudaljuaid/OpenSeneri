@@ -23,6 +23,8 @@ clock_t clock(void);
 int clock_gettime(int identifier, struct timespec *result);
 int nanosleep(const struct timespec *request, struct timespec *remaining);
 double difftime(time_t end, time_t beginning);
+/* UTC conversion accepts Unix seconds from 1970 through 9999; out-of-range
+ * values return NULL with errno set to ERANGE. */
 struct tm *gmtime(const time_t *value);
 struct tm *gmtime_r(const time_t *value, struct tm *result);
 struct tm *localtime(const time_t *value);

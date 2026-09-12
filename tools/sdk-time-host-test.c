@@ -58,6 +58,12 @@ int main(void)
         monotonic_value != UINT64_C(1234567890133)) {
         return 4;
     }
+    monotonic_value = UINT64_MAX - 5U;
+    errno = 0;
+    if (nanosleep(&sleep_interval, NULL) != -1 || errno != EINVAL ||
+        monotonic_value != UINT64_MAX - 5U) {
+        return 10;
+    }
     if (gmtime_r(&epoch, &broken) != &broken ||
         broken.tm_year != 124 || broken.tm_mon != 1 ||
         broken.tm_mday != 29 || broken.tm_hour != 23 ||

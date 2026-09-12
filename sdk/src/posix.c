@@ -65,47 +65,97 @@ int open(const char *path, int flags, ...)
 
 ssize_t read(int number, void *buffer, size_t length)
 {
-    struct descriptor_record *record = descriptor(number);
+    struct descriptor_record *record;
     long result;
-    if (number == STDIN_FILENO) { errno = EAGAIN; return -1; }
-    if (record == NULL || buffer == NULL) { errno = EBADF; return -1; }
+    if (number == STDIN_FILENO) {
+        if (length == 0U) return 0;
+        errno = EAGAIN;
+        return -1;
+    }
+    if (buffer == NULL && length != 0U) { errno = EFAULT; return -1; }
+    phipia_runtime_lock(&descriptor_lock);
+    record = descriptor(number);
+    if (record == NULL) {
+        phipia_runtime_unlock(&descriptor_lock);
+        errno = EBADF;
+        return -1;
+    }
+    if (length == 0U) {
+        phipia_runtime_unlock(&descriptor_lock);
+        return 0;
+    }
     result = phipia_file_read(record->handle, buffer, length);
+    phipia_runtime_unlock(&descriptor_lock);
     if (result < 0) { errno = (int)-result; return -1; }
     return (ssize_t)result;
 }
 
 ssize_t write(int number, const void *buffer, size_t length)
 {
-    struct descriptor_record *record = descriptor(number);
+    struct descriptor_record *record;
     long result;
-    if ((number == STDOUT_FILENO || number == STDERR_FILENO) && buffer != NULL) {
+    if (buffer == NULL && length != 0U) { errno = EFAULT; return -1; }
+    if (number == STDOUT_FILENO || number == STDERR_FILENO) {
+        if (length == 0U) return 0;
         result = phipia_syscall2(PHIPIA_SYS_CONSOLE_WRITE,
             (uint64_t)(uintptr_t)buffer, length);
-    } else if (record != NULL && buffer != NULL) {
+    } else {
+        phipia_runtime_lock(&descriptor_lock);
+        record = descriptor(number);
+        if (record == NULL) {
+            phipia_runtime_unlock(&descriptor_lock);
+            errno = EBADF;
+            return -1;
+        }
+        if (length == 0U) {
+            phipia_runtime_unlock(&descriptor_lock);
+            return 0;
+        }
         result = phipia_file_write(record->handle, buffer, length);
-    } else { errno = EBADF; return -1; }
+        phipia_runtime_unlock(&descriptor_lock);
+    }
     if (result < 0) { errno = (int)-result; return -1; }
     return (ssize_t)result;
 }
 
 off_t lseek(int number, off_t offset, int origin)
 {
-    struct descriptor_record *record = descriptor(number);
+    struct descriptor_record *record;
     long result;
-    if (record == NULL || origin < SEEK_SET || origin > SEEK_END) { errno = EBADF; return -1; }
+    if (origin != SEEK_SET && origin != SEEK_CUR && origin != SEEK_END) {
+        errno = EINVAL;
+        return -1;
+    }
+    phipia_runtime_lock(&descriptor_lock);
+    record = descriptor(number);
+    if (record == NULL) {
+        phipia_runtime_unlock(&descriptor_lock);
+        errno = EBADF;
+        return -1;
+    }
     result = phipia_file_seek(record->handle, offset, (uint32_t)origin);
+    phipia_runtime_unlock(&descriptor_lock);
     if (result < 0) { errno = (int)-result; return -1; }
     return (off_t)result;
 }
 
 int close(int number)
 {
-    struct descriptor_record *record = descriptor(number);
+    struct descriptor_record *record;
     long result;
-    if (record == NULL) { errno = EBADF; return -1; }
-    result = phipia_handle_close(record->handle);
+    /* File operations hold this lock through their syscall, so the descriptor
+       cannot be closed and recycled while its handle or path is in use. */
     phipia_runtime_lock(&descriptor_lock);
-    (void)memset(record, 0, sizeof(*record));
+    record = descriptor(number);
+    if (record == NULL) {
+        phipia_runtime_unlock(&descriptor_lock);
+        errno = EBADF;
+        return -1;
+    }
+    result = phipia_handle_close(record->handle);
+    if (result >= 0) {
+        (void)memset(record, 0, sizeof(*record));
+    }
     phipia_runtime_unlock(&descriptor_lock);
     return phipia_result(result);
 }
@@ -151,15 +201,35 @@ int mkdir(const char *path, mode_t mode)
 { (void)mode; return path_operation(path, PHIPIA_SYS_PATH_MKDIR, 0U); }
 int ftruncate(int number, int64_t length)
 {
-    struct descriptor_record *record = descriptor(number);
-    if (record == NULL || length < 0) { errno = EINVAL; return -1; }
-    return path_operation(record->path, PHIPIA_SYS_PATH_TRUNCATE, (uint64_t)length);
+    struct descriptor_record *record;
+    long result;
+    if (length < 0) { errno = EINVAL; return -1; }
+    phipia_runtime_lock(&descriptor_lock);
+    record = descriptor(number);
+    if (record == NULL) {
+        phipia_runtime_unlock(&descriptor_lock);
+        errno = EBADF;
+        return -1;
+    }
+    result = phipia_path_truncate(record->volume, record->path,
+        (uint64_t)length);
+    phipia_runtime_unlock(&descriptor_lock);
+    return phipia_result(result);
 }
 int fsync(int number)
 {
-    struct descriptor_record *record = descriptor(number);
-    if (record == NULL) { errno = EBADF; return -1; }
-    return phipia_result(phipia_syscall1(PHIPIA_SYS_VOLUME_SYNC, record->volume));
+    struct descriptor_record *record;
+    long result;
+    phipia_runtime_lock(&descriptor_lock);
+    record = descriptor(number);
+    if (record == NULL) {
+        phipia_runtime_unlock(&descriptor_lock);
+        errno = EBADF;
+        return -1;
+    }
+    result = phipia_volume_sync(record->volume);
+    phipia_runtime_unlock(&descriptor_lock);
+    return phipia_result(result);
 }
 unsigned int sleep(unsigned int seconds)
 {

@@ -35,9 +35,12 @@ This has known limitations due to features needing to be additive, but it should
 - Lack of write support for journaling, although journaling can be read. It is recommended to disable journaling when using this library.
 - Limited extended attribute (xattr) support. Small xattrs can be read and written when they fit in the inode body. Writing external xattr blocks is not supported yet.
 
-The Phipia vendor branch includes a bounded JBD2 transaction-image and ordered
-flush-plan primitive. It is not connected to the mutation API and does not make
-filesystem writes crash-consistent; see `PHIPIA-PORT.md` for that boundary.
+The unmodified ext4plus mutation API does not journal writes. Phipia exposes
+read-write ext4 through its retained mutation stage and ordered, checksummed
+JBD2 writer over an NVMe Flush fence. That public VFS path has a bounded
+crash-consistency admission, including power-cut tests; see `PHIPIA-PORT.md`
+for the supported profile and boundary. Direct upstream mutations remain
+outside that admission.
 
 Everything else should be fully supported, minus the features listed in the compatibility section below.
 

@@ -1642,6 +1642,9 @@ fn sysv_lookup(image: &Image, input: &[u8], name: &[u8]) -> Result<Option<Symbol
     let header = virtual_file_offset(image, address, 8)?;
     let bucket_count = u32_at(input, header, Status::HashTable)?;
     let chain_count = u32_at(input, header + 4, Status::HashTable)?;
+    if bucket_count == 0 {
+        return Err(Status::HashTable);
+    }
     let bucket_address = address.checked_add(8).ok_or(Status::HashTable)?;
     let chain_address = bucket_address
         .checked_add(u64::from(bucket_count) * 4)

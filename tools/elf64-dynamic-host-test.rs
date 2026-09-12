@@ -357,6 +357,26 @@ fn parses_sysv_and_gnu_hash_objects_and_looks_up_exports() {
 }
 
 #[test]
+fn rejects_identical_duplicate_export_symbols() {
+    let mut fixture = fixture("libdep.so", &[], true, FixtureHash::SysV, false);
+    let first = fixture.bytes[SYMTAB + 24..SYMTAB + 48].to_vec();
+    fixture.bytes[SYMTAB + 48..SYMTAB + 72].copy_from_slice(&first);
+    assert_refused(&fixture.bytes, Status::Symbol);
+}
+
+#[test]
+fn lookup_rejects_a_hash_table_changed_after_parse() {
+    let fixture = fixture("libdep.so", &[], true, FixtureHash::SysV, false);
+    let image = elf64_dynamic::parse(&fixture.bytes).expect("parse ET_DYN provider");
+    let mut changed = fixture.bytes;
+    put_u32(&mut changed, fixture.hash, 0);
+    assert_eq!(
+        elf64_dynamic::lookup(&image, &changed, b"external"),
+        Err(Status::HashTable)
+    );
+}
+
+#[test]
 fn admits_the_linker_pie_flag_but_no_other_flags1_bits() {
     let fixture = fixture("libroot.so", &[], true, FixtureHash::SysV, false);
     let mut changed = fixture.bytes.clone();

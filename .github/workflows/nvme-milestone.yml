@@ -145,13 +145,16 @@ jobs:
                       printf 'Result: %s\n' "$proof_record"
                       printf 'Contract: qemu-test-nvme and the source assertions in nvme.c/test.c.\n'
                   } >evidence/nvme/controlled-robustness-results.txt
-                  (cd evidence/nvme && sha256sum \
-                      Phipia-nvme-regression.iso \
-                      nvme-proof-transcript.txt \
-                      verification-summary.txt \
-                      controlled-robustness-results.txt >SHA256SUMS)
+                  (
+                      cd evidence/nvme
+                      find . -type f ! -name SHA256SUMS -print0 \
+                          | LC_ALL=C sort -z \
+                          | xargs -0 -r sha256sum >SHA256SUMS
+                  )
                   cat evidence/nvme/verification-summary.txt
-                  cat evidence/nvme/SHA256SUMS
+                  printf 'SHA256SUMS members: %s\n' \
+                      "$(wc -l <evidence/nvme/SHA256SUMS)"
+                  sha256sum evidence/nvme/SHA256SUMS
             - name: Upload the bounded milestone evidence
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:

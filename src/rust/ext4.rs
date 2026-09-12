@@ -1531,6 +1531,9 @@ pub(crate) fn directory_entry(
                 name_length: u16::try_from(bytes.len()).map_err(|_| Status::Range)?,
                 ..DirectoryEntry::default()
             };
+            if bytes.len() > output.name.len() {
+                return Err(Status::Range);
+            }
             output.name[..bytes.len()].copy_from_slice(bytes);
             return Ok(Some(output));
         }

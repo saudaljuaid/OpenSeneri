@@ -70,6 +70,7 @@ int clock_gettime(int identifier, struct timespec *result)
 int nanosleep(const struct timespec *request, struct timespec *remaining)
 {
     uint64_t interval;
+    uint64_t now;
     long result;
     if (request == NULL || request->tv_sec < 0 || request->tv_nsec < 0 ||
         request->tv_nsec >= 1000000000L ||
@@ -78,7 +79,12 @@ int nanosleep(const struct timespec *request, struct timespec *remaining)
     }
     interval = (uint64_t)request->tv_sec * UINT64_C(1000000000) +
         (uint64_t)request->tv_nsec;
-    result = phipia_sleep_until(phipia_monotonic_ns() + interval);
+    now = phipia_monotonic_ns();
+    if (interval > UINT64_MAX - now) {
+        errno = EINVAL;
+        return -1;
+    }
+    result = phipia_sleep_until(now + interval);
     if (remaining != NULL) { remaining->tv_sec = 0; remaining->tv_nsec = 0; }
     return phipia_result(result);
 }
